@@ -25,14 +25,21 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-# Derived from this repo, not from $HOME: the two checkouts sit side by side
-# inside flock-meta, so a path anchored on $HOME goes stale the moment that
-# tree is moved or cloned somewhere else. It already did. The old
-# "$HOME/git/flock-website" survived the move into flock-meta/ because
+
+# Sourced BEFORE the SITE_DIR / BRIDGE_UPDATES_DIR defaults below, so a
+# SITE_DIR set in release.env participates in them. Sourcing it after (as this
+# script once did) left BRIDGE_UPDATES_DIR computed from the stale default
+# while everything else honoured the override, and the two manifests drifted.
+[ -f "$REPO_DIR/scripts/release.env" ] && source "$REPO_DIR/scripts/release.env"
+
+# Derived from this repo, not from $HOME: a path anchored on $HOME goes stale
+# the moment the tree is moved or cloned somewhere else. It already did. The
+# old "$HOME/git/flock-website" survived a move because
 # `mkdir -p "$SITE_DIR/updates"` below happily CREATES the missing directory:
 # a whole release published into a phantom ~/git/flock-website while the real
 # site sat untouched, and the only thing that noticed was the one copy into
-# downloads/, which is the one directory this script does not mkdir.
+# downloads/, which is the one directory this script does not mkdir. If the
+# website checkout is not a sibling of this repo, set SITE_DIR in release.env.
 SITE_DIR="${SITE_DIR:-$(cd "$REPO_DIR/../flock-website" 2>/dev/null && pwd || echo "$REPO_DIR/../flock-website")}"
 APP_DIR="$REPO_DIR/apps/flock-desktop"
 # Where the clarence.minnebo.ai bridge manifest is written. Today the bridge is
@@ -40,8 +47,6 @@ APP_DIR="$REPO_DIR/apps/flock-desktop"
 # split onto its own deployment, point BRIDGE_UPDATES_DIR at that checkout and
 # both manifests still get written from the one payload below.
 BRIDGE_UPDATES_DIR="${BRIDGE_UPDATES_DIR:-$SITE_DIR/updates}"
-
-[ -f "$REPO_DIR/scripts/release.env" ] && source "$REPO_DIR/scripts/release.env"
 
 cd "$REPO_DIR"
 
