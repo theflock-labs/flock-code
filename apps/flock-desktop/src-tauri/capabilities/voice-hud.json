@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "voice-hud",
+  "description": "Capabilities for the floating flock voice HUD window",
+  "windows": ["voice-hud"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:event:default"
+  ]
+}

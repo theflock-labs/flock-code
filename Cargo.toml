@@ -1,0 +1,64 @@
+[workspace]
+members = [
+    "crates/flock-core",
+    "crates/flock-tui",
+    "crates/flock-pty",
+    "crates/flock-cli",
+    "crates/flock-kg",
+    "crates/flock-mcp",
+    "apps/flock-desktop/src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.7.43"
+authors = ["the flock authors"]
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures = "0.3"
+
+# PTY
+portable-pty = "0.8"
+
+# Persistence
+sqlx = { version = "0.8", features = ["sqlite", "postgres", "runtime-tokio", "macros", "migrate", "uuid", "chrono"] }
+pgvector = { version = "0.4", features = ["sqlx"] }
+
+# Local embeddings (bge-small-en-v1.5) for the graph's hybrid search.
+# Text models only — the default image-models feature is dead weight here.
+fastembed = { version = "5", default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
+vt100 = "0.15"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# IDs
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Memory efficiency
+bytes = "1"
+
+# Internal crates
+flock-core = { path = "crates/flock-core" }
+flock-tui = { path = "crates/flock-tui" }
+flock-pty = { path = "crates/flock-pty" }
+flock-kg = { path = "crates/flock-kg" }

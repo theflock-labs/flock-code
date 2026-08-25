@@ -1,0 +1,15 @@
+[package]
+name = "flock-tui"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+flock-core = { workspace = true }
+vt100 = { workspace = true }
+uuid = { workspace = true }

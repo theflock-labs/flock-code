@@ -1,0 +1,71 @@
+name: Bug report
+description: Something in flock is broken
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The fields below are what we almost always have
+        to ask for, so filling them in up front usually saves a round trip.
+
+        If this is a security issue (anything that lets an agent out of the
+        jail, past the egress allowlist, or into data it should not see),
+        please do not file it here. Report it privately via the repository's
+        Security tab.
+  - type: input
+    id: flock-version
+    attributes:
+      label: flock version
+      description: Settings shows it, or the DMG filename (for example 0.7.43).
+      placeholder: "0.7.43"
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: "macOS 15.2 (Apple Silicon)"
+    validations:
+      required: true
+  - type: input
+    id: agent-cli
+    attributes:
+      label: Agent CLI and version
+      description: >
+        Which agent was in the pane, and its version, for example
+        `claude --version`, `codex --version`, `opencode --version`,
+        `grok --version`. Write "n/a" if no agent is involved.
+      placeholder: "claude 2.x.y"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: >
+        What you did, what you expected, and what happened instead. Mention
+        whether the workspace was in secure mode (Docker jail) or host mode,
+        many behaviors differ between the two.
+    validations:
+      required: true
+  - type: textarea
+    id: log-excerpt
+    attributes:
+      label: Log excerpt from ~/.flock/desktop.log
+      description: >
+        The relevant lines from `~/.flock/desktop.log` around the time it
+        happened. `RUST_LOG=flock=debug` increases verbosity if the default
+        log says nothing. Skim it for anything private before pasting.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: If you can reproduce it, the shortest path there.
+      placeholder: |
+        1. Create a workspace on ...
+        2. ...
+    validations:
+      required: false

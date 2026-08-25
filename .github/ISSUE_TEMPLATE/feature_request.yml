@@ -1,0 +1,36 @@
+name: Feature request
+description: Something flock should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For open-ended ideas or anything you want to talk through first,
+        GitHub Discussions is the better venue. Use this template when the
+        request is concrete enough to act on.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you trying to do that flock makes hard or impossible today?
+        Describe the situation, not the solution. A real workflow beats a
+        hypothetical.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What you would want flock to do, as concretely as you can.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >
+        Workarounds you use today, or other shapes this could take and why you
+        did not propose them.
+    validations:
+      required: false

@@ -1,0 +1,7 @@
+[build]
+# macOS: link against system libraries dynamically (static linking of libc on macOS is unsupported)
+# The binary is still self-contained for all Rust code; only libc/libSystem link dynamically,
+# which is always present on macOS.
+
+[alias]
+flock = "run --bin flock-cli --"

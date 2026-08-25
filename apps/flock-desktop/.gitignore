@@ -1,0 +1,14 @@
+# Unslashed: a trailing slash does not match a symlink, which is how a
+# host-absolute gitlink of this path got committed once.
+node_modules
+node_modules/
+dist/
+.DS_Store
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+src-tauri/Cargo.lock
+
+# Local env (flock ID keys live here in dev)
+.env.local

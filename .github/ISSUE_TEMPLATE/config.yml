@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions, ideas, and discussion
+    url: https://github.com/theflock-labs/flock-code/discussions
+    about: Not sure it's a bug, or the idea is still taking shape? Start here.
+  - name: Report a security vulnerability
+    url: https://github.com/theflock-labs/flock-code/security/advisories/new
+    about: Jail escapes, egress bypasses, update-path issues. Privately, never as a public issue.

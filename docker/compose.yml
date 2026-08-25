@@ -1,0 +1,27 @@
+# Phase 2: Knowledge layer (Postgres + pgvector + Apache AGE)
+# Not used in Phase 0. Brought up by `flock` on first knowledge-layer access.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    # Container renamed, volume and Postgres credentials deliberately not: the
+    # volume name is what existing data is stored under, and POSTGRES_USER only
+    # takes effect when a volume is first initialised. Same rule as the app's
+    # own graph/docker-compose.yml.
+    container_name: flock-pg
+    environment:
+      POSTGRES_USER: flock
+      POSTGRES_PASSWORD: flock
+      POSTGRES_DB: flock_kg
+    ports:
+      - "15432:5432"
+    volumes:
+      - flock-pg-data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flock -d flock_kg"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  flock-pg-data:

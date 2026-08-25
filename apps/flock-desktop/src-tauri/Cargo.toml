@@ -1,0 +1,71 @@
+[package]
+name = "flock-desktop"
+version.workspace = true
+edition.workspace = true
+description = "flock — multi-agent cockpit"
+
+# Tauri 2 convention: thin main.rs delegates to lib.rs
+[lib]
+name = "flock_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "flock-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "devtools"] }
+tauri-plugin-shell = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+tauri-plugin-clipboard-manager = "2"
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Bytes
+bytes = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Errors / logging
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Identity / time
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+# Our crates
+flock-core = { workspace = true }
+flock-pty = { workspace = true }
+flock-kg = { workspace = true }
+
+# HTTP client for GitHub API
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Voice-to-text: mic capture + local Whisper inference.
+# App is macOS-only (see rest of this file / tauri.conf.json) — "metal"
+# enables Core ML/Metal GPU acceleration for inference on Apple Silicon.
+cpal = "0.15"
+whisper-rs = { version = "0.14", features = ["metal"] }
+base64 = "0.22.1"
+
+# Native clipboard image read — Apple Notes (and other native apps) put copied
+# images only on NSPasteboard, never in the WebView paste event, so JS can't see
+# them. arboard reads the bitmap; png re-encodes it to a portable file.
+arboard = "3"
+png = "0.17"
+# Extract an image embedded in an RTFD clipboard blob (Apple Notes copies an
+# image only inside rich text, never as a standalone pasteboard image type).
+objc2 = "0.6"

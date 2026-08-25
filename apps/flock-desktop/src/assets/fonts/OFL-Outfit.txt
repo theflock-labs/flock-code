@@ -1,0 +1,24 @@
+Outfit
+Copyright (c) Smartsheet Inc. and the Outfit Project Authors
+(https://github.com/Outfitio/Outfit-Fonts)
+
+Outfit is licensed under the SIL Open Font License, Version 1.1.
+
+Outfit-400.woff2 in this directory is a subset of the Outfit variable
+font, served self-hosted; no CDN is called at runtime. Its weight axis
+is bounded to 400 (Regular) through 500 (Medium) by the @font-face
+declaration in src/styles/global.css, which is the only range the brand
+uses. It is named for the lower bound because the website ships the same
+bytes twice, once per weight, and this app keeps one copy.
+
+The full text of the SIL Open Font License, Version 1.1 is reproduced in
+this directory in OFL-Fraunces.txt and LICENSE-IBMPlexMono.txt, and is
+published at:
+
+  https://openfontlicense.org
+  https://scripts.sil.org/OFL
+
+Under the OFL, this notice and the copyright line above must travel with
+the font files. The Reserved Font Name clause does not apply to Outfit:
+the project ships it without a Reserved Font Name, so modified versions
+may keep the name.

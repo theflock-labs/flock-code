@@ -1,0 +1,17 @@
+[package]
+name = "flock-cli"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "flock"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+flock-core = { workspace = true }
+flock-tui = { workspace = true }
+flock-kg = { workspace = true }

@@ -1,0 +1,164 @@
+/* Self-contained styles for the race compare modal. Scoped under .race- so
+   they never collide with the shared .modal-* / .diff-* rules in global.css,
+   which this sheet deliberately builds on rather than replaces: the diff body
+   here IS DiffView, wearing DiffView's own styling. */
+
+/* Same frame as .diff-modal — this is a diff viewer with a rail bolted to its
+   left, and two different modal sizes for the same job read as two different
+   features. */
+.race-modal {
+  width: min(1180px, 94vw);
+  height: calc((100vh - 64px) / var(--ui-scale, 1));
+}
+
+.race-body {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Contender rail. Wider than .diff-file-list (250px) because each row carries
+   a branch name, and a truncated branch name is the one thing on the row that
+   cannot be guessed from the rest of it. */
+.race-rail {
+  width: 260px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--border-subtle);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.race-diff {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.race-contender {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 11px;
+  background: var(--bg-window);
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: border-color 0.12s ease-out, background 0.12s ease-out;
+}
+.race-contender:hover { border-color: var(--text-low); }
+.race-contender.selected {
+  border-color: var(--action);
+  background: color-mix(in srgb, var(--action) 7%, transparent);
+}
+/* The one that was actually merged keeps its mark whichever row is selected —
+   after a merge this modal is a record of what happened, not a chooser. */
+.race-contender.won { border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+
+.race-contender-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.race-contender-name {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  font-weight: var(--weight-strong);
+  color: var(--text-hi);
+}
+.race-won-tag {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--weight-strong);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok) 28%, transparent);
+  padding: 1px 5px;
+  border-radius: 999px;
+}
+.race-contender-branch {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-ghost);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.race-contender-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  min-width: 0;
+}
+.race-contender-state { color: var(--text-low); }
+.race-stat-pending { color: var(--text-ghost); }
+.race-stat-error {
+  color: var(--red);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status dot, same vocabulary as the pane pills: attention is --yellow,
+   activity is the accent, and a contender with no agent behind it is drawn as
+   an outline rather than a colour — it is absent, not unwell. */
+.race-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-low);
+}
+.race-dot-working { background: var(--action); }
+.race-dot-needs-input { background: var(--yellow); }
+.race-dot-resting { background: var(--text-low); }
+.race-dot-gone {
+  background: transparent;
+  border: 1px solid var(--text-ghost);
+}
+
+.race-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.race-discard {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  color: var(--text-mid);
+  max-width: 620px;
+}
+.race-discard.disabled { opacity: 0.45; cursor: default; }
+.race-discard input[type="checkbox"] {
+  accent-color: var(--action);
+  cursor: inherit;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+/* The consequence, spelled out on the same line as the choice. --yellow, not
+   --red: nothing has gone wrong, the user is being told what they are about to
+   pick. Same call as .sd-warn. */
+.race-discard-hint { color: var(--yellow); }
+.race-merged-note {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  color: var(--text-mid);
+}
+.race-merged-note strong { color: var(--text-hi); }

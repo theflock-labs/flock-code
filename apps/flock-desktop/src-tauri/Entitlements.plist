@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Required for microphone capture under the hardened runtime, which
+	     signingIdentity enables by default. Without it CoreAudio delivers
+	     silent (all-zero) buffers with no error and no TCC prompt, and
+	     Whisper hallucinates "you" / [BLANK_AUDIO] from the silence. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

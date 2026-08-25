@@ -1,0 +1,27 @@
+/target
+**/*.rs.bk
+.DS_Store
+*.db
+*.db-shm
+*.db-wal
+
+# Release sidecar staging (built from crates/flock-mcp):
+#   cargo build --release -p flock-mcp
+#   cp target/release/flock-mcp apps/flock-desktop/src-tauri/binaries/flock-mcp-$(rustc -vV | sed -n 's/host: //p')
+# Unslashed: a trailing slash does not match a symlink, which is how a
+# host-absolute gitlink of this path got committed once.
+apps/flock-desktop/src-tauri/binaries
+apps/flock-desktop/src-tauri/binaries/
+apps/flock-desktop/tsconfig.tsbuildinfo
+scripts/release.env
+.vercel
+
+node_modules/
+dist/
+*.log
+*.tsbuildinfo
+
+# Env files are never committed; committed *.example files are the template.
+.env
+.env.*
+!.env.example

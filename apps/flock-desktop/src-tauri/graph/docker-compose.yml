@@ -1,0 +1,49 @@
+# flock graph — local knowledge-graph engine.
+#
+# Postgres 16 with pgvector, bound to localhost only. Search is hybrid:
+# full-text + semantic (pgvector cosine over local bge-small embeddings,
+# computed on your machine — no embedding API). Agents write to it
+# through the flock-graph MCP server (flock-mcp binary); flock reads it
+# directly. Nothing leaves your machine.
+#
+# Managed by the flock desktop app (Settings → flock Graph), but plain
+# docker compose — you can drive it by hand from ~/.flock/graph too.
+
+# Compose derives the real Docker volume name from the project name plus the
+# volume key, so `flock-graph` + `flock-graph-data` is the volume
+# `flock-graph_flock-graph-data`. Changing either half points the stack at a
+# different volume, and the Postgres role and database below only take effect
+# when a volume is first initialised.
+#
+# All four carried the pre-rebrand name until 2026-07-28 for exactly that
+# reason. They were renamed before the public launch, which is the only moment
+# it is cheap: the five accounts that existed then were all internal, and the
+# alternative was every user who ever installs flock running a database called
+# `clarence_kg` under a role called `clarence` forever. Migrating an existing
+# graph is a dump and restore; after launch
+# this is frozen for real.
+name: flock-graph
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    # Containers are recreated on every `up`, so this name is free to change.
+    container_name: flock-graph-db
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:15432:5432"
+    environment:
+      POSTGRES_USER: flock
+      POSTGRES_PASSWORD: flock
+      POSTGRES_DB: flock_kg
+    volumes:
+      - flock-graph-data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flock -d flock_kg"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  flock-graph-data:

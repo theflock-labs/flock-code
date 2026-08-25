@@ -1,0 +1,500 @@
+/* Self-contained styles for the New Workspace and Spawn Agents dialogs.
+   Scoped under .sd- so they never collide with the shared .modal-* rules in
+   global.css. Reuses .modal-overlay / .modal only as the frame. */
+
+/* 600, not the old 480, and the reason is the agent grid below: four cards on
+   one row need ~95px of label space each, and 480 leaves 65, which wrapped
+   "Claude Code" onto two lines and made every card taller. Both dialogs that
+   use this sheet get it, so both lose a row.
+   Two columns was tried at 780 and was worse — half of that is not enough for
+   either card grid, so they overflowed and the dialog gained a horizontal
+   scrollbar on top of the height problem it was supposed to fix. */
+.sd {
+  width: 600px;
+  max-width: calc(100vw - 32px);
+}
+
+/* Directory and Name, side by side. Both are single-line and short, and each
+   was costing a full row of a dialog that had run off the bottom of the
+   screen. Directory takes the larger share because it holds a path. */
+.sd-pair {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr;
+  gap: 14px;
+  align-items: start;
+}
+.sd-pair > .sd-field { min-width: 0; }
+
+.sd-head {
+  padding: 15px 22px 12px;
+  flex-shrink: 0;
+}
+.sd-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-low);
+  margin-bottom: 8px;
+}
+/* Matches .modal-header .title in global.css, which is the point — these two
+   are the same object (a dialog's name) and were drawn three different ways:
+   this one mono/uppercase/16px, that one sans/sentence-case/13px.
+
+   Sentence case, because these titles are the most human-voiced strings in the
+   app — "A home for your agents", "One prompt, several ways" — written as
+   sentences in the JSX and then force-uppercased by CSS into A HOME FOR YOUR
+   AGENTS. Caps are for badges (see the caps policy in global.css); a title is
+   the one thing on screen you want read as words rather than scanned as a
+   token. Not the display serif either: chrome, and under Fraunces' 20px
+   floor. */
+.sd-title {
+  font-family: var(--font-sans);
+  font-weight: var(--weight-strong);
+  font-size: var(--fs-lg);
+  text-transform: none;
+  letter-spacing: var(--tracking-normal);
+  color: var(--text-hi);
+  line-height: 1.15;
+}
+/* .sd-title::after carried the same title caret; see the note in global.css. */
+
+.sd-body {
+  padding: 0 22px 4px;
+  display: flex;
+  flex-direction: column;
+  /* Multiplied by seven stacked sections in the New Workspace dialog, so the
+     three pixels are worth more than they look. Each field already carries
+     its own label-to-control gap, which is what separates them visually. */
+  gap: 13px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.sd-body::-webkit-scrollbar { width: 6px; }
+.sd-body::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 3px;
+}
+
+/* A labeled field group */
+.sd-field { display: flex; flex-direction: column; gap: 7px; }
+/* A field label is a signpost, not a badge, so it follows the caps policy's
+   section-header line rather than its badge line: sentence case sans at
+   reading size. Seven of these stack in the New Workspace dialog, and seven
+   rows of 10px tracked caps is a wall of shouting nobody reads — which is the
+   whole argument for the policy. */
+.sd-label {
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-normal);
+  text-transform: none;
+  color: var(--text-mid);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.sd-label-hint {
+  text-transform: none;
+  letter-spacing: var(--tracking-normal);
+  font-weight: var(--weight-normal);
+  color: var(--text-ghost);
+}
+
+.sd-input {
+  background: var(--bg-window);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-hi);
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
+  padding: 9px 11px;
+  outline: none;
+  transition: border-color 0.12s ease-out;
+  width: 100%;
+}
+.sd-input:focus { border-color: var(--action); }
+.sd-input::placeholder { color: var(--text-ghost); }
+
+/* Multi-line variant, for the race prompt. Sans, not mono: this is prose the
+   user writes, not a path or a ref, and mono at 12.5px fits noticeably fewer
+   words per line in a box that already has to hold a paragraph. Resize is
+   vertical-only — the sheet is a fixed 600px and a horizontal drag would push
+   the field out past the dialog's own edge. */
+.sd-textarea {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: 1.45;
+  resize: vertical;
+  min-height: 70px;
+  max-height: 220px;
+}
+
+.sd-dir { display: flex; gap: 6px; align-items: stretch; }
+.sd-dir .sd-input { flex: 1; font-size: var(--fs-sm); }
+.sd-browse {
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding: 0 13px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-mid);
+  background: var(--bg-window);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.12s ease-out, color 0.12s ease-out;
+}
+.sd-browse:hover { border-color: var(--text-low); color: var(--text-hi); }
+
+/* ── Agent segmented control ─────────────────────────────────────────────── */
+/* One column per agent. At three it wrapped, so the fourth sat alone on a
+   second row beside two empty cells: a whole row of dialog height spent on
+   nothing, in both dialogs that use this grid. Keep this equal to
+   AGENT_KINDS.length. */
+.sd-agents {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.sd-agent {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 8px;
+  background: var(--bg-window);
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  font-weight: var(--weight-strong);
+  color: var(--text-mid);
+  transition: border-color 0.12s ease-out, background 0.12s ease-out, color 0.12s ease-out;
+}
+.sd-agent:hover { border-color: var(--text-low); color: var(--text-hi); }
+.sd-agent.selected {
+  border-color: var(--kind-color, var(--action));
+  background: color-mix(in srgb, var(--kind-color, var(--action)) 8%, transparent);
+  color: var(--text-hi);
+}
+/* Not on the shell's PATH. Dimmed, not disabled: the probe asks one login
+   shell and can be wrong (a shell function, an agent installed under a
+   different profile), and refusing to let someone pick the agent they know
+   they have would be a worse failure than letting them try. Selection still
+   reads through, so a picked-but-missing agent is dim AND outlined. */
+.sd-agent.missing { opacity: 0.45; }
+.sd-agent.missing:hover { opacity: 0.7; }
+/* Official agent mark, tinted with the kind color; replaces the old dot. */
+.sd-agent-logo {
+  color: var(--kind-color, var(--action));
+  flex-shrink: 0;
+  display: block;
+}
+/* Consequence of the selection above, in the field's own column. Same voice as
+   .sd-toggle-hint — this is information, not a failure, so it stays in the
+   muted text colour rather than reaching for an alarm. */
+.sd-field-note {
+  margin-top: 7px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  color: var(--text-mid);
+}
+.sd-field-note code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-hi);
+  background: var(--bg-window);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+/* ── Layout picker ───────────────────────────────────────────────────────── */
+.sd-layouts {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+}
+.sd-layout {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 4px 6px;
+  background: var(--bg-window);
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: border-color 0.12s ease-out, background 0.12s ease-out;
+}
+.sd-layout:hover { border-color: var(--text-low); }
+.sd-layout.selected {
+  border-color: var(--action);
+  background: color-mix(in srgb, var(--action) 6%, transparent);
+}
+.sd-thumb {
+  display: grid;
+  gap: 1.5px;
+  width: 30px;
+  height: 22px;
+}
+.sd-thumb-cell {
+  background: var(--bg-chrome);
+  border: 1px solid var(--border-subtle);
+  border-radius: 1px;
+}
+.sd-layout.selected .sd-thumb-cell {
+  background: color-mix(in srgb, var(--action) 14%, transparent);
+  border-color: color-mix(in srgb, var(--action) 32%, transparent);
+}
+/* Past the plan's agent cap. Greyed and inert rather than absent: a race
+   picker that silently offered fewer contenders than the tier before it would
+   look like the app forgot how to count. */
+.sd-layout.disabled { opacity: 0.35; cursor: default; }
+.sd-layout.disabled:hover { border-color: var(--border-subtle); }
+.sd-layout-n {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-low);
+}
+.sd-layout.selected .sd-layout-n { color: var(--action); }
+
+/* ── Branch section ──────────────────────────────────────────────────────── */
+.sd-modes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.sd-mode {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 6px;
+  background: var(--bg-window);
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  font-weight: var(--weight-strong);
+  color: var(--text-mid);
+  text-align: center;
+  transition: border-color 0.12s ease-out, background 0.12s ease-out, color 0.12s ease-out;
+}
+.sd-mode:hover { border-color: var(--text-low); color: var(--text-hi); }
+.sd-mode.selected {
+  border-color: var(--action);
+  background: color-mix(in srgb, var(--action) 8%, transparent);
+  color: var(--text-hi);
+}
+
+.sd-branch-row { display: flex; gap: 8px; align-items: stretch; }
+.sd-branch-row .sd-input { flex: 1; min-width: 0; }
+.sd-branch-from {
+  display: flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-ghost);
+  flex-shrink: 0;
+}
+.sd-input.invalid { border-color: var(--red); }
+
+/* Base-ref / existing-branch combobox trigger. Sized like .sd-input so the
+   branch row reads as one control; the dropdown itself reuses .branch-picker. */
+.sd-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 190px;
+  padding: 9px 11px;
+  background: var(--bg-window);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
+  color: var(--text-hi);
+  transition: border-color 0.12s ease-out;
+}
+.sd-ref:hover:not(:disabled) { border-color: var(--text-low); }
+.sd-ref.open { border-color: var(--action); }
+.sd-ref:disabled { opacity: 0.5; cursor: default; }
+.sd-ref-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sd-ref-name.placeholder { color: var(--text-ghost); }
+.sd-ref-caret { color: var(--text-ghost); font-size: var(--fs-xs); flex-shrink: 0; }
+
+.sd-branch-hint {
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  color: var(--text-mid);
+}
+.sd-branch-hint.subtle { color: var(--text-ghost); }
+/* A trailing clause inside the hint rather than a paragraph beneath it, so a
+   secondary detail costs a few words instead of a row. */
+.sd-hint-more { color: var(--text-ghost); }
+.sd-branch-error {
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  color: var(--red);
+}
+
+/* ── Option toggle rows (fetch, secure) ──────────────────────────────────── */
+/* Side by side. Two independent switches, each a line of label and a line of
+   explanation, stacked into two full-width rows of a dialog that was running
+   off the screen. At 600px each still has ~250px for its hint, which is what
+   the text was already wrapping to. `1fr 1fr` regardless of count, so the
+   secure toggle keeps its position when the fetch one is absent. */
+.sd-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  align-items: start;
+}
+.sd-toggle {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 12px;
+  background: var(--bg-window);
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: border-color 0.12s ease-out;
+}
+.sd-toggle:hover { border-color: var(--text-low); }
+.sd-toggle.disabled { opacity: 0.5; cursor: default; }
+.sd-toggle.disabled:hover { border-color: var(--border-subtle); }
+.sd-toggle input[type="checkbox"] {
+  accent-color: var(--action);
+  cursor: inherit;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+.sd-toggle-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sd-toggle-label {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  font-weight: var(--weight-strong);
+  color: var(--text-hi);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+/* The container runtime's tag: reassurance that the jail is available, so it
+   wears ok rather than the interaction colour — same call as .ws-jail-badge. */
+.sd-toggle-tag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--weight-strong);
+  letter-spacing: var(--tracking-wide);
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok) 28%, transparent);
+  padding: 1px 5px;
+  border-radius: 999px;
+}
+.sd-toggle-hint {
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  color: var(--text-mid);
+  line-height: 1.35;
+}
+
+/* What running unjailed actually means. Spans the options grid because it is a
+   consequence of the choice above rather than another option beside it, and
+   wears --yellow: this is the attention colour, not the failure one. Nothing
+   has gone wrong, the user is being told what they just chose. */
+.sd-warn {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 12px;
+  background: color-mix(in srgb, var(--yellow) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--yellow) 30%, transparent);
+  border-radius: 7px;
+}
+.sd-warn-title {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  font-weight: var(--weight-strong);
+  color: var(--yellow);
+}
+.sd-warn-body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  color: var(--text-mid);
+  line-height: 1.4;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+.sd-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 22px;
+  /* The rule above already separates the footer; 16px of air on top of a
+     border was doing the job twice. */
+  margin-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+.sd-foot-keys {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-ghost);
+}
+.sd-foot-spacer { flex: 1; }
+.sd-btn-ghost {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-mid);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: border-color 0.12s ease-out, color 0.12s ease-out;
+}
+.sd-btn-ghost:hover { border-color: var(--text-low); color: var(--text-hi); }
+.sd-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-caps);
+  color: var(--bg-window);
+  background: var(--action-fill);
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: opacity 0.12s ease-out;
+}
+.sd-btn-primary:hover:not(:disabled) { opacity: 0.9; }
+.sd-btn-primary:disabled { opacity: 0.4; cursor: default; }
+.sd-btn-primary .sd-kbd {
+  background: color-mix(in srgb, var(--bg-window) 22%, transparent);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: var(--fs-xs);
+}
