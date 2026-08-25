@@ -15,8 +15,8 @@ your coding agents, in formation</p>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-black" alt="Platform: macOS (Apple Silicon)">
-  <a href="https://github.com/theflock-labs/flock-code/releases"><img src="https://img.shields.io/github/v/release/theflock-labs/flock-code" alt="Latest release"></a>
-  <a href="https://github.com/theflock-labs/flock-code/stargazers"><img src="https://img.shields.io/github/stars/theflock-labs/flock-code" alt="GitHub stars"></a>
+  <a href="https://github.com/theflock-labs/flock-code/releases"><img src="https://img.shields.io/github/v/release/theflock-labs/flock-code?cacheSeconds=3600" alt="Latest release"></a>
+  <a href="https://github.com/theflock-labs/flock-code/stargazers"><img src="https://img.shields.io/github/stars/theflock-labs/flock-code?cacheSeconds=3600" alt="GitHub stars"></a>
 </p>
 
 <p align="center">
