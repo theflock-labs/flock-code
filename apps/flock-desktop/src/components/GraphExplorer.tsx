@@ -1,10 +1,11 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { graphListNodes, graphNodeNeighbors, graphSubgraph, type GraphKgNode, type GraphNeighbor, type GraphSubgraph } from "../lib/tauri";
-import { getGraphUrl } from "../lib/graphSettings";
+import { graphListNodes, graphNodeNeighbors, graphSubgraph, graphRecall, type GraphKgNode, type GraphNeighbor, type GraphSubgraph, type RecallReport } from "../lib/tauri";
+import { getGraphUrl, getGraphExplorerView, setGraphExplorerView, type GraphExplorerView } from "../lib/graphSettings";
 import ModalCloseButton from "./ModalCloseButton";
 import GraphRecallView from "./GraphRecallView";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { DiamondIcon } from "./statusIcons";
+import "./GraphExplorer.css";
 
 // The 3D graph pulls in three.js (~1.4MB). Load it only when the graph view is
 // actually opened, so it stays off the app's startup path.
@@ -32,18 +33,16 @@ const KIND_COLOR: Record<string, string> = {
 const colorFor = (kind: string) => KIND_COLOR[kind] ?? "var(--text-mid)";
 
 /**
- * Phase 1 Graph Explorer: a structured browser over the flock knowledge
- * graph, presented as a large modal in the app's own design language. A
- * catalog of nodes (grouped by kind) on the left; a record-style detail pane
- * on the right that shows the selected node's body and its typed connections
- * as clickable chips — so you can walk the graph edge by edge. Phase 2 layers
- * a hand-rolled force-directed view over the same data.
+ * Browse recent knowledge, search it, and follow the selected record's
+ * connections and actual recall evidence. List ordering comes from the graph:
+ * recency for browsing and hybrid search order for queries.
  */
 export default function GraphExplorer({ workspaceId, workspaceName, onClose }: Props) {
-  const [view, setView] = useState<"list" | "graph" | "recall">("graph");
-  // Default to the full graph (every workspace) rather than scoping to the
-  // focused one — the explorer opens on the whole universe; the toggle narrows.
-  const [scopeToWs, setScopeToWs] = useState<boolean>(false);
+  const [view, setViewState] = useState<GraphExplorerView>(getGraphExplorerView);
+  const setView = (next: GraphExplorerView) => { setViewState(next); setGraphExplorerView(next); };
+  const [scopeToWs, setScopeToWs] = useState<boolean>(workspaceId !== null);
+  const [retry, setRetry] = useState(0);
+  const [recallFact, setRecallFact] = useState<{ id: string; label: string } | null>(null);
   const [kind, setKind] = useState<Kind | null>(null);
   const [query, setQuery] = useState("");
   const [nodes, setNodes] = useState<GraphKgNode[]>([]);
@@ -53,10 +52,10 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [neighbors, setNeighbors] = useState<GraphNeighbor[]>([]);
-  const selected = useMemo(
-    () => nodes.find((n) => n.id === selectedId) ?? graph?.nodes.find((n) => n.id === selectedId) ?? null,
-    [nodes, graph, selectedId],
-  );
+  const [selected, setSelected] = useState<GraphKgNode | null>(null);
+  const neighborRequest = useRef(0);
+  const [neighborStatus, setNeighborStatus] = useState<"loading" | "ready" | "error">("ready");
+  const scopeId = scopeToWs ? workspaceId : null;
   const modalRef = useRef<HTMLDivElement>(null);
   useFocusTrap(modalRef);
 
@@ -66,58 +65,72 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const list = await graphListNodes(
-        { workspaceId: scopeToWs ? workspaceId : null, kind, query: query.trim() || null, limit: 250 },
-        getGraphUrl(),
-      );
-      setNodes(list);
-      setOffline(false);
-    } catch {
-      setOffline(true);
-      setNodes([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [scopeToWs, workspaceId, kind, query]);
-
   useEffect(() => {
-    const t = setTimeout(load, query ? 220 : 0);
-    return () => clearTimeout(t);
-  }, [load, query]);
+    if (view !== "list") return;
+    let cancelled = false;
+    setLoading(true);
+    setNodes([]);
+    setOffline(false);
+    const timer = setTimeout(() => {
+      graphListNodes(
+        { workspaceId: scopeId, kind, query: query.trim() || null, limit: 250 },
+        getGraphUrl(),
+      ).then((list) => {
+        if (!cancelled) { setNodes(list); setLoading(false); }
+      }).catch(() => {
+        if (!cancelled) { setOffline(true); setLoading(false); }
+      });
+    }, query ? 220 : 0);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [view, scopeId, kind, query, retry]);
 
   // Graph view pulls the whole scoped subgraph (nodes + edges) once; search and
   // kind filters then highlight/dim within it rather than refetching.
   useEffect(() => {
     if (view !== "graph") return;
     let cancelled = false;
-    graphSubgraph(scopeToWs ? workspaceId : null, 250, getGraphUrl())
+    setGraph(null);
+    setOffline(false);
+    graphSubgraph(scopeId, 250, getGraphUrl())
       .then((g) => { if (!cancelled) { setGraph(g); setOffline(false); } })
       .catch(() => { if (!cancelled) setOffline(true); });
     return () => { cancelled = true; };
-  }, [view, scopeToWs, workspaceId]);
+  }, [view, scopeId, retry]);
 
   const openNode = useCallback(async (id: string) => {
+    const node = (view === "graph" ? graph?.nodes : nodes)?.find((n) => n.id === id)
+      ?? neighbors.find((n) => n.node.id === id)?.node;
+    if (!node) return;
+    const request = ++neighborRequest.current;
     setSelectedId(id);
+    setSelected(node);
     setNeighbors([]);
+    setNeighborStatus("loading");
     try {
-      setNeighbors(await graphNodeNeighbors(id, getGraphUrl()));
-    } catch { /* engine may be down; the node record still renders */ }
-  }, []);
+      const result = await graphNodeNeighbors(id, getGraphUrl());
+      if (request === neighborRequest.current) { setNeighbors(result); setNeighborStatus("ready"); }
+    } catch {
+      if (request === neighborRequest.current) setNeighborStatus("error");
+    }
+  }, [nodes, graph, neighbors, view]);
 
   const closeNode = useCallback(() => {
+    neighborRequest.current += 1;
     setSelectedId(null);
+    setSelected(null);
     setNeighbors([]);
   }, []);
 
-  // Group the catalog by kind (preserving KINDS order) for a structured read.
-  const groups = useMemo(() => {
-    const by = new Map<string, GraphKgNode[]>();
-    for (const n of nodes) (by.get(n.kind) ?? by.set(n.kind, []).get(n.kind)!).push(n);
-    return KINDS.filter((k) => by.has(k)).map((k) => [k, by.get(k)!] as const);
-  }, [nodes]);
+  useEffect(() => {
+    closeNode();
+    setRecallFact(null);
+    return () => { neighborRequest.current += 1; };
+  }, [scopeId, closeNode]);
+
+  const offlineMessage = <div className="gx-empty" role="status">
+    The graph engine is offline.<br />Start it from the sidebar to explore.
+    <button className="gx-retry" onClick={() => setRetry((n) => n + 1)}>Try again</button>
+  </div>;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -128,19 +141,20 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
           <div className="step">Graph</div>
           <div className="title">Graph Explorer</div>
           <div className="gx-subtitle">The shared memory your agents write as they work.</div>
+          <div className="gx-scope-label">Scope: <strong>{scopeId ? workspaceName || "This workspace" : "All workspaces"}</strong>{scopeId && view !== "recall" && " + shared knowledge"}</div>
         </div>
 
         <div className="gx-controls">
           <div className="gx-view-toggle">
-            <button className={`gx-view-opt${view === "list" ? " active" : ""}`} onClick={() => setView("list")} title="Catalog">
+            <button className={`gx-view-opt${view === "list" ? " active" : ""}`} onClick={() => { setRecallFact(null); setView("list"); }} aria-pressed={view === "list"} title="Recent knowledge">
               <ListIcon /> List
             </button>
-            <button className={`gx-view-opt${view === "graph" ? " active" : ""}`} onClick={() => setView("graph")} title="Force-directed map">
+            <button className={`gx-view-opt${view === "graph" ? " active" : ""}`} onClick={() => { setRecallFact(null); setView("graph"); }} aria-pressed={view === "graph"} title="Force-directed map">
               <MapIcon /> Graph
             </button>
             {/* The read side. List and Graph both show what has been written;
                 only this one shows whether any of it came back out. */}
-            <button className={`gx-view-opt${view === "recall" ? " active" : ""}`} onClick={() => setView("recall")} title="What grounding surfaced to your agents">
+            <button className={`gx-view-opt${view === "recall" ? " active" : ""}`} onClick={() => { setRecallFact(null); setView("recall"); }} aria-pressed={view === "recall"} title="What grounding surfaced to your agents">
               <RecallIcon /> Recall
             </button>
           </div>
@@ -150,6 +164,7 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
             <SearchIcon />
             <input
               className="gx-search"
+              aria-label="Search shared memory"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={view === "graph" ? "Highlight nodes…" : "Search decisions, attempts, files, notes…"}
@@ -160,11 +175,11 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
           </div>
           {workspaceId && (
             <div className="gx-scope-toggle">
-              <button className={`gx-scope-opt${scopeToWs ? " active" : ""}`} onClick={() => setScopeToWs(true)}>
+              <button className={`gx-scope-opt${scopeToWs ? " active" : ""}`} onClick={() => setScopeToWs(true)} aria-pressed={scopeToWs} title={workspaceName || "This workspace"}>
                 {workspaceName || "This workspace"}
               </button>
-              <button className={`gx-scope-opt${!scopeToWs ? " active" : ""}`} onClick={() => setScopeToWs(false)}>
-                Whole graph
+              <button className={`gx-scope-opt${!scopeToWs ? " active" : ""}`} onClick={() => setScopeToWs(false)} aria-pressed={!scopeToWs}>
+                All workspaces
               </button>
             </div>
           )}
@@ -187,14 +202,14 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
         </div>
 
         {view === "recall" ? (
-          <div className="gx-body">
-            <GraphRecallView workspaceId={scopeToWs ? workspaceId : null} />
+          <div className="gx-body gx-body-recall">
+            <GraphRecallView workspaceId={scopeId} fact={recallFact} onClearFact={() => setRecallFact(null)} />
           </div>
         ) : (
         <div className={`gx-body${view === "graph" ? " graph" : ""}`}>
           {view === "graph" ? (
             offline ? (
-              <div className="gx-canvas-wrap"><div className="gx-empty">The graph engine is offline.<br />Start it from the sidebar to explore.</div></div>
+              <div className="gx-canvas-wrap">{offlineMessage}</div>
             ) : !graph ? (
               <div className="gx-canvas-wrap"><div className="gx-empty">Laying out the graph…</div></div>
             ) : graph.nodes.length === 0 ? (
@@ -214,9 +229,9 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
               </Suspense>
             )
           ) : (
-          <div className="gx-catalog">
+          <div className="gx-catalog" aria-busy={loading}>
             {offline ? (
-              <div className="gx-empty">The graph engine is offline.<br />Start it from the sidebar to explore.</div>
+              offlineMessage
             ) : loading && nodes.length === 0 ? (
               <div className="gx-empty">Loading…</div>
             ) : nodes.length === 0 ? (
@@ -224,30 +239,25 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
                 {query ? <>No matches for “{query}”.</> : <>Nothing recorded yet.<br />Agents write here as they work.</>}
               </div>
             ) : (
-              groups.map(([k, list]) => (
-                <div className="gx-group" key={k}>
-                  <div className="gx-group-head">
-                    <span className="gx-group-dot" style={{ background: colorFor(k) }} />
-                    <span className="gx-group-name">{k}</span>
-                    <span className="gx-group-count">{list.length}</span>
-                  </div>
-                  {list.map((n) => (
-                    <button
-                      key={n.id}
-                      className={`gx-row${selectedId === n.id ? " active" : ""}`}
-                      onClick={() => openNode(n.id)}
-                    >
-                      <span className="gx-row-rail" style={{ background: colorFor(n.kind) }} />
-                      <span className="gx-row-main">
-                        <span className="gx-row-label">{n.label}</span>
-                        <span className="gx-row-meta">
-                          {n.created_by_agent ? `${n.created_by_agent} · ` : ""}{relTime(n.created_at)}
-                        </span>
+              <>
+                <div className="gx-catalog-label">{query.trim() ? "Search results" : "Recently updated"} · {nodes.length}{nodes.length === 250 ? "+" : ""}</div>
+                {nodes.map((n) => (
+                  <button
+                    key={n.id}
+                    className={`gx-row${selectedId === n.id ? " active" : ""}`}
+                    onClick={() => openNode(n.id)}
+                    aria-pressed={selectedId === n.id}
+                  >
+                    <span className="gx-row-rail" style={{ background: colorFor(n.kind) }} />
+                    <span className="gx-row-main">
+                      <span className="gx-row-label">{n.label}</span>
+                      <span className="gx-row-meta">
+                        {n.kind} · {n.created_by_agent ? `${n.created_by_agent} · ` : ""}{relTime(n.updated_at)}
                       </span>
-                    </button>
-                  ))}
-                </div>
-              ))
+                    </span>
+                  </button>
+                ))}
+              </>
             )}
           </div>
           )}
@@ -259,7 +269,8 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
                 {view === "graph" ? "Click a node to read it and walk its connections." : "Select a node to read it and walk its connections."}
               </div>
             ) : (
-              <NodeDetail node={selected} neighbors={neighbors} onOpen={openNode} />
+              <NodeDetail node={selected} neighbors={neighbors} neighborStatus={neighborStatus} onOpen={openNode} workspaceId={scopeId}
+                onRecall={() => { setRecallFact({ id: selected.id, label: selected.label }); setView("recall"); }} />
             )}
           </div>
         </div>
@@ -269,10 +280,13 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
   );
 }
 
-function NodeDetail({ node, neighbors, onOpen }: {
+function NodeDetail({ node, neighbors, neighborStatus, onOpen, workspaceId, onRecall }: {
   node: GraphKgNode;
   neighbors: GraphNeighbor[];
+  neighborStatus: "loading" | "ready" | "error";
   onOpen: (id: string) => void;
+  workspaceId: string | null;
+  onRecall: () => void;
 }) {
   const groups = useMemo(() => {
     const by = new Map<string, GraphNeighbor[]>();
@@ -316,11 +330,15 @@ function NodeDetail({ node, neighbors, onOpen }: {
         </div>
       )}
 
+      <NodeRecallEvidence nodeId={node.id} workspaceId={workspaceId} onRecall={onRecall} />
+
       <div className="gx-record-section">
         <div className="gx-section-label">
           Connections{neighbors.length > 0 && <span className="gx-section-count">{neighbors.length}</span>}
         </div>
-        {neighbors.length === 0 ? (
+        {neighborStatus === "loading" ? <div className="gx-none" role="status">Loading connections…</div>
+        : neighborStatus === "error" ? <div className="gx-none">Connections unavailable. The graph engine may be offline.</div>
+        : neighbors.length === 0 ? (
           <div className="gx-none">No edges recorded for this node.</div>
         ) : (
           <div className="gx-edges">
@@ -350,6 +368,36 @@ function NodeDetail({ node, neighbors, onOpen }: {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function NodeRecallEvidence({ nodeId, workspaceId, onRecall }: { nodeId: string; workspaceId: string | null; onRecall: () => void }) {
+  const [report, setReport] = useState<RecallReport | null>(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setReport(null);
+    setError(false);
+    graphRecall(workspaceId, 30, getGraphUrl())
+      .then((data) => { if (live) setReport(data); })
+      .catch(() => { if (live) setError(true); });
+    return () => { live = false; };
+  }, [workspaceId]);
+  // The backend returns the latest 40 passes irrespective of its stats window.
+  const since = Date.now() - 30 * 86400000;
+  const matches = report?.passes.filter((pass) => Date.parse(pass.ts) >= since && pass.facts.some((fact) => fact.id === nodeId)) ?? [];
+  const latest = matches[0];
+  return (
+    <div className="gx-record-section gx-recall-evidence">
+      <div className="gx-section-label">Recall evidence · last 30 days</div>
+      <div className="gx-none">
+        {error ? "Recall evidence unavailable. The graph engine may be offline."
+          : !report ? "Checking the recent recall log…"
+          : latest ? <>Surfaced to {latest.agent_id || "an unnamed agent"} · {relTime(latest.ts)}. Found in {matches.length} of the recent recorded recalls.</>
+          : "No matching entry in the recent recall log. Older recalls may be outside this limited log."}
+      </div>
+      <button className="gx-recall-link" onClick={onRecall}>View recall evidence for this record →</button>
     </div>
   );
 }

@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { onActivateKey } from "../lib/a11y";
 import type { CheckRun, WorkspaceChecks } from "../lib/tauri";
+import { attentionDuration, paneStatusLabel, type AttentionAgent } from "../lib/agentMonitoring";
+import "../styles/monitoring.css";
+
+export type { AttentionAgent } from "../lib/agentMonitoring";
 
 export type NotificationStatus = "success" | "failure" | "running" | "info";
 
@@ -32,13 +36,6 @@ export interface Notification {
 /** An agent whose live status is blocked on the user right now (awaiting_input
  * / blocked) — distinct from the notification *log*, which only records the
  * moment attention was first raised and can be stale. */
-export interface AttentionAgent {
-  workspaceId: string;
-  paneId: string;
-  name: string;
-  workspaceName: string;
-}
-
 /** Live pane tally, for the headline's fallback. Counted from current pane
  * status at render, never from the event log. */
 export interface AgentTally {
@@ -53,6 +50,8 @@ interface Props {
   agents: AgentTally;
   onOpenPr: () => void;
   onOpenPane: (workspaceId: string, paneId: string) => void;
+  attentionPinned: boolean;
+  onToggleAttentionPin: () => void;
 }
 
 /** Classify a PR's checks into a single overall status. Exported so App.tsx
@@ -78,7 +77,7 @@ function checkClass(c: CheckRun): "success" | "failure" | "running" | "neutral" 
  * plain outline. Click opens a chronological feed of everything that's
  * happened (check pass/fail, new PRs, etc) rather than just a snapshot.
  */
-export default function NotificationsBadge({ checks, notifications, attentionAgents, agents, onOpenPr, onOpenPane }: Props) {
+export default function NotificationsBadge({ checks, notifications, attentionAgents, agents, onOpenPr, onOpenPane, attentionPinned, onToggleAttentionPin }: Props) {
   const [open, setOpen] = useState(false);
   // Persisted with the log itself: the log survives a restart, so a lastSeen
   // that resets to 0 makes every event the user already read count as unread
@@ -136,8 +135,8 @@ export default function NotificationsBadge({ checks, notifications, attentionAge
   // a later "is working" event would otherwise have buried it in the log.
   const attention = attentionAgents.length > 0;
   const attentionText = attentionAgents.length === 1
-    ? `${attentionAgents[0].name} needs input`
-    : `${attentionAgents.length} agents need input`;
+    ? `${attentionAgents[0].name} ${attentionAgents[0].status === "blocked" ? "is blocked" : "needs input"}`
+    : `${attentionAgents.length} agents need attention`;
   const attentionSub = attentionAgents.length === 1 ? attentionAgents[0].workspaceName : undefined;
   const primaryText = attention
     ? attentionText
@@ -154,6 +153,8 @@ export default function NotificationsBadge({ checks, notifications, attentionAge
       <button
         className={`pr-badge${attention ? " pr-badge-attention" : overall ? ` pr-badge-${overall}` : ""}`}
         onClick={toggle}
+        aria-expanded={open}
+        aria-controls="notifications-popover"
         title={attention ? attentionAgents.map((a) => `${a.name} · ${a.workspaceName}`).join("\n") : checks?.pr_title ?? "Notifications"}
       >
         {attention ? (
@@ -190,24 +191,19 @@ export default function NotificationsBadge({ checks, notifications, attentionAge
       {open && (
         <>
         <div className="pr-popover-caret" aria-hidden="true" />
-        <div className="pr-popover">
+        <div className="pr-popover" id="notifications-popover">
           {attention && (
             <div className="pr-popover-attention">
-              <div className="pr-popover-activity-head">Waiting on you</div>
-              {attentionAgents.map((a) => (
-                <button
-                  key={a.paneId}
-                  className="pr-popover-activity-row pr-popover-activity-row-2line pr-popover-attention-row"
-                  onClick={() => { onOpenPane(a.workspaceId, a.paneId); setOpen(false); }}
-                  title={`${a.name} · ${a.workspaceName}`}
-                >
-                  <CheckGlyph status="attention" size={13} />
-                  <span className="pr-popover-activity-body">
-                    <span className="pr-popover-activity-text">{a.name} needs input</span>
-                    <span className="pr-popover-activity-detail">{a.workspaceName}</span>
-                  </span>
+              <div className="attention-section-header">
+                <div className="pr-popover-activity-head">Waiting on you</div>
+                <button type="button" className="attention-pin-button" aria-pressed={attentionPinned}
+                  onClick={() => { onToggleAttentionPin(); setOpen(false); }}>
+                  {attentionPinned ? "Unpin list" : "Pin list"}
                 </button>
-              ))}
+              </div>
+              <AttentionRows agents={attentionAgents} onOpenPane={(workspaceId, paneId) => {
+                onOpenPane(workspaceId, paneId); setOpen(false);
+              }} />
             </div>
           )}
           {checks ? (
@@ -285,6 +281,54 @@ export default function NotificationsBadge({ checks, notifications, attentionAge
         </div>
         </>
       )}
+    </div>
+  );
+}
+
+export function AttentionPanel({ agents, onOpenPane, onUnpin }: {
+  agents: AttentionAgent[];
+  onOpenPane: (workspaceId: string, paneId: string) => void;
+  onUnpin: () => void;
+}) {
+  return (
+    <section className="attention-pinned-panel" aria-label="Pinned attention list">
+      <div className="attention-section-header">
+        <h2>Waiting on you{agents.length > 0 ? ` · ${agents.length}` : ""}</h2>
+        <button type="button" className="attention-pin-button" onClick={onUnpin}>Unpin list</button>
+      </div>
+      {agents.length ? <AttentionRows agents={agents} onOpenPane={onOpenPane} />
+        : <p className="attention-pinned-empty">No agents waiting on you.</p>}
+    </section>
+  );
+}
+
+function AttentionRows({ agents, onOpenPane }: {
+  agents: AttentionAgent[];
+  onOpenPane: (workspaceId: string, paneId: string) => void;
+}) {
+  const [now, setNow] = useState(Date.now);
+  const hasObservedStatus = agents.some((agent) => agent.statusChangedAt);
+  useEffect(() => {
+    if (!hasObservedStatus) return;
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [hasObservedStatus]);
+  return (
+    <div className="attention-row-list">
+      {agents.map((agent) => {
+        const duration = attentionDuration(agent.statusChangedAt, Math.max(now, Date.now()));
+        return (
+          <button type="button" key={agent.paneId} className="attention-row"
+            onClick={() => onOpenPane(agent.workspaceId, agent.paneId)}>
+            <span className="attention-row-task">{agent.task ?? `${agent.name} needs your attention`}</span>
+            <span className="attention-row-place">{agent.name} · {agent.workspaceName}</span>
+            <span className="attention-row-status">{paneStatusLabel(agent.status)}
+              {duration && <span className="attention-row-duration"> · {duration}</span>}
+            </span>
+            <span className="attention-row-hint">{agent.status === "blocked" ? "Open terminal to inspect the blocker" : "Open terminal to respond"}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

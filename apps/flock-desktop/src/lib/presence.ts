@@ -1,224 +1,175 @@
-// `import type` — the SDK is pulled in at connect time by the dynamic import in
-// connectPresence below, never at module scope. Ably is the single heaviest
-// runtime dependency in the app, and nothing about presence is needed to paint
-// the first frame: a signed-out user never connects at all, and a signed-in one
-// connects after the shell is already up. A static import here put all of it in
-// the startup chunk regardless.
 import type Ably from "ably";
-// Imported for use below AND re-exported, so every existing
-// `import { MY_WINDOW_ID } from "./presence"` keeps resolving. A bare
-// `export { ... } from` would re-export without binding it locally, and this
-// module uses it twice.
 import { MY_WINDOW_ID } from "./windowId";
 export { MY_WINDOW_ID };
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface PresenceMember {
-  login: string;
-  agentCount: number;
-}
-
+export interface PresenceMember { login: string; agentCount: number; }
 export type PresenceEvent =
-  | { kind: "online";  login: string; agentCount: number; windowId?: string }
-  | { kind: "offline"; login: string }
-  | { kind: "update";  login: string; agentCount: number; windowId?: string };
-
-/** Coarse health of our own presence connection, for a status light.
- *   connected  → live on the channel (green)
- *   connecting → establishing or transiently dropped, Ably retrying (amber)
- *   failed     → can't connect at all, e.g. presence auth rejected our token
- *                (red). This is the silent case that used to just look like
- *                "all friends offline" with no explanation. */
+  | { kind: "online" | "update"; login: string; agentCount: number; windowId?: string }
+  | { kind: "offline"; login: string };
 export type PresenceStatus = "connecting" | "connected" | "failed";
-
-// ─── Singleton client ─────────────────────────────────────────────────────────
-
-type PresenceData = { agent_count?: number; window_id?: string };
-
+export interface RealtimePeer { id: string; handle: string; presence_sharing: boolean; }
+export interface StreamGrant {
+  stream_id: string; grant_id: string; session_id: string; owner_id: string;
+  viewer_id: string; allow_input: boolean; expires_at: string;
+}
+interface RealtimeContext { identity: RealtimePeer; peers: RealtimePeer[]; streams: StreamGrant[]; }
 let client: Ably.Realtime | null = null;
+let context: RealtimeContext | null = null;
+let authorizationExpires = 0;
 let presenceChannel: Ably.RealtimeChannel | null = null;
-let currentFriends: Set<string> = new Set();
+const channels = new Map<string, Ably.RealtimeChannel>();
+const contextListeners = new Set<() => void>();
+let currentFriends = new Set<string>();
 let onEventHandler: ((e: PresenceEvent) => void) | null = null;
 let onStatusHandler: ((s: PresenceStatus) => void) | null = null;
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+let refreshing: Promise<void> | null = null;
+let agentCount = 0;
+let generation = 0;
+const AUTH_URL = (import.meta as { env?: Record<string, string> }).env?.VITE_ABLY_AUTH_URL || "https://presence-auth.vercel.app/api/auth";
 
-// MY_WINDOW_ID now lives in ./windowId and is re-exported at the top of this
-// file, so every existing `from "./presence"` import still resolves. The move
-// is explained there: it is a uuid with no dependencies, and keeping it in a
-// module that imports the Ably SDK is what stopped presence from ever being
-// code-split.
-
-const AUTH_URL = (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_ABLY_AUTH_URL)
-  || "https://presence-auth.vercel.app/api/auth";
-
-/** Pull the current presence set and re-emit "online" for every friend in it.
- *
- * Presence "enter" events only fire on transitions, so this backfill is how we
- * learn about friends who were already online across a gap we couldn't see:
- * the initial join, a friend added mid-session, and (critically) every
- * reconnect. Ably re-syncs the member map on re-attach but does not replay
- * "enter" for members that were already present, so after a network blip or
- * the hourly token re-auth an online friend would silently look offline until
- * they next changed something. Re-running this on each "connected" keeps the
- * roster from decaying over a long session. Best-effort; safe to call anytime. */
-async function backfillOnlineFriends(): Promise<void> {
-  if (!presenceChannel || !onEventHandler) return;
-  try {
-    const members = await presenceChannel.presence.get();
-    for (const m of members) {
-      if (!currentFriends.has(m.clientId)) continue;
-      const data = m.data as PresenceData | undefined;
-      onEventHandler({ kind: "online", login: m.clientId, agentCount: data?.agent_count ?? 0, windowId: data?.window_id });
+export function getRealtimeIdentity(): RealtimePeer | null { return context?.identity ?? null; }
+export function peerId(handle: string): string | null { return context?.peers.find(p => p.handle === handle)?.id ?? null; }
+export function verifiedHandle(id: string | null | undefined): string | null { return context?.peers.find(p => p.id === id)?.handle ?? null; }
+export function getStreamGrant(streamId: string): StreamGrant | null {
+  if (Date.now() >= authorizationExpires) return null;
+  return context?.streams.find(g => g.stream_id === streamId && Date.parse(g.expires_at) > Date.now()) ?? null;
+}
+export function onRealtimeContext(handler: () => void): () => void {
+  contextListeners.add(handler); return () => { contextListeners.delete(handler); };
+}
+function notifyContext() { for (const f of contextListeners) f(); }
+function emitMember(kind: "online" | "update", id: string, member: Ably.PresenceMessage) {
+  // A channel's owner is the only identity allowed to enter it.
+  if (member.clientId !== id) return;
+  const login = verifiedHandle(id);
+  if (!login || !currentFriends.has(login)) return;
+  const data = member.data as { agent_count?: number; window_id?: string } | undefined;
+  onEventHandler?.({ kind, login, agentCount: typeof data?.agent_count === "number" ? data.agent_count : 0,
+    windowId: typeof data?.window_id === "string" ? data.window_id : undefined });
+}
+async function syncPresenceChannels() {
+  if (!client || !context) return;
+  const wanted = new Map(context.peers.filter(p => p.presence_sharing &&
+    (p.id === context!.identity.id || currentFriends.has(p.handle))).map(p => [p.id, p]));
+  for (const [id, ch] of channels) if (!wanted.has(id)) {
+    ch.presence.unsubscribe();
+    await ch.detach().catch(() => {});
+    channels.delete(id);
+    const login = verifiedHandle(id);
+    if (login) onEventHandler?.({ kind: "offline", login });
+  }
+  presenceChannel = null;
+  for (const [id] of wanted) {
+    let ch = channels.get(id);
+    if (!ch) {
+      ch = client.channels.get(`flock:presence:${id}`);
+      channels.set(id, ch);
+      ch.presence.subscribe("enter", m => emitMember("online", id, m));
+      ch.presence.subscribe("update", m => emitMember("update", id, m));
+      ch.presence.subscribe("leave", m => {
+        const login = verifiedHandle(id);
+        if (m.clientId === id && login && currentFriends.has(login)) onEventHandler?.({ kind: "offline", login });
+      });
     }
-  } catch { /* ignore — best effort */ }
+    if (id === context.identity.id) {
+      presenceChannel = ch;
+      await ch.presence.enter({ agent_count: agentCount, window_id: MY_WINDOW_ID });
+    }
+    for (const member of await ch.presence.get()) emitMember("online", id, member);
+  }
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
+/** Refreshes membership and grants from the server; errors clear local stream
+ * authority. Ably tokens expire within 60s even if a removed peer stays offline. */
+export function refreshAuthorization(): Promise<void> {
+  if (refreshing) return refreshing;
+  const current = client;
+  if (!current) return Promise.reject(new Error("presence is not connected"));
+  refreshing = (async () => {
+    try {
+      await current.auth.authorize();
+      if (client !== current) return;
+      notifyContext();
+      await syncPresenceChannels();
+    } catch (error) {
+      if (client === current) { context = null; notifyContext(); onStatusHandler?.("failed"); }
+      throw error;
+    } finally { refreshing = null; }
+  })();
+  return refreshing;
+}
 
-/** Connect to Ably and join the global presence channel.
- *
- * `getToken` is called on every Ably (re)auth rather than capturing a token
- * once: flock ID access tokens expire hourly, so the auth service needs a
- * fresh one each time. Pass a getter returning the current Supabase access
- * token (or a GitHub token on legacy installs — the auth service takes both). */
 export async function connectPresence(
-  getToken: () => Promise<string>,
-  friends: string[],
-  agentCount: number,
-  onEvent: (e: PresenceEvent) => void,
-  onStatus?: (s: PresenceStatus) => void,
+  getToken: () => Promise<string>, friends: string[], count: number,
+  onEvent: (e: PresenceEvent) => void, onStatus?: (s: PresenceStatus) => void,
 ): Promise<void> {
-  // Disconnect any existing session first
   disconnectPresence();
-  currentFriends = new Set(friends);
-  onEventHandler = onEvent;
-  onStatusHandler = onStatus ?? null;
+  const epoch = generation;
+  currentFriends = new Set(friends); agentCount = count;
+  onEventHandler = onEvent; onStatusHandler = onStatus ?? null;
   onStatusHandler?.("connecting");
-
-  // The one place the SDK is used as a value, which is why the module-scope
-  // import above can be type-only. Loaded here, on the way to a connection that
-  // is about to be made anyway — the await costs nothing next to the round trip
-  // to the auth endpoint that follows it.
   const AblyRuntime = (await import("ably")).default;
-
-  client = new AblyRuntime.Realtime({
-    authUrl: AUTH_URL,
-    authMethod: "POST",
-    authHeaders: { "Content-Type": "application/json" },
-    authParams: {},
+  if (epoch !== generation) return;
+  const created = new AblyRuntime.Realtime({
     authCallback: async (_data, callback) => {
       try {
-        const res = await fetch(AUTH_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token: await getToken() }),
-        });
-        if (!res.ok) throw new Error(`auth failed: ${res.status} ${res.statusText}`);
-        callback(null, await res.json());
-      } catch (e: any) {
-        console.error("[Presence] Auth error:", e.message);
-        callback(e, null);
+        const res = await fetch(AUTH_URL, { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: await getToken() }), signal: AbortSignal.timeout(20_000) });
+        if (!res.ok) throw new Error(`realtime auth failed (${res.status})`);
+        const result = await res.json();
+        if (epoch !== generation) throw new Error("presence disconnected");
+        if (!result.context?.identity?.id || !Array.isArray(result.context.peers) || !Array.isArray(result.context.streams)
+            || result.token?.clientId !== result.context.identity.id) throw new Error("invalid realtime authorization");
+        if (typeof result.token.expires !== "number" || result.token.expires <= Date.now()) throw new Error("expired realtime token");
+        authorizationExpires = Math.min(result.token.expires, Date.now() + 60_000);
+        context = result.context;
+        callback(null, result.token);
+      } catch (e) {
+        if (epoch === generation) { context = null; notifyContext(); }
+        callback(e instanceof Error ? e.message : String(e), null);
       }
     },
   });
-
-  client.connection.on("connected", () => {
+  client = created;
+  created.connection.on("connected", () => {
     onStatusHandler?.("connected");
-    // Re-sync the roster on every (re)connect — not just the first — so friends
-    // who stayed online across a network drop or token re-auth don't decay to
-    // offline. No-op on the very first connect (we back-fill again after enter).
-    backfillOnlineFriends().catch(() => {});
+    void syncPresenceChannels().catch(() => onStatusHandler?.("failed"));
   });
-  // "failed" is terminal (bad token, exhausted retries); "disconnected"/
-  // "suspended" are transient with Ably auto-retrying. Surface the first as a
-  // red light and the rest as amber "connecting" so a rejected presence token
-  // stops masquerading as "all friends offline".
-  client.connection.on("failed", () => {
-    console.error("[Presence] Connection failed");
-    onStatusHandler?.("failed");
-  });
-  client.connection.on("disconnected", () => onStatusHandler?.("connecting"));
-  client.connection.on("suspended", () => onStatusHandler?.("connecting"));
-
-  presenceChannel = client.channels.get("flock:presence");
-
-  presenceChannel.presence.subscribe("enter", (member) => {
-    if (!currentFriends.has(member.clientId)) return;
-    const data = member.data as PresenceData | undefined;
-    onEvent({ kind: "online", login: member.clientId, agentCount: data?.agent_count ?? 0, windowId: data?.window_id });
-  });
-
-  presenceChannel.presence.subscribe("leave", (member) => {
-    if (!currentFriends.has(member.clientId)) return;
-    onEvent({ kind: "offline", login: member.clientId });
-  });
-
-  presenceChannel.presence.subscribe("update", (member) => {
-    if (!currentFriends.has(member.clientId)) return;
-    const data = member.data as PresenceData | undefined;
-    onEvent({ kind: "update", login: member.clientId, agentCount: data?.agent_count ?? 0, windowId: data?.window_id });
-  });
-
-  // Wait for connection before announcing. "failed" is terminal (e.g. the
-  // auth service rejected our token) — reject right away instead of sitting
-  // out the full timeout. Listeners are removed on settle either way so they
-  // don't pile up across reconnect cycles.
+  created.connection.on("failed", () => { context = null; notifyContext(); onStatusHandler?.("failed"); });
+  created.connection.on("disconnected", () => onStatusHandler?.("connecting"));
+  created.connection.on("suspended", () => { context = null; notifyContext(); onStatusHandler?.("connecting"); });
   await new Promise<void>((resolve, reject) => {
-    const conn = client!.connection;
-    const settle = (err?: Error) => {
-      clearTimeout(timeout);
-      conn.off("connected", onConnected);
-      conn.off("failed", onFailed);
-      err ? reject(err) : resolve();
+    const settle = (error?: Error) => {
+      clearTimeout(timeout); created.connection.off("connected", connected); created.connection.off("failed", failed);
+      error ? reject(error) : resolve();
     };
-    const timeout = setTimeout(() => settle(new Error("connection timeout")), 10000);
-    const onConnected = () => settle();
-    const onFailed = () => settle(new Error("presence connection failed"));
-    conn.on("connected", onConnected);
-    conn.on("failed", onFailed);
-    if (conn.state === "connected") settle();
-    else if (conn.state === "failed") settle(new Error("presence connection failed"));
+    const timeout = setTimeout(() => settle(new Error("presence connection timeout")), 25_000);
+    const connected = () => settle();
+    const failed = () => settle(new Error("presence connection failed"));
+    created.connection.on("connected", connected); created.connection.on("failed", failed);
+    if (created.connection.state === "connected") settle();
+    else if (created.connection.state === "failed") failed();
   });
-
-  // Announce ourselves with current agent count and unique window ID
-  await presenceChannel.presence.enter({ agent_count: agentCount, window_id: MY_WINDOW_ID });
-
-  // Sync already-online friends on initial connection
-  await backfillOnlineFriends();
+  if (epoch !== generation) return;
+  await syncPresenceChannels();
+  refreshTimer = setInterval(() => { void refreshAuthorization().catch(() => {}); }, 45_000);
 }
-
-/** Update our own agent count (called whenever panes are spawned or closed). */
-export async function updateAgentCount(count: number): Promise<void> {
-  if (!presenceChannel) return;
-  await presenceChannel.presence.update({ agent_count: count, window_id: MY_WINDOW_ID });
+export async function updateAgentCount(count: number) {
+  agentCount = count;
+  if (presenceChannel) await presenceChannel.presence.update({ agent_count: count, window_id: MY_WINDOW_ID });
 }
-
-/** Update which friends we care about (called when the friend list changes). */
-export function updateFriends(friends: string[]): void {
-  currentFriends = new Set(friends);
-}
-
-/** Re-emit "online" for every tracked friend currently in the presence set.
- * Presence "enter" events only fire on transitions, so a friend who was
- * already online when you added them (or before you connected) would look
- * offline until they next changed something — this backfills that. */
-export async function resyncFriendPresence(): Promise<void> {
-  await backfillOnlineFriends();
-}
-
+export function updateFriends(friends: string[]) { currentFriends = new Set(friends); }
+export async function resyncFriendPresence() { await refreshAuthorization(); }
 export function getAblyClient(): Ably.Realtime | null { return client; }
 export function getPresenceChannel(): Ably.RealtimeChannel | null { return presenceChannel; }
-
-/** Gracefully leave presence and close the connection. */
-export function disconnectPresence(): void {
-  if (presenceChannel) {
-    presenceChannel.presence.leave().catch(() => {});
-    presenceChannel = null;
-  }
-  if (client) {
-    client.close();
-    client = null;
-  }
-  onEventHandler = null;
-  onStatusHandler = null;
+export function disconnectPresence() {
+  generation++;
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = null; refreshing = null;
+  for (const ch of channels.values()) { ch.presence.unsubscribe(); void ch.presence.leave().catch(() => {}); }
+  channels.clear(); presenceChannel = null;
+  context = null; authorizationExpires = 0; notifyContext();
+  client?.close(); client = null;
+  onEventHandler = null; onStatusHandler = null;
 }

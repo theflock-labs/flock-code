@@ -21,25 +21,31 @@ import { getGraphUrl } from "../lib/graphSettings";
  *    forgotten on Wednesday is the most useful row on the page — it says an
  *    agent acted on something the team has since disowned.
  */
-export default function GraphRecallView({ workspaceId }: { workspaceId: string | null }) {
+export default function GraphRecallView({ workspaceId, fact, onClearFact }: {
+  workspaceId: string | null;
+  fact?: { id: string; label: string } | null;
+  onClearFact?: () => void;
+}) {
   const [days, setDays] = useState(30);
+  const [retry, setRetry] = useState(0);
   const [data, setData] = useState<RecallReport | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
     setErr(null);
+    setData(null);
     graphRecall(workspaceId, days, getGraphUrl())
       .then((d) => { if (live) setData(d); })
       .catch((e) => { if (live) setErr(String(e)); });
     return () => { live = false; };
-  }, [workspaceId, days]);
+  }, [workspaceId, days, retry]);
 
   if (err) {
     return (
       <div className="gxr">
         <style>{STYLES}</style>
-        <div className="gxr-empty">The graph engine is offline.</div>
+        <div className="gxr-empty" role="status">The graph engine is offline.<br /><button className="gxr-win" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
       </div>
     );
   }
@@ -52,7 +58,12 @@ export default function GraphRecallView({ workspaceId }: { workspaceId: string |
     );
   }
 
-  const { passes, top, stats } = data;
+  const { stats } = data;
+  // The API's stats/top use `days`, while passes are the latest 40 across all
+  // time. Apply the same window before describing this view or its evidence.
+  const since = Date.now() - days * 86400000;
+  const passes = data.passes.filter((pass) => Date.parse(pass.ts) >= since && (!fact || pass.facts.some((entry) => entry.id === fact.id)));
+  const top = fact ? data.top.filter((entry) => entry.id === fact.id) : data.top;
   // Both figures come from the window the selector names, not from the 40
   // passes the list happens to hold. Counting the rendered rows answered a
   // different question than the one on the button, and it flattered a busy
@@ -87,6 +98,13 @@ export default function GraphRecallView({ workspaceId }: { workspaceId: string |
         </div>
       </div>
 
+      {fact && (
+        <div className="gxr-filter">
+          <span>Recall evidence for <strong>{fact.label}</strong></span>
+          <button className="gxr-win" onClick={onClearFact}>Show all recalls</button>
+        </div>
+      )}
+      {fact && <div className="gxr-caveat">The figures below cover all knowledge in this scope. The log is filtered to this record.</div>}
       <div className="gxr-strip">
         <Stat
           value={
@@ -114,14 +132,14 @@ export default function GraphRecallView({ workspaceId }: { workspaceId: string |
 
       {passes.length === 0 ? (
         <div className="gxr-empty">
-          No recall recorded yet. Grounding logs what it surfaced from the moment
-          an agent's next prompt runs with the graph enabled — passes recorded
-          before that can report their count but not their contents.
+          {fact
+            ? `No matching entry in the recent recall log for “${fact.label}”. The log contains up to 40 recent passes; older recalls may be outside it.`
+            : "No recall entries in the recent log for this window. Grounding records what it surfaced when an agent's prompt runs with the graph enabled. The log holds up to 40 recent passes."}
         </div>
       ) : (
         <div className="gxr-cols">
           <div className="gxr-col">
-            <div className="gxr-col-head">Recent recalls</div>
+            <div className="gxr-col-head">Recent recalls · last {days} days · up to 40 passes</div>
             <div className="gxr-passes">
               {passes.map((p, i) => (
                 <div className={`gxr-pass${p.facts.length === 0 ? " quiet" : ""}`} key={`${p.ts}-${i}`}>
@@ -132,7 +150,7 @@ export default function GraphRecallView({ workspaceId }: { workspaceId: string |
                       {p.facts.length === 0 ? "nothing surfaced" : `${p.facts.length} fact${p.facts.length === 1 ? "" : "s"}`}
                     </span>
                   </div>
-                  {p.facts.map((f) => (
+                  {p.facts.filter((entry) => !fact || entry.id === fact.id).map((f) => (
                     <div className="gxr-fact" key={f.id} title={f.body ?? f.label}>
                       <span className="gxr-fact-kind">{f.kind}</span>
                       <span className="gxr-fact-label">{f.label}</span>
@@ -148,7 +166,7 @@ export default function GraphRecallView({ workspaceId }: { workspaceId: string |
           <div className="gxr-col">
             <div className="gxr-col-head">Most recalled</div>
             {top.length === 0 ? (
-              <div className="gxr-none">Nothing has been recalled in this window.</div>
+              <div className="gxr-none">{fact ? "This record is not in the most-recalled list for this window." : "Nothing has been recalled in this window."}</div>
             ) : (
               <div className="gxr-top">
                 {top.slice(0, 12).map((t) => (
@@ -187,11 +205,14 @@ function relTime(iso: string): string {
 
 const STYLES = `
 .gxr { display: flex; flex-direction: column; gap: 12px; height: 100%; overflow: hidden; padding: 2px 2px 0; }
+.gxr-filter { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border-subtle); color: var(--text-mid); font-size: var(--fs-base); }
+.gxr-filter span { overflow-wrap: anywhere; min-width: 0; }
+.gxr-filter button { flex-shrink: 0; }
 .gxr-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .gxr-lede { font-size: 12px; color: var(--text-mid); line-height: 1.45; max-width: 60ch; }
 .gxr-windows { display: flex; gap: 4px; flex-shrink: 0; }
 .gxr-win {
-  font-family: var(--font-mono); font-size: 10px; padding: 4px 9px; border-radius: 6px; cursor: pointer;
+  font-family: var(--font-mono); font-size: 11px; min-height: 28px; padding: 4px 9px; border-radius: 6px; cursor: pointer;
   background: var(--bg-window); color: var(--text-mid); border: 1px solid var(--border-subtle);
 }
 .gxr-win.on { color: var(--mint); border-color: color-mix(in srgb, var(--mint) 45%, transparent); }

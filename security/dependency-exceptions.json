@@ -1,0 +1,238 @@
+{
+  "release_targets": [
+    "aarch64-apple-darwin"
+  ],
+  "exceptions": [
+    {
+      "id": "RUSTSEC-2026-0195",
+      "package": "quick-xml",
+      "version": "0.39.4",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2026-0195.html"
+    },
+    {
+      "id": "RUSTSEC-2026-0194",
+      "package": "quick-xml",
+      "version": "0.39.4",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2026-0194.html"
+    },
+    {
+      "id": "RUSTSEC-2023-0071",
+      "package": "rsa",
+      "version": "0.9.10",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Unused SQLx MySQL optional dependency: not enabled in the SQLite/Postgres release feature graph.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2023-0071.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0413",
+      "package": "atk",
+      "version": "0.18.2",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0413.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0416",
+      "package": "atk-sys",
+      "version": "0.18.2",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0416.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0412",
+      "package": "gdk",
+      "version": "0.18.2",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0412.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0418",
+      "package": "gdk-sys",
+      "version": "0.18.2",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0418.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0411",
+      "package": "gdkwayland-sys",
+      "version": "0.18.2",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0411.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0417",
+      "package": "gdkx11",
+      "version": "0.18.2",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0417.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0414",
+      "package": "gdkx11-sys",
+      "version": "0.18.2",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0414.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0415",
+      "package": "gtk",
+      "version": "0.18.2",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0415.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0420",
+      "package": "gtk-sys",
+      "version": "0.18.2",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0420.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0419",
+      "package": "gtk3-macros",
+      "version": "0.18.2",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0419.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0436",
+      "package": "paste",
+      "version": "1.0.15",
+      "scope": "upstream-unmaintained",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Required by fastembed/tokenizers proc macros; no supported upstream replacement in the current dependency chain.",
+      "action": "Upgrade fastembed/tokenizers when its supported dependency graph removes paste; reassess by expiry.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0436.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0370",
+      "package": "proc-macro-error",
+      "version": "1.0.4",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0370.html"
+    },
+    {
+      "id": "RUSTSEC-2025-0081",
+      "package": "unic-char-property",
+      "version": "0.9.0",
+      "scope": "upstream-unmaintained",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Required by Tauri 2 tauri-utils/urlpattern; maintenance notice, not a reported vulnerability.",
+      "action": "Track Tauri/urlpattern migration away from UNIC and adopt the first compatible upstream update; reassess by expiry.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2025-0081.html"
+    },
+    {
+      "id": "RUSTSEC-2025-0075",
+      "package": "unic-char-range",
+      "version": "0.9.0",
+      "scope": "upstream-unmaintained",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Required by Tauri 2 tauri-utils/urlpattern; maintenance notice, not a reported vulnerability.",
+      "action": "Track Tauri/urlpattern migration away from UNIC and adopt the first compatible upstream update; reassess by expiry.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2025-0075.html"
+    },
+    {
+      "id": "RUSTSEC-2025-0080",
+      "package": "unic-common",
+      "version": "0.9.0",
+      "scope": "upstream-unmaintained",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Required by Tauri 2 tauri-utils/urlpattern; maintenance notice, not a reported vulnerability.",
+      "action": "Track Tauri/urlpattern migration away from UNIC and adopt the first compatible upstream update; reassess by expiry.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2025-0080.html"
+    },
+    {
+      "id": "RUSTSEC-2025-0100",
+      "package": "unic-ucd-ident",
+      "version": "0.9.0",
+      "scope": "upstream-unmaintained",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Required by Tauri 2 tauri-utils/urlpattern; maintenance notice, not a reported vulnerability.",
+      "action": "Track Tauri/urlpattern migration away from UNIC and adopt the first compatible upstream update; reassess by expiry.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2025-0100.html"
+    },
+    {
+      "id": "RUSTSEC-2025-0098",
+      "package": "unic-ucd-version",
+      "version": "0.9.0",
+      "scope": "upstream-unmaintained",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Required by Tauri 2 tauri-utils/urlpattern; maintenance notice, not a reported vulnerability.",
+      "action": "Track Tauri/urlpattern migration away from UNIC and adopt the first compatible upstream update; reassess by expiry.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2025-0098.html"
+    },
+    {
+      "id": "RUSTSEC-2024-0429",
+      "package": "glib",
+      "version": "0.18.5",
+      "scope": "not-in-release",
+      "owner": "@remiminnebo",
+      "expires": "2026-12-04",
+      "reason": "Only in a non-shipping target or optional dependency; absent from the Apple Silicon release graph. The gate checks this absence on every run.",
+      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
+      "source": "https://rustsec.org/advisories/RUSTSEC-2024-0429.html"
+    }
+  ]
+}

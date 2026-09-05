@@ -1,3 +1,4 @@
+mod config;
 mod env;
 mod protocol;
 mod tools;
@@ -32,12 +33,15 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    // The Postgres role and database names predate the rename and stay: they
-    // are baked into every already-initialized volume, and POSTGRES_USER only
-    // takes effect on a fresh one. Renaming them here would lock existing
-    // graphs out of their own data. Must match the engine's docker-compose.yml.
-    let kg_url = env::var("FLOCK_KG_URL")
-        .unwrap_or_else(|| "postgresql://flock:flock@localhost:15432/flock_kg".into());
+    let kg_url = match config::graph_url() {
+        Ok(url) => url,
+        Err(error) => match std::env::args().nth(1).as_deref() {
+            // Optional hooks must not interrupt an agent when setup is absent.
+            Some("brief") => { println!("{GRAPH_PROTOCOL}"); return Ok(()); }
+            Some("ground" | "endturn") => return Ok(()),
+            _ => return Err(error),
+        },
+    };
 
     // `flock-mcp ground` — one-shot UserPromptSubmit hook mode: read the
     // hook JSON from stdin, print a compact context block for the prompt,
@@ -47,6 +51,15 @@ async fn main() -> Result<()> {
     // have no `--append-system-prompt` equivalent. Everything else is the MCP
     // stdio server.
     match std::env::args().nth(1).as_deref() {
+        // Explicit administrative maintenance for separately provisioned
+        // engines. Never silently select the runtime credential file here.
+        Some("migrate") => {
+            let admin_url = env::var("FLOCK_KG_URL")
+                .ok_or_else(|| anyhow::anyhow!("migrate requires an explicit administrative FLOCK_KG_URL"))?;
+            KnowledgeGraph::migrate_schema(&admin_url).await?;
+            eprintln!("Graph schema is ready");
+            return Ok(());
+        }
         // The three one-shot hook modes run the local embedder off. See
         // `flock_kg::embed::disable`: a process this short-lived can never
         // finish a warm, so the semantic leg was already inert here — and the
@@ -92,7 +105,7 @@ async fn main() -> Result<()> {
     // server once, and the engine may start later. A down engine surfaces
     // as a clear per-tool-call error instead of a boot crash.
     let kg = Arc::new(KnowledgeGraph::connect_lazy(&kg_url)?);
-    tracing::info!("flock-mcp ready (flock Graph at {kg_url})");
+    tracing::info!("flock-mcp ready");
 
     // Best-effort: ensure the telemetry table exists on the live database (the
     // engine's schema.sql only runs on a fresh Docker volume). Spawned so a

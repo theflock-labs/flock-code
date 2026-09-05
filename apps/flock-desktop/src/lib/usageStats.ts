@@ -6,37 +6,25 @@ import { claudeCodeUsage } from "./tauri";
 // one per event. Best-effort throughout: these are social vanity counters, so a
 // failed flush is dropped silently and never blocks the action that produced it.
 
-// Everything here reports machine-wide facts: the hook log the prompt counter
-// is driven from and the ~/.claude transcripts the token totals are summed from
-// belong to the OS user, not to whichever flock ID an instance happens to be
-// signed into. A `tauri dev` build is a second flock on that same machine, so
-// left enabled it credits its (usually test) account with the whole machine's
-// work — every prompt typed in the installed app included. Same reasoning that
-// sends debug builds to ~/.flock-dev in data_dir(): a dev instance has no
-// business writing to the real backend.
-//
-// Set `flock:sync-stats` to "1" in localStorage to report from a dev build
-// anyway. That is the only way to exercise this path while working on it, and
-// it matches how flockId.ts lets a dev point at their own Supabase project.
+// Explicit account consent comes from the server profile. A previous account's
+// choice and the legacy developer override can never opt a new account in.
+let consent = false;
+let consentGeneration = 0;
 const DEV_OVERRIDE_KEY = "flock:sync-stats";
-
-/** The whole decision, as a pure function of the two things the runtime
- *  supplies. Split out from the reads below because `import.meta.env.DEV` is
- *  fixed by the run mode and cannot be stubbed, so this is the only way to
- *  exercise the release-build branch under test. */
-export function shouldReport(isDevBuild: boolean, override: string | null): boolean {
-  return !isDevBuild || override === "1";
+export function shouldReport(isDevBuild: boolean, override: string | null, optedIn = false): boolean {
+  return optedIn && (!isDevBuild || override === "1");
 }
-
 function reportingEnabled(): boolean {
-  const env = (import.meta as { env?: Record<string, unknown> }).env ?? {};
   let override: string | null = null;
-  try {
-    override = localStorage.getItem(DEV_OVERRIDE_KEY);
-  } catch {
-    // No localStorage (a non-browser context): treat as no override.
-  }
-  return shouldReport(env.DEV === true, override);
+  try { override = localStorage.getItem(DEV_OVERRIDE_KEY); } catch { /* private by default */ }
+  return shouldReport((import.meta as { env?: Record<string, unknown> }).env?.DEV === true, override, consent);
+}
+export function setUsageConsent(enabled: boolean): void {
+  if (consent === enabled) return;
+  consentGeneration++;
+  consent = enabled;
+  stopUsageSync();
+  if (enabled) startUsageSync();
 }
 
 interface Pending {
@@ -55,7 +43,7 @@ function hasPending(): boolean {
 
 async function flush(): Promise<void> {
   timer = null;
-  if (!hasPending()) return;
+  if (!hasPending() || !reportingEnabled()) return;
   const d = { prompts: pending.prompts, agents: pending.agents, workspaces: pending.workspaces };
   pending.prompts = 0;
   pending.agents = 0;
@@ -88,9 +76,11 @@ const USAGE_SYNC_INTERVAL_MS = 10 * 60_000;
 let usageSyncTimer: ReturnType<typeof setInterval> | null = null;
 
 async function syncOnce(): Promise<void> {
+  if (!reportingEnabled()) return;
+  const generation = consentGeneration;
   try {
     const u = await claudeCodeUsage();
-    if (!u.available) return;
+    if (!u.available || generation !== consentGeneration || !reportingEnabled()) return;
     // Push the absolute total (kept as max) and stamp today's point in the
     // daily history that the usage chart reads back. Both monotonic snapshots.
     await Promise.all([

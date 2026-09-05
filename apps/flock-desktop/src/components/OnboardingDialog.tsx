@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { OPEN_GRAPH_SETUP_EVENT } from "../lib/graphSettings";
 import ModalCloseButton from "./ModalCloseButton";
@@ -17,7 +17,7 @@ const STEPS: Step[] = [
     step: "WELCOME",
     title: "flock",
     accent: "var(--mint)",
-    body: "A multi-agent coding cockpit — run Claude Code, Grok, opencode, and Codex side by side in tiled terminal panes, backed by a workspace manager that remembers exactly where you left off.",
+    body: "Run Claude Code, Grok, OpenCode, Codex, and Pi side by side in terminal panes, backed by a workspace manager that remembers where you left off.",
     bullets: [
       "Multiple agents, multiple windows, one cockpit",
       "GitHub-native — PRs, checks, and reviews built in",
@@ -28,7 +28,7 @@ const STEPS: Step[] = [
     step: "WORKSPACES & AGENTS",
     title: "One repo, many agents",
     accent: "var(--mint)",
-    body: "Each workspace is tied to a repo and branch. Spawn Claude Code, Grok, opencode, or Codex into split panes and give each one its own task.",
+    body: "Each workspace is tied to a repo and branch. Launch coding agents into split panes and give each one its own task.",
     bullets: [
       "Split panes any direction, zoom one to full-screen and back",
       "Every agent gets a random name (Pluto, Vesper, Astrid…) so you can tell them apart at a glance",
@@ -39,7 +39,7 @@ const STEPS: Step[] = [
     step: "GIT WORKTREES",
     title: "No more branch collisions",
     accent: "var(--yellow)",
-    body: "Turn on \"separate worktrees\" for a workspace and every agent gets its own isolated git worktree instead of sharing one working directory.",
+    body: "Choose New branch in Customize when creating a workspace. Each agent gets its own git worktree, so changes on separate branches stay apart. Existing continues a branch; Current checkout shares the files you already have open.",
     bullets: [
       "Two agents can work on two branches of the same repo at once, safely",
       "Worktrees are cleaned up automatically when their pane closes",
@@ -52,7 +52,7 @@ const STEPS: Step[] = [
     body: "Open PRs for your repo show up in the sidebar automatically, from any author — not just your own.",
     bullets: [
       "Live CI check status in the top bar for the branch you're on",
-      "One click \"review\" checks out a PR's branch and hands it straight to an agent",
+      "Review with agent checks out a PR's branch and starts a local agent review",
       "No manual git juggling to go look at someone else's change",
     ],
   },
@@ -97,14 +97,21 @@ const STEPS: Step[] = [
 
 interface Props {
   onDone: () => void;
+  onStart?: () => void;
+  mode?: "intro" | "tour";
 }
 
-export default function OnboardingDialog({ onDone }: Props) {
+export default function OnboardingDialog({ onDone, onStart, mode = "intro" }: Props) {
   const [index, setIndex] = useState(0);
   const step = STEPS[index];
   const isLast = index === STEPS.length - 1;
   const modalRef = useRef<HTMLDivElement>(null);
   useFocusTrap(modalRef);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onDone(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onDone]);
 
   const next = () => {
     if (isLast) onDone();
@@ -112,9 +119,35 @@ export default function OnboardingDialog({ onDone }: Props) {
   };
   const back = () => setIndex((i) => Math.max(0, i - 1));
 
+  if (mode === "intro") return (
+    <div className="modal-overlay">
+      <div className="modal onboarding-modal" ref={modalRef} role="dialog" aria-modal="true" aria-label="Welcome to flock">
+        <ModalCloseButton onClose={onDone} />
+        <div className="modal-header">
+          <div className="step">Welcome to flock</div>
+          <div className="title">Start with one agent</div>
+        </div>
+        <div className="modal-body">
+          <p className="onboarding-body">Choose a repository and an installed coding agent. Review the branch and execution mode, then give your agent its first task.</p>
+          <ul className="onboarding-bullets">
+            <li><span className="onboarding-bullet-mark">1</span><span>Choose the folder you want to work in.</span></li>
+            <li><span className="onboarding-bullet-mark">2</span><span>Pick an agent. We’ll help you check its installation.</span></li>
+            <li><span className="onboarding-bullet-mark">3</span><span>Launch one agent. Add more panes when you need them.</span></li>
+          </ul>
+          <p className="onboarding-body">Explore worktrees, pull requests, voice, and shared memory later through the feature tour in Quick actions or Settings → About.</p>
+        </div>
+        <div className="modal-footer onboarding-footer">
+          <button className="btn-ghost settings-btn" onClick={onDone}>Explore first</button>
+          <div style={{ flex: 1 }} />
+          <button className="btn-mint-solid" onClick={onStart ?? onDone}>Set up my first agent</button>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div className="modal-overlay">
-      <div className="modal onboarding-modal" ref={modalRef} role="dialog" aria-modal="true" aria-label="Onboarding">
+      <div className="modal onboarding-modal" ref={modalRef} role="dialog" aria-modal="true" aria-label="Feature tour">
         <ModalCloseButton onClose={onDone} />
         <div className="modal-header">
           <div className="onboarding-eyebrow-row">
@@ -171,7 +204,7 @@ export default function OnboardingDialog({ onDone }: Props) {
             <button className="btn-ghost settings-btn" onClick={back}>Back</button>
           )}
           <button className="btn-mint-solid" onClick={next}>
-            {isLast ? "Get Started" : "Next"}
+            {isLast ? "Done" : "Next"}
           </button>
         </div>
       </div>

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, cleanup, screen, act } from "@testing-library/react";
+import { render, cleanup, screen, act, fireEvent } from "@testing-library/react";
 import type { RecallReport } from "../lib/tauri";
 
 // Recall is the only place in the app that reports whether the graph is being
@@ -125,5 +125,33 @@ describe("GraphRecallView", () => {
   it("reads the configured graph, not the default local one", async () => {
     await show(report());
     expect(recall).toHaveBeenCalledWith("ws-1", 30, "postgresql://local");
+  });
+
+  it("filters the capped pass log to the selected time window", async () => {
+    const old = new Date(Date.now() - 45 * 86400000).toISOString();
+    const data = report({ passes: [{ ts: old, workspace_id: "ws-1", agent_id: "a", facts: [fact({ label: "older decision" })] }] });
+    await show(data);
+    expect(screen.queryByText("older decision")).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "90d" })); });
+    expect(screen.getByText("older decision")).toBeTruthy();
+  });
+
+  it("clears the previous workspace's log while loading and ignores its late result", async () => {
+    let resolveOld!: (value: RecallReport) => void;
+    recall.mockImplementation((workspace) => workspace === "old" ? new Promise<RecallReport>((resolve) => { resolveOld = resolve; }) : Promise.resolve(report()));
+    const ui = render(<GraphRecallView workspaceId="old" />);
+    await act(async () => { ui.rerender(<GraphRecallView workspaceId="new" />); });
+    await act(async () => { resolveOld(report({ passes: [{ ts: new Date().toISOString(), workspace_id: "old", agent_id: "a", facts: [fact({ label: "stale workspace fact" })] }] })); });
+    expect(screen.queryByText("stale workspace fact")).toBeNull();
+    expect(screen.getByText(/No recall entries in the recent log/)).toBeTruthy();
+  });
+
+  it("shows retry on an offline engine and recovers without stale errors", async () => {
+    recall.mockRejectedValueOnce(new Error("offline")).mockResolvedValue(report());
+    await act(async () => { render(<GraphRecallView workspaceId="ws-1" />); });
+    expect(screen.getByText(/The graph engine is offline/)).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Try again" })); });
+    expect(screen.queryByText(/The graph engine is offline/)).toBeNull();
+    expect(screen.getByText(/No recall entries in the recent log/)).toBeTruthy();
   });
 });

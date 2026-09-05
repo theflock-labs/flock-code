@@ -1,0 +1,27 @@
+.graph-modal .gx-controls { flex-wrap: wrap; }
+.graph-modal .gx-body.gx-body-recall { display: block; padding: 16px 28px; }
+.graph-modal .gx-search-wrap { min-width: 180px; }
+.graph-modal [hidden] { display: none; }
+.graph-modal .gx-scope-label { margin-top: 7px; color: var(--text-mid); font-size: var(--fs-base); overflow-wrap: anywhere; }
+.graph-modal .gx-scope-label strong { color: var(--text-hi); }
+.graph-modal .gx-scope-opt,
+.graph-modal .gx-view-opt,
+.graph-modal .gx-kind-chip { min-height: 28px; }
+.graph-modal .gx-catalog-label { padding: 6px 12px 10px; color: var(--text-mid); font-size: var(--fs-base); }
+.graph-modal .gx-row-label { white-space: normal; overflow-wrap: anywhere; }
+.graph-modal .gx-row-meta { color: var(--text-low); line-height: 1.4; }
+.graph-modal .gx-retry,
+.graph-modal .gx-recall-link,
+.graph-recovery-button { color: var(--action); background: transparent; border: 0; cursor: pointer; font: inherit; min-height: 28px; padding: 4px 0; text-align: left; }
+.graph-modal .gx-retry { display: block; margin: 10px auto 0; }
+.graph-modal .gx-recall-evidence .gx-none { line-height: 1.5; }
+.graph-modal .gx-recall-link { font-size: var(--fs-base); margin-top: 6px; }
+.graph-modal .gx-retry:focus-visible,
+.graph-modal .gx-recall-link:focus-visible,
+.graph-modal .gxr-win:focus-visible,
+.graph-recovery-button:focus-visible { outline: 2px solid var(--action); outline-offset: 3px; }
+@media (max-width: 760px) {
+  .graph-modal .gx-body:not(.graph) { grid-template-columns: minmax(180px, 40%) minmax(0, 1fr); }
+  .graph-modal .gx-controls { gap: 8px; }
+  .graph-modal .gx-scope-toggle { max-width: 100%; }
+}

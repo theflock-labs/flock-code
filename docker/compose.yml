@@ -1,3 +1,4 @@
+# Legacy development stack. Start/upgrade with python3 docker/secure-local-graph.py.
 # Phase 2: Knowledge layer (Postgres + pgvector + Apache AGE)
 # Not used in Phase 0. Brought up by `flock` on first knowledge-layer access.
 services:
@@ -10,10 +11,12 @@ services:
     container_name: flock-pg
     environment:
       POSTGRES_USER: flock
-      POSTGRES_PASSWORD: flock
+      POSTGRES_PASSWORD_FILE: /run/secrets/admin-password
       POSTGRES_DB: flock_kg
     ports:
-      - "15432:5432"
+      - "127.0.0.1:15432:5432"
+    secrets:
+      - admin-password
     volumes:
       - flock-pg-data:/var/lib/postgresql/data
       - ./init:/docker-entrypoint-initdb.d
@@ -25,3 +28,7 @@ services:
 
 volumes:
   flock-pg-data:
+
+secrets:
+  admin-password:
+    file: ./.graph-secrets/admin-password

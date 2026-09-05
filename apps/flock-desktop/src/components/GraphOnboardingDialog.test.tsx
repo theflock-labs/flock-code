@@ -18,15 +18,17 @@ import type { GraphStatus } from "../lib/tauri";
 
 const status = vi.fn<(...a: unknown[]) => Promise<GraphStatus>>();
 const up = vi.fn<() => Promise<void>>();
+const graphEnabled = vi.fn(() => true);
+const setEnabled = vi.fn();
 
 vi.mock("../lib/tauri", () => ({
   graphStatus: (...a: unknown[]) => status(...a),
   graphUp: () => up(),
 }));
 vi.mock("../lib/graphSettings", () => ({
-  getGraphUrl: () => "postgresql://flock:flock@127.0.0.1:15432/flock_kg",
-  getGraphEnabled: () => true,
-  setGraphEnabled: () => {},
+  getGraphUrl: () => "",
+  getGraphEnabled: () => graphEnabled(),
+  setGraphEnabled: (enabled: boolean) => setEnabled(enabled),
   isTeamGraph: () => false,
 }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => {}) }));
@@ -40,7 +42,7 @@ const st = (over: Partial<GraphStatus> = {}): GraphStatus => ({
   container_running: false,
   db_reachable: false,
   mcp_binary: "/Applications/flock.app/Contents/MacOS/flock-mcp",
-  kg_url: "postgresql://flock:flock@127.0.0.1:15432/flock_kg",
+  kg_url: "",
   ...over,
 });
 
@@ -57,6 +59,8 @@ describe("GraphOnboardingDialog", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     status.mockReset();
     up.mockReset();
+    graphEnabled.mockReturnValue(true);
+    setEnabled.mockReset();
   });
   afterEach(() => { vi.useRealTimers(); cleanup(); });
 
@@ -107,6 +111,29 @@ describe("GraphOnboardingDialog", () => {
 
     // Not left to the 2s poll: the pills must reflect the click immediately.
     expect(status.mock.calls.length).toBeGreaterThan(before);
+    expect(setEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it("can repair a running engine with unavailable credentials", async () => {
+    status.mockResolvedValue(st({ docker_ready: true, container_running: true }));
+    up.mockResolvedValue(undefined);
+    await atEngineStep();
+    fireEvent.click(screen.getByRole("button", { name: "Repair engine access" }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(up).toHaveBeenCalledTimes(1);
+    expect(setEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it("does not re-enable graph if it was disabled while provisioning", async () => {
+    status.mockResolvedValue(st({ docker_ready: true }));
+    let finish!: () => void;
+    up.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    await atEngineStep();
+    setEnabled.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Start the engine" }));
+    graphEnabled.mockReturnValue(false);
+    await act(async () => finish());
+    expect(setEnabled).not.toHaveBeenCalled();
   });
 
   it("warns that secure mode strips the graph tools", async () => {

@@ -102,9 +102,9 @@ export default function ProvenanceSection() {
 
   return (
     <div className="settings-section">
-      <div className="settings-section-header">Provenance</div>
+      <div className="settings-section-header">Session records</div>
       <p className="settings-hint" style={{ marginTop: 0 }}>
-        Every agent flock has run on this machine, with who ran it, where, for how long,
+        Provenance for every agent flock has run on this machine: who ran it, where, for how long,
         and what it cost. Export it as CSV for a spreadsheet or JSON for a system that
         wants the full status timeline.
       </p>

@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { graphOverview, type GraphOverview } from "../lib/tauri";
-import { getGraphEnabled, onGraphEnabledChange, getGraphUrl, isTeamGraph, OPEN_GRAPH_SETUP_EVENT, OPEN_GRAPH_EXPLORER_EVENT } from "../lib/graphSettings";
+import { getGraphEnabled, onGraphEnabledChange, getGraphUrl, isTeamGraph, OPEN_GRAPH_SETUP_EVENT, OPEN_GRAPH_EXPLORER_EVENT, type GraphExplorerOpenDetail } from "../lib/graphSettings";
 import CollapsibleSection from "./CollapsibleSection";
 import IconButton from "./IconButton";
 import InsightsPanel from "./InsightsPanel";
 import { PopOutIcon } from "./paneIcons";
 import { isWindowActive, onWindowActiveChange } from "../lib/windowActive";
 import { BlockedIcon } from "./statusIcons";
+import "./GraphExplorer.css";
 
 interface Props {
   /** Focused workspace id — stats are scoped to it. */
@@ -27,10 +28,14 @@ export default function GraphSidebarCard({ workspaceId }: Props) {
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
+    let request = 0;
+    setOverview(null);
+    setOffline(false);
     const poll = () => {
+      const current = ++request;
       graphOverview(workspaceId ?? undefined, getGraphUrl())
-        .then((o) => { if (!cancelled) { setOverview(o); setOffline(false); } })
-        .catch(() => { if (!cancelled) setOffline(true); });
+        .then((o) => { if (!cancelled && current === request) { setOverview(o); setOffline(false); } })
+        .catch(() => { if (!cancelled && current === request) setOffline(true); });
     };
     poll();
     // Pause the overview poll (a local or team-hosted graph query) while the
@@ -87,7 +92,7 @@ export default function GraphSidebarCard({ workspaceId }: Props) {
               className="add-btn ghost"
               icon={<PopOutIcon size={13} />}
               label="Open the Graph Explorer"
-              onClick={() => window.dispatchEvent(new Event(OPEN_GRAPH_EXPLORER_EVENT))}
+              onClick={() => window.dispatchEvent(new CustomEvent<GraphExplorerOpenDetail>(OPEN_GRAPH_EXPLORER_EVENT, { detail: { workspaceId } }))}
             />
           ) : null}
         </>
@@ -106,12 +111,13 @@ export default function GraphSidebarCard({ workspaceId }: Props) {
       {offline ? (
         <div className="empty-state">
           <BlockedIcon size={12} /> engine offline —{" "}
-          <span
-            style={{ color: "var(--mint)", cursor: "pointer" }}
+          <button
+            type="button"
+            className="graph-recovery-button"
             onClick={() => window.dispatchEvent(new Event(OPEN_GRAPH_SETUP_EVENT))}
           >
             start it →
-          </span>
+          </button>
         </div>
       ) : !stats ? (
         <div className="empty-state">connecting…</div>

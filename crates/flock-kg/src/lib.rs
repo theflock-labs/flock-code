@@ -648,6 +648,31 @@ const NODE_COLS: &str =
     "id, kind, label, body, workspace_id, created_by_agent, created_at, updated_at, archived_at, outcome, shipped_in";
 
 impl KnowledgeGraph {
+    /// Check actual runtime authentication and schema access without retaining
+    /// credentials or starting background workers.
+    pub async fn verify_connection(url: &str) -> Result<()> {
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(2))
+            .connect(url)
+            .await?;
+        let result = sqlx::query("SELECT value FROM kg_meta WHERE key = 'schema_version'")
+            .execute(&pool)
+            .await;
+        pool.close().await;
+        result?;
+        Ok(())
+    }
+
+    /// Operator-only schema setup: never starts runtime embedding/backfill jobs
+    /// with administrator credentials, and closes the pool before returning.
+    pub async fn migrate_schema(url: &str) -> Result<()> {
+        let pool = PgPoolOptions::new().max_connections(1).connect(url).await?;
+        let graph = Self { pool };
+        let result = graph.ensure_event_schema().await;
+        graph.pool.close().await;
+        result
+    }
     pub async fn connect(url: &str) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(8)
@@ -726,6 +751,22 @@ impl KnowledgeGraph {
     /// details folded into the node (making them searchable), Outcome nodes
     /// converted to `shipped_in` stamps, duplicate titles archived.
     pub async fn ensure_event_schema(&self) -> Result<()> {
+        // Managed local clients deliberately have no DDL or role privileges.
+        // Desktop startup owns migrations using a separate admin credential.
+        let role: String = sqlx::query_scalar("SELECT current_user")
+            .fetch_one(&self.pool)
+            .await?;
+        if role == "flock_app" {
+            let version: Option<String> =
+                sqlx::query_scalar("SELECT value FROM kg_meta WHERE key = 'schema_version'")
+                    .fetch_optional(&self.pool)
+                    .await?;
+            anyhow::ensure!(
+                version.as_deref() == Some("2"),
+                "Local graph schema needs an upgrade; start the engine in flock Settings"
+            );
+            return Ok(());
+        }
         // Core tables first, so a team-hosted Postgres without the Docker
         // init script still self-provisions.
         for ddl in [

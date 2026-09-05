@@ -200,9 +200,8 @@ function ConnectSnippets({ status, tool, setTool, copied, onCopy }: {
   onCopy: (text: string) => void;
 }) {
   const mcpPath = status?.mcp_binary ?? "/path/to/flock-mcp";
-  // Role and database keep the old name on purpose: renaming them orphans every
-  // existing local pgdata volume, and this literal has to match the engine's.
-  const kgUrl = status?.kg_url ?? "postgresql://flock:flock@127.0.0.1:15432/flock_kg";
+  // Local tools resolve the protected runtime credential file themselves.
+  const kgUrl = getGraphUrl();
   const snippets = graphSnippets(mcpPath, kgUrl);
   return (
     <>

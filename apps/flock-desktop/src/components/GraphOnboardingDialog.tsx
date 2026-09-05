@@ -81,6 +81,9 @@ export default function GraphOnboardingDialog({ onClose }: Props) {
     setStarting(true);
     try {
       await graphUp();
+      // Provisioning creates credentials and makes mcp_config available.
+      // Refresh cached registrations/hooks without changing the opt-in.
+      if (getGraphEnabled()) setGraphEnabled(true);
     } catch (e) {
       setStartError(String(e));
     } finally {
@@ -99,9 +102,7 @@ export default function GraphOnboardingDialog({ onClose }: Props) {
   };
 
   const mcpPath = status?.mcp_binary ?? "/path/to/flock-mcp";
-  // Role and database keep the old name on purpose: renaming them orphans every
-  // existing local pgdata volume, and this literal has to match the engine's.
-  const kgUrl = status?.kg_url ?? "postgresql://flock:flock@127.0.0.1:15432/flock_kg";
+  const kgUrl = getGraphUrl();
   const engineReady = !!status && status.container_running && status.db_reachable;
   const team = isTeamGraph();
   // Team graphs are somebody else's Postgres; reachability is the whole story
@@ -249,7 +250,9 @@ export default function GraphOnboardingDialog({ onClose }: Props) {
                       ? `Starting… ${formatElapsed(elapsed)}`
                       : attempt > 0
                         ? "Try again"
-                        : "Start the engine"}
+                        : status?.container_running
+                          ? "Repair engine access"
+                          : "Start the engine"}
                 </button>
               )}
 

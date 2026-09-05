@@ -52,6 +52,10 @@ import type { BranchMode, GitHubStatus, Workspace } from "../types";
 // the same choice is made per workspace.
 import "../styles/spawnDialog.css";
 import { CheckIcon } from "./friendIcons";
+import SettingsSearchResults from "./SettingsSearchResults";
+import { revealSetting, searchSettings, type SettingSearchEntry, type SettingsTab } from "../lib/settingsSearch";
+import { OPEN_FEATURE_TOUR_EVENT } from "../lib/onboarding";
+import "../styles/settingsSearch.css";
 
 const GITHUB_CLIENT_ID = "Ov23liWUykhhVLpalI4c";
 
@@ -69,9 +73,6 @@ const HOOK_AGENTS: { id: HookAgent; label: string; hint: string }[] = [
   // so this row is here to turn it back off.
   { id: "grok", label: "Grok", hint: "Hooks in ~/.grok/hooks/flock.json" },
 ];
-
-type SettingsTab =
-  | "appearance" | "voice" | "github" | "graph" | "teams" | "integrations" | "worktrees" | "account" | "usage" | "provenance" | "security" | "about";
 
 interface Props {
   onClose: () => void;
@@ -187,6 +188,11 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
   const [voiceCleanup, setVoiceCleanupState] = useState(true);
   const [testingHud, setTestingHud] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? "account");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchTarget, setSearchTarget] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const searchResults = searchSettings(searchQuery);
+  const searching = searchQuery.trim().length > 0;
   const [ghIntegrationEnabled, setGhIntegrationEnabled] = useState(getGithubIntegrationEnabled());
   const [hookStatus, setHookStatus] = useState<Record<HookAgent, boolean>>({ claude: false, codex: false, grok: false });
   const [hookBusy, setHookBusy] = useState<HookAgent | null>(null);
@@ -227,6 +233,19 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
   useEffect(() => {
     if (modalBodyRef.current) modalBodyRef.current.scrollTop = 0;
   }, [activeTab]);
+
+  useEffect(() => {
+    if (searching || !searchTarget || !modalBodyRef.current) return;
+    const target = revealSetting(modalBodyRef.current, searchTarget);
+    target?.classList.add("settings-search-destination");
+    return () => target?.classList.remove("settings-search-destination");
+  }, [activeTab, searching, searchTarget]);
+
+  const openSearchResult = (result: SettingSearchEntry) => {
+    setActiveTab(result.tab);
+    setSearchQuery("");
+    setSearchTarget(result.id);
+  };
 
   useEffect(() => {
     githubCheck().then(setGhStatus);
@@ -467,7 +486,14 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
 
   return (
     <div className="modal-overlay" onClick={isOAuthPending(oauth) ? undefined : onClose}>
-      <div className="modal settings-modal" ref={modalRef} role="dialog" aria-modal="true" aria-label="Settings" onClick={(e) => e.stopPropagation()}>
+      <div className="modal settings-modal" ref={modalRef} role="dialog" aria-modal="true" aria-label="Settings" onClick={(e) => e.stopPropagation()} onKeyDownCapture={(e) => {
+        if (e.key === "Escape" && searching) {
+          e.stopPropagation();
+          e.preventDefault();
+          setSearchQuery("");
+          searchRef.current?.focus();
+        }
+      }}>
         <ModalCloseButton onClose={() => { if (!isOAuthPending(oauth)) onClose(); }} />
         {/* A title bar, not a hero. The goose used to fly in here at 64px and
             park beside the close button, which is the one thing no window on
@@ -479,6 +505,24 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           <div className="title">Settings</div>
         </div>
 
+        <div className="settings-search-bar">
+          <label htmlFor="settings-search">Find a setting</label>
+          <input id="settings-search" ref={searchRef} className="settings-search-input" type="search"
+            placeholder="Agent status, sandbox, text size…" value={searchQuery}
+            autoComplete="off" spellCheck={false}
+            onChange={(e) => { setSearchQuery(e.target.value); setSearchTarget(null); }}
+            onKeyDown={(e) => {
+              if (!searchResults.length) return;
+              if (e.key === "Enter") { e.preventDefault(); openSearchResult(searchResults[0]); }
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                modalBodyRef.current?.querySelector<HTMLButtonElement>(".settings-search-result")?.focus();
+              }
+            }}
+          />
+          {searching && <button className="btn-ghost settings-btn" onClick={() => { setSearchQuery(""); searchRef.current?.focus(); }}>Clear search</button>}
+        </div>
+
         <div className="settings-layout">
         <div className="settings-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
           {NAV_GROUPS.map((group) => (
@@ -488,9 +532,9 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
                 <button
                   key={t.id}
                   role="tab"
-                  aria-selected={activeTab === t.id}
-                  className={`settings-tab${activeTab === t.id ? " active" : ""}`}
-                  onClick={() => setActiveTab(t.id)}
+                  aria-selected={!searching && activeTab === t.id}
+                  className={`settings-tab${!searching && activeTab === t.id ? " active" : ""}`}
+                  onClick={() => { setActiveTab(t.id); setSearchQuery(""); setSearchTarget(null); }}
                 >
                   <span className="settings-tab-icon" aria-hidden="true"><t.icon /></span>
                   {t.label}
@@ -501,11 +545,13 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
         </div>
 
         <div className="modal-body" ref={modalBodyRef}>
+          {searching && <SettingsSearchResults query={searchQuery} results={searchResults} onSelect={openSearchResult} />}
+          <div className="settings-search-content" hidden={searching}>
           {activeTab === "github" && (
           <>
           {/* ─── GitHub integration toggle ─────────────────────────────── */}
           <div className="settings-section">
-            <div className="settings-row">
+            <div className="settings-row" data-setting="github-enabled">
               <div>
                 <div className="settings-label" style={{ fontWeight: 600, color: "var(--text-hi)" }}>Enable GitHub Integration</div>
                 <div className="settings-hint" style={{ margin: 0 }}>
@@ -523,7 +569,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           </div>
 
           {/* ─── GitHub CLI ─────────────────────────────────────────────── */}
-          <div className="settings-section">
+          <div className="settings-section" data-setting="github-account">
             <div className="settings-section-header">GitHub CLI</div>
             <div className="settings-row">
               <span className="settings-label">Signed in as</span>
@@ -602,7 +648,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           {activeTab === "voice" && (
           <>
           {/* ─── flock Voice ───────────────────────────────────────────── */}
-          <div className="settings-section">
+          <div className="settings-section" data-setting="voice">
             <div className="settings-section-header">flock Voice</div>
             <div className="settings-row">
               <span className="settings-label">Push-to-talk dictation</span>
@@ -774,7 +820,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           {/* ─── Appearance ────────────────────────────────────────────── */}
           <div className="settings-section">
             <div className="settings-section-header">Appearance</div>
-            <div className="settings-row">
+            <div className="settings-row" data-setting="follow-system">
               <div>
                 <div className="settings-label" style={{ fontWeight: 600, color: "var(--text-hi)" }}>Inherit from system</div>
                 <div className="settings-hint" style={{ margin: 0 }}>
@@ -796,7 +842,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
             <div className="settings-row" style={{ marginTop: 10 }}>
               <span className="settings-label">Theme</span>
             </div>
-            <div className="theme-swatch-row" aria-disabled={followSystem} style={followSystem ? { opacity: 0.45, pointerEvents: "none" } : undefined}>
+            <div data-setting="theme" className="theme-swatch-row" role="group" aria-label={followSystem ? "Theme follows system appearance. Turn off Inherit from system to choose a theme." : "Theme"} aria-disabled={followSystem} style={followSystem ? { opacity: 0.45, pointerEvents: "none" } : undefined}>
               {THEMES.map((t) => {
                 // While following the OS, highlight whichever base theme it
                 // currently resolves to rather than the stored pick.
@@ -805,6 +851,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
                 <button
                   key={t.id}
                   className={`theme-swatch theme-swatch-${t.id}${active ? " active" : ""}`}
+                  disabled={followSystem}
                   onClick={() => { applyTheme(t.id); setTheme(t.id); setFollowSystemState(false); }}
                   title={t.label}
                 >
@@ -817,7 +864,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
 
             {/* Two independent sizes: the panes are the text you read all day,
                 the chrome is the frame around them. See lib/uiScale.ts. */}
-            <div className="settings-row" style={{ marginTop: 10 }}>
+            <div className="settings-row" data-setting="pane-text" style={{ marginTop: 10 }}>
               <div>
                 <div className="settings-label">Agent pane text size</div>
                 <div className="settings-hint" style={{ margin: 0 }}>
@@ -860,7 +907,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
                 </div>
               </div>
             </div>
-            <div className="ui-scale-row">
+            <div className="ui-scale-row" data-setting="app-text">
               {UI_SCALES.map((s) => (
                 <button
                   key={s.id}
@@ -896,7 +943,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
 
             {/* The panel's own X sets the same flag, so this doubles as the
                 way back after dismissing it from the sidebar. */}
-            <div className="settings-row" style={{ marginTop: 14 }}>
+            <div className="settings-row" data-setting="quick-actions" style={{ marginTop: 14 }}>
               <div>
                 <div className="settings-label" style={{ fontWeight: 600, color: "var(--text-hi)" }}>Quick actions</div>
                 <div className="settings-hint" style={{ margin: 0 }}>
@@ -922,7 +969,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           {activeTab === "security" && (
           <>
           {/* ─── Secure mode ───────────────────────────────────────────── */}
-          <div className="settings-section">
+          <div className="settings-section" data-setting="secure-mode">
             <div className="settings-section-header">Secure mode</div>
             <p className="settings-hint" style={{ marginTop: 0 }}>
               A secure workspace runs each agent inside a Docker container that can see
@@ -974,7 +1021,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           </div>
 
           {/* ─── Network egress ────────────────────────────────────────── */}
-          <div className="settings-section">
+          <div className="settings-section" data-setting="network">
             <div className="settings-section-header">Network</div>
             <div className="settings-row">
               <div>
@@ -1093,7 +1140,19 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           </div>
 
           {/* ─── Keyboard shortcuts ────────────────────────────────────── */}
-          <div className="settings-section">
+          <div className="settings-section" data-setting="feature-tour">
+            <div className="settings-section-header">Feature tour</div>
+            <div className="settings-row">
+              <span className="settings-label">Explore what you can do with your agents</span>
+              <button className="btn-ghost settings-btn" disabled={isOAuthPending(oauth)} onClick={() => {
+                if (isOAuthPending(oauth)) return;
+                onClose(); window.dispatchEvent(new Event(OPEN_FEATURE_TOUR_EVENT));
+              }}>Open feature tour</button>
+            </div>
+            {isOAuthPending(oauth) && <p className="settings-hint">Finish or cancel GitHub sign-in before opening the tour.</p>}
+          </div>
+
+          <div className="settings-section" data-setting="shortcuts">
             <div className="settings-section-header">Keyboard Shortcuts</div>
             <div className="settings-shortcut-grid">
               {SHORTCUTS.map((s) => (
@@ -1114,30 +1173,30 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           {activeTab === "graph" && (
           <>
           {/* ─── flock Graph ───────────────────────────────────────────── */}
-          <GraphSettingsSection />
+          <div className="settings-search-section" data-setting="graph"><GraphSettingsSection /></div>
           </>
           )}
 
           {activeTab === "teams" && (
           <>
           {/* ─── Orgs & teams (flock ID tenancy) ───────────────────────── */}
-          <TeamsSection />
+          <div className="settings-search-section" data-setting="teams"><TeamsSection /></div>
           </>
           )}
 
           {activeTab === "account" && (
           <>
           {/* ─── flock ID ──────────────────────────────────────────────── */}
-          <AccountSection />
+          <div className="settings-search-section" data-setting="account"><AccountSection /></div>
           </>
           )}
 
           {activeTab === "usage" && (
           <>
           {/* ─── Agent usage limits + spend ────────────────────────────── */}
-          <BudgetSection workspaces={workspaces} onSetWorkspaceBudget={onSetWorkspaceBudget} />
-          <AgentUsageSection fetcher={claudeUsage} title="Claude usage limits" />
-          <AgentUsageSection fetcher={codexUsage} title="Codex usage limits" />
+          <div className="settings-search-section" data-setting="budgets"><BudgetSection workspaces={workspaces} onSetWorkspaceBudget={onSetWorkspaceBudget} /></div>
+          <div className="settings-search-section" data-setting="claude-usage"><AgentUsageSection fetcher={claudeUsage} title="Claude usage limits" /></div>
+          <div className="settings-search-section" data-setting="codex-usage"><AgentUsageSection fetcher={codexUsage} title="Codex usage limits" /></div>
           <GrokUsageSection />
           <OpencodeUsageSection />
           </>
@@ -1146,14 +1205,14 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           {activeTab === "provenance" && (
           <>
           {/* ─── Provenance: the exportable record of what the fleet did ─── */}
-          <ProvenanceSection />
+          <div className="settings-search-section" data-setting="session-records"><ProvenanceSection /></div>
           </>
           )}
 
           {activeTab === "worktrees" && (
           <>
           {/* ─── Worktrees ─────────────────────────────────────────────── */}
-          <div className="settings-section">
+          <div className="settings-section" data-setting="branch-mode">
             <div className="settings-section-header">Default branch mode</div>
             <p className="settings-hint" style={{ marginTop: 0 }}>
               Which option the new-workspace dialog opens on. Every workspace can still override it.
@@ -1179,7 +1238,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           </div>
 
           <div className="settings-section">
-            <div className="settings-row">
+            <div className="settings-row" data-setting="fetch-base">
               <div>
                 <div className="settings-label" style={{ fontWeight: 600, color: "var(--text-hi)" }}>Fetch base branch first</div>
                 <div className="settings-hint" style={{ margin: 0 }}>
@@ -1194,7 +1253,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
                 <span className="voice-toggle-knob" />
               </button>
             </div>
-            <div className="settings-row" style={{ marginTop: 10 }}>
+            <div className="settings-row" data-setting="delete-branch" style={{ marginTop: 10 }}>
               <div>
                 <div className="settings-label" style={{ fontWeight: 600, color: "var(--text-hi)" }}>Delete local branch with worktree</div>
                 <div className="settings-hint" style={{ margin: 0 }}>
@@ -1211,12 +1270,13 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
             </div>
           </div>
 
-          <div className="settings-section">
+          <div className="settings-section" data-setting="worktree-directory">
             <div className="settings-section-header">Default directory</div>
             <div className="settings-row">
               <input
                 className="modal-input"
                 style={{ flex: 1, padding: "6px 10px", fontSize: 12 }}
+                aria-label="Worktree directory"
                 value={worktreesBaseDir}
                 onChange={(e) => saveWorktreesBaseDir(e.target.value)}
                 placeholder="~/.flock/worktrees (default)"
@@ -1226,12 +1286,13 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
             <p className="settings-hint">Parent path new worktrees are created under. Leave blank to use the default.</p>
           </div>
 
-          <div className="settings-section">
+          <div className="settings-section" data-setting="carry-files">
             <div className="settings-section-header">Carry over local files</div>
             <div className="settings-row">
               <input
                 className="modal-input"
                 style={{ flex: 1, padding: "6px 10px", fontSize: 12 }}
+                aria-label="Carry over local files"
                 value={carryPatterns}
                 onChange={(e) => saveCarryPatterns(e.target.value)}
                 placeholder=".env*, .envrc, .tool-versions"
@@ -1252,7 +1313,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           {activeTab === "integrations" && (
           <>
           {/* ─── Agent hooks ────────────────────────────────────────────── */}
-          <div className="settings-section">
+          <div className="settings-section" data-setting="agent-hooks">
             <div className="settings-section-header">Agent Integrations</div>
             <p className="settings-hint" style={{ marginTop: 0 }}>
               Installs hooks in each agent's own config so it reports session start/stop
@@ -1278,6 +1339,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           </div>
           </>
           )}
+          </div>
         </div>
         </div>
 
@@ -1290,8 +1352,12 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
             pending-OAuth line, which is real feedback about a real wait, so
             that survives and the strip now only exists while it does. */}
         {isOAuthPending(oauth) && (
-          <div className="modal-footer">
-            <span className="text-ghost">waiting for GitHub authorization…</span>
+          <div className="modal-footer settings-oauth-footer">
+            <span role="status">Waiting for GitHub authorization…</span>
+            {(activeTab !== "github" || searching) && <button className="btn-ghost settings-btn" onClick={() => {
+              setSearchQuery(""); setSearchTarget("github-account"); setActiveTab("github");
+            }}>Return to GitHub</button>}
+            <button className="btn-ghost settings-btn" onClick={cancelOAuth}>Cancel sign-in</button>
           </div>
         )}
       </div>

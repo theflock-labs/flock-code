@@ -49,18 +49,16 @@ afterEach(() => {
 // the release-build branch is covered here and the dev-build branches are
 // covered end-to-end below.
 describe("shouldReport", () => {
-  it("reports from a release build regardless of the override", () => {
-    expect(shouldReport(false, null)).toBe(true);
-    expect(shouldReport(false, "1")).toBe(true);
-    expect(shouldReport(false, "0")).toBe(true);
+  it("never reports without account consent, including release builds and dev overrides", () => {
+    for (const dev of [false, true]) for (const override of [null, "1", "0"]) {
+      expect(shouldReport(dev, override)).toBe(false);
+      expect(shouldReport(dev, override, false)).toBe(false);
+    }
   });
-
-  it("stays silent from a dev build unless explicitly opted in", () => {
-    expect(shouldReport(true, null)).toBe(false);
-    expect(shouldReport(true, "")).toBe(false);
-    expect(shouldReport(true, "0")).toBe(false);
-    expect(shouldReport(true, "yes")).toBe(false);
-    expect(shouldReport(true, "1")).toBe(true);
+  it("requires both account consent and the developer override in dev builds", () => {
+    expect(shouldReport(false, null, true)).toBe(true);
+    expect(shouldReport(true, null, true)).toBe(false);
+    expect(shouldReport(true, "1", true)).toBe(true);
   });
 });
 
@@ -79,7 +77,8 @@ describe("counters, from a dev build", () => {
 
   it("reports when opted in", async () => {
     localStorage.setItem("flock:sync-stats", "1");
-    const { recordUsage, bumpStats } = await load();
+    const { recordUsage, bumpStats, setUsageConsent } = await load();
+    setUsageConsent(true);
     recordUsage({ prompts: 1 });
     await flushBuffer();
     expect(bumpStats).toHaveBeenCalledWith({ prompts: 1, agents: 0, workspaces: 0 });
@@ -99,11 +98,40 @@ describe("token/cost sync, from a dev build", () => {
 
   it("syncs when opted in", async () => {
     localStorage.setItem("flock:sync-stats", "1");
-    const { startUsageSync, stopUsageSync, setUsageTotals, recordUsageDaily } = await load();
+    const { startUsageSync, stopUsageSync, setUsageTotals, recordUsageDaily, setUsageConsent } = await load();
+    setUsageConsent(true);
     startUsageSync();
     await vi.advanceTimersByTimeAsync(0);
     expect(setUsageTotals).toHaveBeenCalledWith(42, 1);
     expect(recordUsageDaily).toHaveBeenCalledWith(42, 1);
     stopUsageSync();
+  });
+});
+
+describe("revoking usage consent", () => {
+  it("drops buffered counters and cancels future scans", async () => {
+    localStorage.setItem("flock:sync-stats", "1");
+    const m = await load();
+    m.setUsageConsent(true);
+    await vi.advanceTimersByTimeAsync(0);
+    m.recordUsage({ prompts: 3 });
+    m.setUsageConsent(false);
+    vi.clearAllMocks();
+    await vi.advanceTimersByTimeAsync(11 * 60_000);
+    expect(m.bumpStats).not.toHaveBeenCalled();
+    expect(m.setUsageTotals).not.toHaveBeenCalled();
+  });
+  it("does not upload a transcript scan that completes after consent was revoked", async () => {
+    localStorage.setItem("flock:sync-stats", "1");
+    const m = await load();
+    const { claudeCodeUsage } = await import("./tauri");
+    let finish!: (value: any) => void;
+    vi.mocked(claudeCodeUsage).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    m.setUsageConsent(true);
+    m.setUsageConsent(false);
+    finish({ available: true, tokens_total: 42, cost_usd: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(m.setUsageTotals).not.toHaveBeenCalled();
+    expect(m.recordUsageDaily).not.toHaveBeenCalled();
   });
 });

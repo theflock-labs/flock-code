@@ -11,31 +11,28 @@ export interface GraphSnippet {
 }
 
 export function graphSnippets(mcpPath: string, kgUrl: string): Record<AgentTool, GraphSnippet> {
+  const shell = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+  const server = {
+    type: "local",
+    command: [mcpPath],
+    ...(kgUrl ? { environment: { FLOCK_KG_URL: kgUrl } } : {}),
+  };
   return {
     claude: {
       title: "Claude Code",
       hint: "One command — --scope user makes the graph available in every project:",
-      code: `claude mcp add --scope user flock-graph -e FLOCK_KG_URL=${kgUrl} -- ${mcpPath}`,
+      code: `claude mcp add --scope user flock-graph${kgUrl ? ` -e ${shell(`FLOCK_KG_URL=${kgUrl}`)}` : ""} -- ${shell(mcpPath)}`,
     },
     opencode: {
       title: "opencode",
       hint: "Add to ~/.config/opencode/opencode.json under the top-level \"mcp\" key:",
-      code: `{
-  "mcp": {
-    "flock-graph": {
-      "type": "local",
-      "command": ["${mcpPath}"],
-      "environment": { "FLOCK_KG_URL": "${kgUrl}" }
-    }
-  }
-}`,
+      code: JSON.stringify({ mcp: { "flock-graph": server } }, null, 2),
     },
     codex: {
       title: "Codex",
       hint: "Add to ~/.codex/config.toml:",
       code: `[mcp_servers.flock-graph]
-command = "${mcpPath}"
-env = { FLOCK_KG_URL = "${kgUrl}" }`,
+command = ${JSON.stringify(mcpPath)}${kgUrl ? `\nenv = { FLOCK_KG_URL = ${JSON.stringify(kgUrl)} }` : ""}`,
     },
   };
 }

@@ -125,6 +125,8 @@ export function onAuthChange(handler: (session: Session | null) => void): () => 
 // ─── Profile ──────────────────────────────────────────────────────────────────
 
 export interface IdProfile {
+  usage_sharing?: boolean;
+  presence_sharing?: boolean;
   id: string;
   handle: string | null;
   display_name: string | null;
@@ -247,11 +249,24 @@ export async function bumpStats(d: { prompts?: number; agents?: number; workspac
 export async function getMyProfile(): Promise<IdProfile | null> {
   const session = await getSession();
   if (!session) return null;
-  const { data, error } = await supabase()
+  const sb = supabase();
+  const { data, error } = await sb
     .from("profiles")
-    .select("id, handle, display_name, avatar_url")
+    .select("id, handle, display_name, avatar_url, usage_sharing, presence_sharing")
     .eq("id", session.user.id)
     .maybeSingle();
+  // Core identity predates the optional privacy fields. During a staged
+  // backend rollout, keep sign-in usable with sharing explicitly off. Only
+  // retry this known schema mismatch; permission/network failures stay errors.
+  if (error && ["42703", "PGRST204"].includes(error.code)
+    && /\b(?:usage_sharing|presence_sharing)\b/.test(error.message)) {
+    const legacy = await sb.from("profiles")
+      .select("id, handle, display_name, avatar_url")
+      .eq("id", session.user.id)
+      .maybeSingle();
+    if (legacy.error) throw new Error(legacy.error.message);
+    return legacy.data ? { ...legacy.data, usage_sharing: false, presence_sharing: false } : null;
+  }
   if (error) throw new Error(error.message);
   return data;
 }
@@ -259,12 +274,22 @@ export async function getMyProfile(): Promise<IdProfile | null> {
 /** Claim or change the public handle. Uniqueness is enforced by the DB;
  * surfaces "handle is taken" cleanly. */
 export async function claimHandle(handle: string): Promise<void> {
+  const normalized = handle.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{2,31}$/.test(normalized)) {
+    throw new Error("Use 3–32 letters, digits, - or _, starting with a letter or digit.");
+  }
   const session = await getSession();
   if (!session) throw new Error("not signed in");
-  const { error } = await supabase()
+  const { data, error } = await supabase()
     .from("profiles")
-    .update({ handle: handle.trim().toLowerCase() })
-    .eq("id", session.user.id);
+    .update({ handle: normalized })
+    .eq("id", session.user.id)
+    .select("id, handle")
+    .maybeSingle();
+  if ((error?.code === "PGRST116" && /\b0 rows\b/.test(error.details ?? ""))
+    || (!error && (data?.id !== session.user.id || data?.handle !== normalized))) {
+    throw new Error("Your handle wasn’t saved. Try again, or sign in again to refresh your account.");
+  }
   if (error) {
     throw new Error(/duplicate|unique/i.test(error.message) ? "That handle is taken." : error.message);
   }
@@ -619,4 +644,11 @@ export async function listMyOrgInvites(): Promise<OrgInvite[]> {
   const { data, error } = await supabase().rpc("my_org_invites");
   if (error) throw new Error(error.message);
   return (data ?? []) as OrgInvite[];
+}
+
+/** Server consent is authoritative. Disabling usage also deletes synced data. */
+export async function setSocialPrivacy(usage: boolean | null, presence: boolean | null, deleteUsage = false): Promise<void> {
+  const { error } = await supabase().rpc("set_social_privacy", { p_usage: usage, p_presence: presence, p_delete_usage: deleteUsage });
+  if (error) throw new Error(error.message);
+  window.dispatchEvent(new Event("flock:social-privacy-changed"));
 }

@@ -16,6 +16,150 @@ use tauri::{AppHandle, State};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+/// Native UI is the authorization boundary. A renderer cannot manufacture the
+/// callback result by passing an IPC parameter or writing localStorage.
+async fn native_security_approval(
+    app: &AppHandle,
+    title: &str,
+    details: String,
+) -> Result<(), String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(details)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Allow".into(),
+            "Cancel".into(),
+        ))
+        .show(move |approved| {
+            let _ = tx.send(approved);
+        });
+    if rx.await.unwrap_or(false) {
+        Ok(())
+    } else {
+        Err("Security change cancelled".into())
+    }
+}
+
+fn canonical_workspace_directory(raw: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw)
+        .canonicalize()
+        .map_err(|e| format!("working directory '{raw}' is not accessible: {e}"))?;
+    if !path.is_dir() {
+        return Err("working directory must be a directory".into());
+    }
+    if path.parent().is_none() {
+        return Err("working directory may not be the filesystem root".into());
+    }
+    if std::env::var_os("HOME")
+        .and_then(|h| PathBuf::from(h).canonicalize().ok())
+        .as_ref()
+        == Some(&path)
+    {
+        return Err("working directory may not be the user's home directory".into());
+    }
+    Ok(path)
+}
+
+// Grants cannot be minted by create_workspace or a frontend preference. They
+// last for this app process and distinguish host execution from a Docker jail.
+type WorkspaceGrant = (String, PathBuf, PathBuf, bool);
+static EPHEMERAL_ROOTS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
+> = std::sync::OnceLock::new();
+
+fn launch_paths(
+    workspace_id: &str,
+    stored_root: Option<&str>,
+    cwd: Option<&str>,
+    ephemeral: &std::collections::HashMap<String, PathBuf>,
+) -> Result<(PathBuf, PathBuf), String> {
+    if let Some(root) = stored_root {
+        return Ok((
+            canonical_workspace_directory(root)?,
+            canonical_workspace_directory(cwd.unwrap_or(root))?,
+        ));
+    }
+    workspace_id
+        .strip_prefix("copilot:")
+        .filter(|id| {
+            Uuid::parse_str(id)
+                .map(|parsed| parsed.to_string() == *id)
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| "workspace does not exist".to_string())?;
+    let cwd = canonical_workspace_directory(
+        cwd.ok_or("Co-pilot requires an explicit working directory")?,
+    )?;
+    let root = ephemeral
+        .get(workspace_id)
+        .cloned()
+        .unwrap_or_else(|| cwd.clone());
+    if !cwd.starts_with(&root) {
+        return Err("Co-pilot working directory is outside its approved root".into());
+    }
+    Ok((root, cwd))
+}
+
+fn verify_launch_paths(root: &Path, cwd: &Path) -> Result<(), String> {
+    for path in [root, cwd] {
+        if canonical_workspace_directory(
+            path.to_str()
+                .ok_or("working directory is not valid Unicode")?,
+        )? != path
+        {
+            return Err("Working directory changed during approval; agent was not launched. Retry and verify the new path.".into());
+        }
+    }
+    Ok(())
+}
+
+fn visible_security_text(value: &str) -> String {
+    value.chars().flat_map(char::escape_debug).collect()
+}
+
+static WORKSPACE_GRANTS: std::sync::OnceLock<
+    tokio::sync::Mutex<std::collections::HashSet<WorkspaceGrant>>,
+> = std::sync::OnceLock::new();
+// Serialize security resolution and launch for a workspace: a concurrent
+// secure spawn cannot race a host spawn past persistence of the secure flag.
+static WORKSPACE_LAUNCH_LOCKS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+> = std::sync::OnceLock::new();
+
+async fn authorize_workspace_launch(
+    app: &AppHandle,
+    workspace_id: &str,
+    root: &Path,
+    cwd: &Path,
+    secure: bool,
+) -> Result<(), String> {
+    let key = (
+        workspace_id.to_string(),
+        root.to_path_buf(),
+        cwd.to_path_buf(),
+        secure,
+    );
+    let mut grants = WORKSPACE_GRANTS.get_or_init(Default::default).lock().await;
+    if grants.contains(&key) {
+        return Ok(());
+    }
+    let mode = if secure {
+        "Run agents in a Docker jail with read/write access to this working directory."
+    } else {
+        "Run agents directly on your computer with your account's file and network access."
+    };
+    let extra = if cwd.starts_with(root) {
+        ""
+    } else {
+        "\n\nThis directory is outside the workspace root. Allow it as an additional working directory only if you recognize this worktree."
+    };
+    native_security_approval(app, "Allow workspace execution?", format!("Workspace root:\n{}\n\nAgent working directory:\n{}\n\n{mode}{extra}\n\nThis approval lasts until flock quits.", visible_security_text(&root.to_string_lossy()), visible_security_text(&cwd.to_string_lossy()))).await?;
+    grants.insert(key);
+    Ok(())
+}
 // ─── Workspaces ──────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -45,6 +189,7 @@ pub async fn create_workspace(
     repo_path: String,
     branch: Option<String>,
 ) -> Result<WorkspaceInfo, String> {
+    let repo_path = canonical_workspace_directory(&repo_path)?.to_string_lossy().into_owned();
     let branch = branch.unwrap_or_else(|| "main".to_string());
     let ws = state
         .wm
@@ -194,16 +339,31 @@ pub fn egress_policy() -> EgressPolicy {
     }
 }
 
-/// Write the policy back. Takes effect on the next spawn — a running jail's
-/// network namespace is fixed at `docker run` and cannot be tightened
-/// afterwards, so saying otherwise in the UI would be a lie.
-///
-/// Note what this command is NOT: a way for the webview to set a per-spawn
-/// network. The policy lives in a host file that `spawn_container` reads for
-/// itself, so a compromised webview can at most flip the machine-wide setting
-/// the user can see in Settings, not slip one unrestricted pane past it.
+/// Security policy changes require native approval of the exact new policy.
+/// The setting applies to subsequently started panes.
 #[tauri::command]
-pub fn set_egress_policy(restrict: bool, allow_file: Option<String>) -> Result<(), String> {
+pub async fn set_egress_policy(
+    app: AppHandle,
+    restrict: bool,
+    allow_file: Option<String>,
+) -> Result<(), String> {
+    let current = flock_pty::egress::read_allow_file();
+    let next = allow_file.as_deref().unwrap_or(&current);
+    if next.len() > 32_768 {
+        return Err("egress allowlist is too large".into());
+    }
+    if restrict == (flock_pty::egress::policy() == flock_pty::egress::Egress::Restricted)
+        && next == current
+    {
+        return Ok(());
+    }
+    let effective = flock_pty::egress::effective_allowlist(next);
+    if effective.len() > 64 || effective.join("\n").len() > 2000 {
+        return Err("Use at most 64 allowed hosts and 2000 display characters".into());
+    }
+    native_security_approval(&app, "Change agent network access?", format!(
+        "New secure panes will use {}.\n\nEffective allowed hosts:\n{}\n\nRunning panes keep their current network access.",
+        if restrict { "the restricted network and allowlist" } else { "unrestricted network access" }, effective.join("\n"))).await?;
     if let Some(text) = allow_file {
         flock_pty::egress::write_allow_file(&text).map_err(|e| e.to_string())?;
     }
@@ -314,6 +474,14 @@ pub async fn spawn_pane(
     // webview env map.
     theme: Option<String>,
 ) -> Result<PaneInfo, String> {
+    let launch_lock = WORKSPACE_LAUNCH_LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| "workspace launch lock is unavailable".to_string())?
+        .entry(workspace_id.clone())
+        .or_default()
+        .clone();
+    let launch_guard = launch_lock.lock().await;
     // Secure mode is backend-authoritative and fails closed. Honor the caller's
     // flag, but never let a spawn downgrade a workspace the user already
     // secured: a compromised webview could otherwise omit `secure` (or drop it
@@ -326,9 +494,13 @@ pub async fn spawn_pane(
         state.wm.is_workspace_secure(&workspace_id).await,
     )?;
     if secure {
-        if let Err(e) = state.wm.mark_workspace_secure(&workspace_id).await {
-            tracing::warn!(target: "flock_desktop_lib::commands", "spawn_pane could not persist secure flag for {workspace_id}: {e}");
-        }
+        state
+            .wm
+            .mark_workspace_secure(&workspace_id)
+            .await
+            .map_err(|e| {
+                format!("could not persist workspace security; agent was not launched: {e}")
+            })?;
     }
     tracing::info!(target: "flock_desktop_lib::commands", "spawn_pane ENTER workspace={workspace_id} cmd={cmd} cwd={cwd:?} secure={secure}");
     // Enforce command allowlist
@@ -344,38 +516,39 @@ pub async fn spawn_pane(
     let pane_id = pane_id
         .filter(|id| !id.is_empty())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    // The cwd arrives straight from the IPC caller and, in secure mode, is
-    // bind-mounted read-write into the container. A compromised webview could
-    // pass `/` or `$HOME` to mount the host root or the user's home into the
-    // jail, so validate before use: it must exist, be a directory, and not
-    // resolve to the filesystem root or the user's home itself. The canonical
-    // path is what we hand downstream (mounts, spawn cwd).
-    let cwd_path: Option<PathBuf> = match cwd {
-        Some(raw) => {
-            let canon = PathBuf::from(&raw).canonicalize().map_err(|e| {
-                tracing::warn!(target: "flock_desktop_lib::commands", "spawn_pane REJECT cwd '{raw}': {e}");
-                format!("working directory '{raw}' is not accessible: {e}")
-            })?;
-            if !canon.is_dir() {
-                return Err(format!("working directory '{raw}' is not a directory"));
-            }
-            if canon == Path::new("/") {
-                return Err("working directory may not be the filesystem root".to_string());
-            }
-            if let Ok(home) = std::env::var("HOME") {
-                if !home.is_empty() {
-                    let home = PathBuf::from(&home);
-                    if canon == home || home.canonicalize().ok() == Some(canon.clone()) {
-                        return Err(
-                            "working directory may not be the user's home directory".to_string()
-                        );
-                    }
-                }
-            }
-            Some(canon)
-        }
-        None => None,
+    // Creating a row is not a grant. Look up the canonical workspace root,
+    // then require native approval for this exact working directory and mode.
+    let workspace = state
+        .wm
+        .list()
+        .await
+        .map_err(|e| format!("could not read workspace: {e}"))?
+        .into_iter()
+        .find(|w| w.id.0 == workspace_id);
+    let (workspace_root, canonical_cwd) = {
+        let roots = EPHEMERAL_ROOTS.get_or_init(Default::default).lock()
+            .map_err(|_| "workspace registration lock unavailable")?;
+        launch_paths(&workspace_id, workspace.as_ref().map(|w| w.repo_path.as_str()), cwd.as_deref(), &roots)?
     };
+    let cwd_path = Some(canonical_cwd);
+    authorize_workspace_launch(
+        &app,
+        &workspace_id,
+        &workspace_root,
+        cwd_path.as_deref().unwrap(),
+        secure,
+    )
+    .await?;
+    // A path can be replaced while the native prompt is open. Verify again
+    // before repo_identity performs any host Git access.
+    verify_launch_paths(&workspace_root, cwd_path.as_deref().unwrap())?;
+    if workspace.is_none() {
+        EPHEMERAL_ROOTS
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| "workspace registration lock unavailable")?
+            .insert(workspace_id.clone(), workspace_root.clone());
+    }
     let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let env = env.unwrap_or_default();
 
@@ -424,7 +597,11 @@ pub async fn spawn_pane(
     }
     // Human-readable author name for the Person hub's label (falls back to the
     // id in flock-mcp when absent), and the repo hub's key + display name.
-    if let Some(handle) = identity.as_ref().map(|i| i.handle.as_str()).filter(|h| !h.is_empty()) {
+    if let Some(handle) = identity
+        .as_ref()
+        .map(|i| i.handle.as_str())
+        .filter(|h| !h.is_empty())
+    {
         identity_env!("PERSON_NAME", handle);
     }
     if let Some((key, name)) = &repo_ident {
@@ -469,14 +646,27 @@ pub async fn spawn_pane(
         .unwrap_or(false);
     // Look the setup command up here rather than accepting one over IPC, so a
     // compromised webview can't turn a spawn into arbitrary shell.
-    let setup = setup_repo
-        .as_deref()
-        .filter(|r| !r.is_empty())
-        .and_then(worktree_setup::command_for);
+    let setup = match setup_repo.as_deref().filter(|r| !r.is_empty()) {
+        Some(repo) => {
+            let canonical = canonical_workspace_directory(repo)?;
+            if canonical != workspace_root {
+                return Err("setup repository must match the workspace root".into());
+            }
+            worktree_setup::command_for(&canonical.to_string_lossy())
+        }
+        None => None,
+    };
     if let Some(s) = &setup {
         tracing::info!(target: "flock_desktop_lib::commands", "spawn_pane running worktree setup for pane={pane_id}: {s}");
     }
 
+    let secure_now = resolve_secure(secure, state.wm.is_workspace_secure(&workspace_id).await)?;
+    if secure_now != secure {
+        return Err(
+            "workspace security changed while preparing the agent; retry the launch".into(),
+        );
+    }
+    verify_launch_paths(&workspace_root, cwd_path.as_deref().unwrap())?;
     let (pty, output_rx) = if secure {
         flock_pty::spawn_container(
             &cmd,
@@ -542,7 +732,10 @@ pub async fn spawn_pane(
             agent_name: agent_name.as_deref(),
             agent_kind: &cmd,
             person_id: person_id.as_deref(),
-            person_name: identity.as_ref().map(|i| i.handle.as_str()).filter(|h| !h.is_empty()),
+            person_name: identity
+                .as_ref()
+                .map(|i| i.handle.as_str())
+                .filter(|h| !h.is_empty()),
             repo_id: repo_ident.as_ref().map(|(k, _)| k.as_str()),
             repo_name: repo_ident.as_ref().map(|(_, n)| n.as_str()),
             cwd: cwd_path.as_deref(),
@@ -581,6 +774,7 @@ pub async fn spawn_pane(
         recorder,
     );
 
+    drop(launch_guard);
     tracing::info!(target: "flock_desktop_lib::commands", "spawn_pane OK workspace={workspace_id} pane={pane_id}");
     Ok(PaneInfo {
         id: pane_id,
@@ -2306,7 +2500,27 @@ pub async fn worktree_setup_get(repo_path: String) -> Result<worktree_setup::Set
 /// Record a repo's setup command. An empty string is a real answer ("nothing
 /// to run here") and stops the suggestion coming back.
 #[tauri::command]
-pub fn worktree_setup_set(repo_path: String, command: String) -> Result<(), String> {
+pub async fn worktree_setup_set(
+    app: AppHandle,
+    repo_path: String,
+    command: String,
+) -> Result<(), String> {
+    let repo = canonical_workspace_directory(&repo_path)?;
+    if command.chars().count() > 2000 {
+        return Err("setup command exceeds 2000 characters".into());
+    }
+    let repo_path = repo.to_string_lossy().into_owned();
+    let display_command = visible_security_text(command.trim());
+    if display_command.len() > 1000 {
+        return Err("Setup command is too long for a complete native preview (1000 display characters maximum)".into());
+    }
+    let previous = worktree_setup::info_for(&repo_path);
+    if !previous.unset && previous.command.trim() == command.trim() {
+        return Ok(());
+    }
+    native_security_approval(&app, "Save worktree setup command?", format!(
+        "Repository:\n{}\n\nCommand:\n{}\n\nThis shell command runs before agents start in newly created worktrees. Host-mode panes execute it on your computer.",
+        visible_security_text(&repo_path), if command.trim().is_empty() { "(no setup command)" } else { &display_command })).await?;
     worktree_setup::set_command(&repo_path, &command)
 }
 
@@ -2566,14 +2780,13 @@ pub async fn auth_callback_listen(app: tauri::AppHandle) -> Result<u16, String> 
 /// agent is the difference between imperceptible and noticeable.
 #[tauri::command]
 pub async fn agent_cli_status() -> Result<std::collections::HashMap<String, bool>, String> {
-    const KINDS: [&str; 4] = ["claude", "codex", "opencode", "pi"];
-
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let probe = KINDS
+    let mut probe = AGENT_CLI_KINDS
         .iter()
-        .map(|k| format!("command -v {k} >/dev/null 2>&1 && echo {k}"))
+        .map(|k| format!("if command -v {k} >/dev/null 2>&1; then printf '__FLOCK_CLI__{k}=1\\n'; else printf '__FLOCK_CLI__{k}=0\\n'; fi"))
         .collect::<Vec<_>>()
         .join("; ");
+    probe.push_str("; printf '__FLOCK_CLI_PROBE_DONE__\\n'");
 
     let out = tokio::task::spawn_blocking(move || {
         std::process::Command::new(&shell)
@@ -2583,25 +2796,69 @@ pub async fn agent_cli_status() -> Result<std::collections::HashMap<String, bool
             .output()
     })
     .await
-    .map_err(|e| format!("agent probe panicked: {e}"))?;
+    .map_err(|e| format!("Agent readiness check stopped: {e}"))?
+    .map_err(|e| format!("Couldn't run your login shell to check agent readiness: {e}"))?;
 
-    // A shell that will not run at all is not evidence that nothing is
-    // installed. Report every agent as present in that case: an unnecessary
-    // "not installed" warning on a working setup is worse than no warning,
-    // because it sends the user to fix something that is not broken.
-    let found: std::collections::HashSet<String> = match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect(),
-        Err(e) => {
-            tracing::warn!(target: "flock_desktop_lib", error = %e, "could not probe for agent CLIs");
-            return Ok(KINDS.iter().map(|k| (k.to_string(), true)).collect());
+    parse_agent_cli_probe(out.status.success(), &String::from_utf8_lossy(&out.stdout))
+}
+
+const AGENT_CLI_KINDS: [&str; 5] = ["claude", "grok", "codex", "opencode", "pi"];
+
+fn parse_agent_cli_probe(
+    succeeded: bool,
+    stdout: &str,
+) -> Result<std::collections::HashMap<String, bool>, String> {
+    let lines: std::collections::HashSet<_> = stdout.lines().map(str::trim).collect();
+    if !succeeded || !lines.contains("__FLOCK_CLI_PROBE_DONE__") {
+        return Err("Your login shell didn't finish the agent readiness check. Check its startup configuration and try again.".to_string());
+    }
+
+    AGENT_CLI_KINDS.iter().map(|kind| {
+        let present = lines.contains(format!("__FLOCK_CLI__{kind}=1").as_str());
+        let missing = lines.contains(format!("__FLOCK_CLI__{kind}=0").as_str());
+        if present == missing {
+            Err(format!("Couldn't determine whether {kind} is installed. Try checking again."))
+        } else {
+            Ok((kind.to_string(), present))
         }
-    };
+    }).collect()
+}
 
-    Ok(KINDS.iter().map(|k| (k.to_string(), found.contains(*k))).collect())
+#[cfg(test)]
+mod agent_cli_probe_tests {
+    use super::{parse_agent_cli_probe, AGENT_CLI_KINDS};
+
+    fn completed_probe() -> String {
+        let mut output = AGENT_CLI_KINDS.iter()
+            .map(|kind| format!("__FLOCK_CLI__{kind}={}\n", if *kind == "grok" { 1 } else { 0 }))
+            .collect::<String>();
+        output.push_str("__FLOCK_CLI_PROBE_DONE__\n");
+        output
+    }
+
+    #[test]
+    fn includes_grok_and_ignores_shell_startup_chatter() {
+        let output = format!("claude\nWelcome to your shell\n{}", completed_probe());
+        let status = parse_agent_cli_probe(true, &output).unwrap();
+        assert_eq!(status.len(), 5);
+        assert!(status["grok"]);
+        assert!(!status["claude"]);
+    }
+
+    #[test]
+    fn incomplete_or_failed_shell_is_unknown_not_ready_or_missing() {
+        assert!(parse_agent_cli_probe(true, "").is_err());
+        assert!(parse_agent_cli_probe(true, "__FLOCK_CLI__grok=1\n").is_err());
+        assert!(parse_agent_cli_probe(false, &completed_probe()).is_err());
+        let incomplete = completed_probe().replace("__FLOCK_CLI__pi=0\n", "");
+        assert!(parse_agent_cli_probe(true, &incomplete).is_err());
+    }
+
+    #[test]
+    fn contradictory_results_are_unknown() {
+        let output = format!("__FLOCK_CLI__grok=0\n{}", completed_probe());
+        assert!(parse_agent_cli_probe(true, &output).is_err());
+    }
 }
 
 
@@ -2713,5 +2970,88 @@ mod secure_lookup_tests {
         let err = resolve_secure(false, Err("database is locked"));
         assert!(err.is_err(), "must fail closed, got {err:?}");
         assert!(err.unwrap_err().contains("database is locked"));
+    }
+}
+
+#[cfg(test)]
+mod workspace_authorization_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_paths_reject_broad_or_missing_directories_and_reveal_symlinks() {
+        assert!(canonical_workspace_directory("/").is_err());
+        if let Ok(home) = std::env::var("HOME") {
+            assert!(canonical_workspace_directory(&home).is_err());
+        }
+        let dir = std::env::temp_dir().join(format!("flock-workspace-security-{}", Uuid::new_v4()));
+        let root = dir.join("repo");
+        let outside = dir.join("private");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        assert!(canonical_workspace_directory(dir.join("missing").to_str().unwrap()).is_err());
+        let file = root.join("file");
+        std::fs::write(&file, "test").unwrap();
+        assert!(canonical_workspace_directory(file.to_str().unwrap()).is_err());
+        std::os::unix::fs::symlink(&outside, root.join("looks-in-scope")).unwrap();
+        let canonical =
+            canonical_workspace_directory(root.join("looks-in-scope").to_str().unwrap()).unwrap();
+        assert!(
+            !canonical.starts_with(root.canonicalize().unwrap()),
+            "native approval must show the actual external directory"
+        );
+        let approved = root.canonicalize().unwrap();
+        std::fs::rename(&root, dir.join("original-repo")).unwrap();
+        std::os::unix::fs::symlink(&outside, &root).unwrap();
+        assert!(
+            verify_launch_paths(&approved, &approved).is_err(),
+            "replacement during the native prompt must abort before Git/spawn"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ephemeral_sessions_require_valid_ids_explicit_paths_and_keep_their_approved_root() {
+        let dir = std::env::temp_dir().join(format!("flock-ephemeral-security-{}", Uuid::new_v4()));
+        let root = dir.join("repo");
+        let other = dir.join("private");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let root_text = root.to_str().unwrap();
+        let id = format!("copilot:{}", Uuid::new_v4());
+        let mut registered = std::collections::HashMap::new();
+        for bad in [
+            "unknown",
+            "copilot:not-a-uuid",
+            "observe:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        ] {
+            assert!(launch_paths(bad, None, Some(root_text), &registered).is_err());
+        }
+        assert!(launch_paths(&id, None, None, &registered).is_err());
+        let (candidate, _) = launch_paths(&id, None, Some(root_text), &registered).unwrap();
+        assert!(
+            registered.is_empty(),
+            "resolving a candidate never creates a native grant"
+        );
+        registered.insert(id.clone(), candidate);
+        assert!(launch_paths(&id, None, Some(other.to_str().unwrap()), &registered).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn native_grants_do_not_cross_workspace_directory_or_execution_mode() {
+        let root = PathBuf::from("/repo");
+        let accepted: WorkspaceGrant = ("workspace-a".into(), root.clone(), root.clone(), true);
+        let grants = std::collections::HashSet::from([accepted]);
+        assert!(!grants.contains(&("workspace-b".into(), root.clone(), root.clone(), true)));
+        assert!(!grants.contains(&(
+            "workspace-a".into(),
+            root.clone(),
+            PathBuf::from("/private"),
+            true
+        )));
+        assert!(
+            !grants.contains(&("workspace-a".into(), root.clone(), root, false)),
+            "a jail grant must never grant host execution"
+        );
     }
 }

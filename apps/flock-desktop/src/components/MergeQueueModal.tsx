@@ -97,6 +97,10 @@ export default function MergeQueueView({
   }
   return (
     <div className="mq-view">
+      <div className="pr-action-context">
+        {ghUser ? <>GitHub actions run as <strong>@{ghUser}</strong>.</> : "GitHub account unavailable — check your connection in Settings."}
+        {" "}Queued PRs merge automatically in order after approval and completed checks without failures. GitHub branch rules still apply.
+      </div>
       <div className="mq-toolbar-slim">
         {loadError && <div className="pr-manager-error mq-load-error">couldn't refresh — {loadError}</div>}
         <button
@@ -230,9 +234,10 @@ function QueueCard({ d, index, count, ghUser, busyAction, disabled, error, run, 
               className="mq-approve-btn"
               title={`Submit an approving review as @${ghUser}`}
               disabled={disabled}
+              aria-busy={busyAction === "approve"}
               onClick={() => run("approve", () => onApprove(item.repo, item.number))}
             >
-              {busyAction === "approve" ? <span className="pr-review-spinner" /> : <><CheckIcon size={11} /> approve</>}
+              {busyAction === "approve" ? <><span className="pr-review-spinner" /> Approving on GitHub…</> : <><CheckIcon size={11} /> Approve on GitHub</>}
             </button>
           )}
         </div>
@@ -252,7 +257,7 @@ function QueueCard({ d, index, count, ghUser, busyAction, disabled, error, run, 
                 disabled={disabled}
                 onClick={() => run("update", () => githubUpdatePrBranch(item.repo, item.number))}
               >
-                {busyAction === "update" ? <span className="pr-review-spinner" /> : "update branch"}
+                {busyAction === "update" ? <><span className="pr-review-spinner" /> Updating branch…</> : "update branch"}
               </button>
             </>
           ) : state === "dirty" ? (
@@ -285,7 +290,7 @@ function QueueCard({ d, index, count, ghUser, busyAction, disabled, error, run, 
           disabled={disabled}
           onClick={() => run("merge", () => onMergeNow(item.repo, item.number))}
         >
-          {busyAction === "merge" ? <span className="pr-review-spinner" /> : "merge now"}
+          {busyAction === "merge" ? <><span className="pr-review-spinner" /> Merging on GitHub…</> : "Merge now on GitHub"}
         </button>
         {count > 1 && (
           <>
@@ -313,7 +318,7 @@ function QueueCard({ d, index, count, ghUser, busyAction, disabled, error, run, 
           disabled={disabled}
           onClick={() => run("remove", () => onRemove(item.repo, item.number))}
         >
-          {busyAction === "remove" ? <span className="pr-review-spinner" /> : "× remove"}
+          {busyAction === "remove" ? <><span className="pr-review-spinner" /> Removing…</> : "× remove"}
         </button>
       </div>
     </div>
