@@ -675,6 +675,23 @@ function Terminal({ paneId, focused, visible, onIntentCaptured, broadcastGroup, 
       graceTimer = undefined;
       onAgentStartRef.current?.(paneId);
     };
+    /** The agent's first frame can be laid out for the spawn-time 24x80. The
+     *  fit that corrects the PTY lands within the agent's first few hundred
+     *  ms, and a SIGWINCH delivered before its runtime is listening is simply
+     *  gone; claude then leaves its splash/login/trust screens at the stale
+     *  width until some later resize, which is why "it fixes itself when I
+     *  resize the window". Measured live: PTY correct at 34x121, splash drawn
+     *  for 80 cols, and one +1/-1 flap redrew it full-width. The
+     *  subscribe-time repaint below cannot cover this (it fires before the
+     *  agent exists), so the moment the agent is demonstrably painting, hand
+     *  it one size change it cannot have missed. Hidden mounts bank the debt
+     *  for the reveal effect, like every other repaint in this file. */
+    const settleAgentSize = () => {
+      const t = termRef.current;
+      if (!t) return;
+      if (visibleRef.current) forceAgentRepaint(paneId, t);
+      else repaintOwedRef.current = true;
+    };
 
     // Adopting an already-running PTY (popout window, pane returning to the
     // grid) must not depend on the agent redrawing at the right moment — that's
@@ -691,8 +708,8 @@ function Terminal({ paneId, focused, visible, onIntentCaptured, broadcastGroup, 
       // Before the visibility branch: a pane whose workspace is in the
       // background still boots, and its card has to lift on its own.
       const signal = boot.feed(data);
-      if (signal === "start") agentStarted();
-      else if (signal === "armed") graceTimer = setTimeout(agentStarted, PAINT_GRACE_MS);
+      if (signal === "start") { agentStarted(); settleAgentSize(); }
+      else if (signal === "armed") graceTimer = setTimeout(() => { agentStarted(); settleAgentSize(); }, PAINT_GRACE_MS);
       // Hidden pane (background workspace or background tab): hold the bytes
       // and render them once, on reveal. Every pane of every workspace stays
       // mounted and keeps streaming, so without this a user looking at one
