@@ -58,7 +58,10 @@ clang -o "$WORK/input" "$REPO_DIR/scripts/smoke-input.c" -framework ApplicationS
 export HOME="$WORK/home"
 mkdir -p "$HOME"
 
-crash_count() { ls "$1"/flock-desktop-*.ips 2>/dev/null | wc -l | tr -d ' '; }
+# `|| true` inside the group: under set -euo pipefail, a machine with no
+# crash reports at all made `ls` fail the pipeline and killed the whole gate
+# before it launched anything. A clean machine must count as zero, not abort.
+crash_count() { { ls "$1"/flock-desktop-*.ips 2>/dev/null || true; } | wc -l | tr -d ' '; }
 SYSTEM_REPORTS="$(eval echo ~"$(id -un)")/Library/Logs/DiagnosticReports"
 before_crashes="$(crash_count "$SYSTEM_REPORTS")"
 
