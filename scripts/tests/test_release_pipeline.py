@@ -125,6 +125,38 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.assertEqual(actual["VITE_SUPABASE_URL"], "https://public.example")
         self.assertEqual(actual["SOURCE_DATE_EPOCH"], "123")
 
+    def test_macos_tools_accept_command_line_tools_and_reject_missing_tools(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "CommandLineTools"
+            sdk = root / "SDKs/MacOSX.sdk"
+            sdk.mkdir(parents=True)
+            paths = {}
+            for name in ("clang", "notarytool", "stapler"):
+                path = root / "usr/bin" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("#!/bin/sh\nexit 0\n")
+                path.chmod(0o700)
+                paths[name] = path
+
+            def resolve(args, **_kwargs):
+                if args == ["xcrun", "--sdk", "macosx", "--show-sdk-path"]:
+                    return str(sdk)
+                self.assertEqual(args[:2], ["xcrun", "--find"])
+                return str(paths[args[2]])
+
+            with patch.object(pipeline, "run", side_effect=resolve):
+                pipeline.verify_macos_tools()
+                paths["notarytool"].chmod(0o600)
+                with self.assertRaisesRegex(ValueError, "notarytool"):
+                    pipeline.verify_macos_tools()
+                paths["notarytool"].chmod(0o700)
+                paths["stapler"].unlink()
+                with self.assertRaisesRegex(ValueError, "stapler"):
+                    pipeline.verify_macos_tools()
+                sdk.rmdir()
+                with self.assertRaisesRegex(ValueError, "SDK"):
+                    pipeline.verify_macos_tools()
+
     @patch.object(pipeline, "protected_repository")
     def test_publication_requires_matching_remote_tag_and_latest_ci(self, _protected):
         commit = "a" * 40

@@ -60,10 +60,12 @@ format check. Destructive database integration tests must use disposable fixture
 
 ## Prepare and build
 
-Use Apple Silicon macOS with Xcode, the versions in `rust-toolchain.toml` and
+Use Apple Silicon macOS with Xcode Command Line Tools (or full Xcode), the versions in `rust-toolchain.toml` and
 `.node-version`, Python 3.11+, GitHub CLI, Docker, and `minisign`. npm is the version
 bundled with that exact Node distribution. Install the Developer ID certificate
-in the login keychain. Set these environment variables explicitly; the script
+in the login keychain. The active developer tools must provide the macOS SDK,
+`clang`, `notarytool` and `stapler`; the full Xcode application is not required
+for this desktop-only target. Set these environment variables explicitly; the script
 does not silently source `scripts/release.env`:
 
 - `APPLE_SIGNING_IDENTITY`: `Developer ID Application: … (TEAMID)`.

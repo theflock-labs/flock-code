@@ -114,6 +114,18 @@ def build_environment(commit):
     return result
 
 
+def verify_macos_tools():
+    # Desktop-only Tauri builds and notarization work with Command Line Tools.
+    # xcodebuild -version would incorrectly require the full Xcode application.
+    sdk = Path(run(["xcrun", "--sdk", "macosx", "--show-sdk-path"], capture=True))
+    if not sdk.is_dir():
+        raise ValueError("The active macOS SDK is missing")
+    for tool in ("clang", "notarytool", "stapler"):
+        executable = Path(run(["xcrun", "--find", tool], capture=True))
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise ValueError(f"Required macOS release tool missing: {tool}")
+
+
 def preflight(root, version):
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ValueError("Production currently targets Apple Silicon macOS only")
@@ -123,10 +135,10 @@ def preflight(root, version):
     identity = os.environ["APPLE_SIGNING_IDENTITY"]
     if not identity.startswith("Developer ID Application: ") or not identity.endswith(f"({os.environ['APPLE_TEAM_ID']})"):
         raise ValueError("Production requires the matching Developer ID Application identity")
-    for command in ("gh", "node", "npm", "cargo", "rustc", "minisign", "codesign", "xcrun", "hdiutil", "spctl", "xcodebuild", "docker"):
+    for command in ("gh", "node", "npm", "cargo", "rustc", "minisign", "codesign", "xcrun", "hdiutil", "spctl", "docker"):
         if not shutil.which(command):
             raise ValueError(f"Required release tool missing: {command}")
-    run(["xcodebuild", "-version"], capture=True)
+    verify_macos_tools()
     run(["docker", "info", "--format", "{{.ServerVersion}}"], capture=True)
     node = run(["node", "--version"], capture=True).removeprefix("v")
     rust = run(["rustc", "--version"], capture=True).split()[1]
