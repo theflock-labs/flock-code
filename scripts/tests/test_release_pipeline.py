@@ -1,3 +1,4 @@
+import copy
 import io
 import json
 import os
@@ -170,12 +171,13 @@ class ReleaseIntegrityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Link graph escapes"):
                     artifacts.inspect_archive(archive, self.version)
 
-    def test_publication_requires_live_reviews_and_immutable_tags(self):
+    def test_publication_requires_live_single_maintainer_pr_ci_and_immutable_tags(self):
         protection = {
             "enforce_admins": {"enabled": True},
             "required_status_checks": {"strict": True, "checks": [{"context": "CI required", "app_id": 15368}]},
-            "required_pull_request_reviews": {"required_approving_review_count": 1,
-                "require_code_owner_reviews": True, "dismiss_stale_reviews": True, "require_last_push_approval": True},
+            "required_pull_request_reviews": {"required_approving_review_count": 0,
+                "require_code_owner_reviews": False, "dismiss_stale_reviews": False, "require_last_push_approval": False},
+            "restrictions": {"users": [{"login": "remiminnebo"}], "teams": [], "apps": []},
             "allow_force_pushes": {"enabled": False}, "allow_deletions": {"enabled": False},
         }
         ruleset = {"target": "tag", "enforcement": "active", "bypass_actors": [],
@@ -184,9 +186,39 @@ class ReleaseIntegrityTests(unittest.TestCase):
         pipeline.validate_repository_controls(protection, [ruleset])
         with self.assertRaisesRegex(ValueError, "release-tag"):
             pipeline.validate_repository_controls(protection, [])
-        protection["required_pull_request_reviews"]["require_code_owner_reviews"] = False
-        with self.assertRaisesRegex(ValueError, "master review"):
-            pipeline.validate_repository_controls(protection, [ruleset])
+        unsafe_changes = [
+            ("enforce_admins", {"enabled": False}),
+            ("required_pull_request_reviews", None),
+            ("required_pull_request_reviews", {"required_approving_review_count": 0,
+                "bypass_pull_request_allowances": {"users": [{"login": "remiminnebo"}]}}),
+            ("required_status_checks", {"strict": False, "checks": [{"context": "CI required", "app_id": 15368}]}),
+            ("required_status_checks", {"strict": True, "checks": [{"context": "CI required", "app_id": 123}]}),
+            ("required_status_checks", {"strict": True, "checks": []}),
+            ("restrictions", None),
+            ("restrictions", {"users": [{"login": "another-maintainer"}], "teams": [], "apps": []}),
+            ("restrictions", {"users": [{"login": "remiminnebo"}, {"login": "another-maintainer"}]}),
+            ("restrictions", {"users": [{"login": "remiminnebo"}], "teams": [{"slug": "developers"}]}),
+            ("restrictions", {"users": [{"login": "remiminnebo"}], "apps": [{"slug": "release-bot"}]}),
+            ("allow_force_pushes", {"enabled": True}),
+            ("allow_deletions", {"enabled": True}),
+        ]
+        for key, value in unsafe_changes:
+            with self.subTest(key=key, value=value):
+                unsafe = copy.deepcopy(protection)
+                unsafe[key] = value
+                with self.assertRaisesRegex(ValueError, "master PR/CI"):
+                    pipeline.validate_repository_controls(unsafe, [ruleset])
+        for kind in ("teams", "apps"):
+            unsafe = copy.deepcopy(protection)
+            unsafe["required_pull_request_reviews"]["bypass_pull_request_allowances"] = {kind: [{"id": 1}]}
+            with self.subTest(bypass=kind), self.assertRaisesRegex(ValueError, "master PR/CI"):
+                pipeline.validate_repository_controls(unsafe, [ruleset])
+        for key, value in (("enforcement", "disabled"), ("bypass_actors", [{"actor_id": 1}]),
+                           ("rules", [{"type": "deletion"}])):
+            unsafe = copy.deepcopy(ruleset)
+            unsafe[key] = value
+            with self.subTest(tag=key), self.assertRaisesRegex(ValueError, "release-tag"):
+                pipeline.validate_repository_controls(protection, [unsafe])
 
 
 if __name__ == "__main__":
