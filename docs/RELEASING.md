@@ -16,6 +16,15 @@ maintainer to [CODEOWNERS](../.github/CODEOWNERS): a PR author cannot approve th
 own PR, and the current sole owner cannot satisfy code-owner review on their own
 changes. Do not solve this by turning off admin enforcement.
 
+The current single-maintainer rule already requires PRs and GitHub Actions
+`CI required`, enforces the rule for administrators, and restricts updates to
+`remiminnebo`. Force pushes and deletion are blocked. It requires zero reviewer
+approvals so the sole maintainer can merge their own PR after CI passes. The
+payload below adds the independent code-owner review requirements needed for
+production releases; the release script continues to reject the current rule
+until those review requirements are active. Adding a reviewer does not grant
+them permission to merge into `master`.
+
 Apply the reviewed payloads using a repository administrator account:
 
 ```sh

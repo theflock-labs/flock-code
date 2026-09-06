@@ -26,7 +26,7 @@
       "required_approving_review_count": 1,
       "require_last_push_approval": true
     },
-    "restrictions": null,
+    "restrictions": { "users": ["remiminnebo"], "teams": [], "apps": [] },
     "required_linear_history": true,
     "allow_force_pushes": false,
     "allow_deletions": false,

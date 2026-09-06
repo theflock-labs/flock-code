@@ -5,3 +5,8 @@
 
 [alias]
 flock = "run --bin flock-cli --"
+
+[env]
+# whisper-rs-sys 0.13 forwards CMAKE_* variables to its bundled CMake build.
+# Keep Apple Silicon CPU targeting consistent in local, CI and release builds.
+CMAKE_PROJECT_INCLUDE = { value = "cmake/whisper-apple-arm64.cmake", relative = true }
