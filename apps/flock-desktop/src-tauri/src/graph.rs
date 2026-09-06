@@ -7,7 +7,7 @@
 //! checkout and a packaged .app, and users can also drive it by hand with
 //! plain `docker compose` from that directory.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -15,7 +15,7 @@ use std::time::Duration;
 const COMPOSE_YML: &str = include_str!("../graph/docker-compose.yml");
 const SCHEMA_SQL: &str = include_str!("../graph/schema.sql");
 
-pub const KG_URL: &str = "postgresql://flock:flock@127.0.0.1:15432/flock_kg";
+pub const KG_URL: &str = "flock-local";
 const DB_ADDR: &str = "127.0.0.1:15432";
 const CONTAINER: &str = "flock-graph-db";
 
@@ -30,11 +30,11 @@ pub struct GraphStatus {
     pub docker_ready: bool,
     /// The flock-graph-db container exists and is running.
     pub container_running: bool,
-    /// Postgres accepts TCP connections on 127.0.0.1:15432.
+    /// The configured runtime credential can authenticate and read graph metadata.
     pub db_reachable: bool,
     /// Absolute path to the flock-mcp binary, if found.
     pub mcp_binary: Option<String>,
-    /// Connection string agents should use (FLOCK_KG_URL).
+    /// Empty for the local engine; explicit team URL otherwise. Never exposes local secrets.
     pub kg_url: String,
 }
 
@@ -42,11 +42,154 @@ fn graph_dir() -> PathBuf {
     flock_core::paths::shared_data_dir().join("graph")
 }
 
+#[derive(Serialize, Deserialize)]
+struct LocalCredentials {
+    admin: String,
+    runtime: String,
+}
+
+fn credentials_in(dir: &std::path::Path) -> Result<LocalCredentials, String> {
+    let path = dir.join("credentials.json");
+    if !path.exists() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let generate = || {
+            format!(
+                "{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            )
+        };
+        let value = LocalCredentials {
+            admin: generate(),
+            runtime: generate(),
+        };
+        let tmp = dir.join(format!(".credentials-{}", uuid::Uuid::new_v4()));
+        flock_pty::egress::atomic_private_write(
+            &tmp,
+            &serde_json::to_vec(&value).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        // An exclusive hard link publishes the complete file without replacing
+        // another app instance's credentials. A losing writer uses the winner.
+        let linked = std::fs::hard_link(&tmp, &path);
+        let _ = std::fs::remove_file(&tmp);
+        if let Err(e) = linked {
+            if e.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(e.to_string());
+            }
+        }
+    }
+    let value: LocalCredentials = serde_json::from_str(&flock_pty::egress::read_private_file(&path).map_err(|e| format!("Cannot read private graph credentials: {e}"))?)
+        .map_err(|_| "Graph credentials are invalid; restore credentials.json from backup instead of regenerating passwords".to_string())?;
+    if [&value.admin, &value.runtime]
+        .iter()
+        .any(|v| v.len() != 64 || !v.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Err("Graph credentials have an invalid format".into());
+    }
+    Ok(value)
+}
+
+fn is_local_url(url: &str) -> bool {
+    matches!(
+        url,
+        "" | "flock-local"
+            | "postgresql://flock:flock@127.0.0.1:15432/flock_kg"
+            | "postgresql://flock:flock@localhost:15432/flock_kg"
+    )
+}
+
+fn resolved_url(url: &str) -> Result<String, String> {
+    if !is_local_url(url) {
+        return Ok(url.to_string());
+    }
+    let url = flock_pty::egress::read_private_file(&graph_dir().join("runtime-url"))
+        .map_err(|_| "Local graph credentials are unavailable. Start the engine in Settings → flock Graph to finish secure setup.".to_string())?;
+    let url = url.trim();
+    let password = url
+        .strip_prefix("postgresql://flock_app:")
+        .and_then(|s| s.strip_suffix("@127.0.0.1:15432/flock_kg"));
+    if !password.is_some_and(|p| p.len() == 64 && p.bytes().all(|b| b.is_ascii_hexdigit())) {
+        return Err("Local graph runtime-url is invalid; restart the engine from Settings".into());
+    }
+    Ok(url.to_string())
+}
+
+fn runtime_url(credentials: &LocalCredentials) -> String {
+    format!(
+        "postgresql://flock_app:{}@127.0.0.1:15432/flock_kg",
+        credentials.runtime
+    )
+}
+
+fn admin_sql(credentials: &LocalCredentials) -> String {
+    // Both password fields are validated hex. Send SQL on stdin, never in a
+    // process argument, environment variable, command log or compose metadata.
+    include_str!("../graph/roles.sql")
+        .replace("__ADMIN_PASSWORD__", &credentials.admin)
+        .replace("__RUNTIME_PASSWORD__", &credentials.runtime)
+}
+
+fn provision_database(credentials: &LocalCredentials) -> Result<(), String> {
+    use std::io::Write;
+    let bin = docker_bin().ok_or("docker CLI not found")?;
+    let mut child = Command::new(bin)
+        .args([
+            "exec",
+            "-i",
+            CONTAINER,
+            "psql",
+            "-U",
+            "flock",
+            "-d",
+            "flock_kg",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-q",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    child
+        .stdin
+        .take()
+        .ok_or("could not open graph provisioning input")?
+        .write_all(admin_sql(credentials).as_bytes())
+        .map_err(|e| e.to_string())?;
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    // PostgreSQL errors can quote input SQL: keep passwords out of error UI.
+    if !output.status.success() {
+        return Err("Graph credential provisioning failed; the data volume was preserved. Inspect the container's database health and retry Start the engine.".into());
+    }
+    let admin = format!(
+        "postgresql://flock:{}@127.0.0.1:15432/flock_kg",
+        credentials.admin
+    );
+    tauri::async_runtime::block_on(async {
+        flock_kg::KnowledgeGraph::migrate_schema(&admin)
+            .await
+            .map_err(|e| format!("Graph schema upgrade failed: {e}"))
+    })?;
+    flock_pty::egress::atomic_private_write(
+        &graph_dir().join("runtime-url"),
+        runtime_url(credentials).as_bytes(),
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// Write the embedded compose + schema to ~/.flock/graph (idempotent —
 /// always overwrites so app upgrades propagate infra changes).
 fn materialize_infra() -> Result<PathBuf, String> {
     let dir = graph_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let credentials = credentials_in(&dir)?;
+    flock_pty::egress::atomic_private_write(
+        &dir.join("admin-password"),
+        credentials.admin.as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
     std::fs::write(dir.join("docker-compose.yml"), COMPOSE_YML).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("schema.sql"), SCHEMA_SQL).map_err(|e| e.to_string())?;
     Ok(dir)
@@ -93,9 +236,19 @@ fn container_running() -> bool {
         .unwrap_or(false)
 }
 
-fn db_reachable(addr: &str) -> bool {
-    let Ok(sock) = addr.parse() else { return false };
-    std::net::TcpStream::connect_timeout(&sock, Duration::from_millis(600)).is_ok()
+fn db_authenticated(url: &str) -> bool {
+    if url.is_empty() {
+        return false;
+    }
+    tauri::async_runtime::block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            flock_kg::KnowledgeGraph::verify_connection(url),
+        )
+        .await
+        .map(|r| r.is_ok())
+        .unwrap_or(false)
+    })
 }
 
 /// Find the flock-mcp server binary. Packaged builds ship it next to the
@@ -137,20 +290,35 @@ fn find_mcp_binary() -> Option<String> {
 /// agent: the server binary path (if found) and the connection URL. Cheap (no
 /// docker probes), so it's safe on the spawn hot path.
 pub fn mcp_config(kg_url: Option<String>) -> (Option<String>, String) {
-    (find_mcp_binary(), kg_url.unwrap_or_else(|| KG_URL.to_string()))
+    let requested = kg_url.as_deref().unwrap_or(KG_URL);
+    match resolved_url(requested) {
+        Ok(url) => (
+            find_mcp_binary(),
+            if is_local_url(requested) {
+                String::new()
+            } else {
+                url
+            },
+        ),
+        Err(_) => (None, String::new()),
+    }
 }
 
 pub fn status(kg_url: Option<String>) -> GraphStatus {
-    let url = kg_url.unwrap_or_else(|| KG_URL.to_string());
+    let url = resolved_url(kg_url.as_deref().unwrap_or(KG_URL)).unwrap_or_default();
     let cli = docker_bin();
     let docker_ready = cli.is_some() && docker_ready();
     GraphStatus {
         docker_cli: cli.map(|p| p.to_string_lossy().into_owned()),
         docker_ready,
         container_running: docker_ready && container_running(),
-        db_reachable: db_reachable(&db_addr_of(&url)),
+        db_reachable: db_authenticated(&url),
         mcp_binary: find_mcp_binary(),
-        kg_url: url,
+        kg_url: if is_local_url(kg_url.as_deref().unwrap_or(KG_URL)) {
+            String::new()
+        } else {
+            url
+        },
     }
 }
 
@@ -169,6 +337,10 @@ const DB_WARMUP: Duration = Duration::from_secs(90);
 /// Every failure path returns a message naming the next thing to do, because
 /// this runs behind one button and the user cannot see the command.
 pub fn up() -> Result<(), String> {
+    let dir = graph_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let _operation = flock_pty::egress::private_file_lock(&dir.join("operation.lock"))
+        .map_err(|e| e.to_string())?;
     let dir = materialize_infra()?;
     let Some(bin) = docker_bin() else {
         return Err(format!(
@@ -204,11 +376,24 @@ pub fn up() -> Result<(), String> {
 
     // Poll rather than trust the exit code: the pull and the container start
     // succeed well before Postgres is listening.
-    let addr = db_addr_of(KG_URL);
+    let addr = DB_ADDR.to_string();
     let deadline = std::time::Instant::now() + DB_WARMUP;
     while std::time::Instant::now() < deadline {
-        if db_reachable(&addr) {
-            return Ok(());
+        if docker(&[
+            "exec",
+            CONTAINER,
+            "pg_isready",
+            "-h",
+            "127.0.0.1",
+            "-U",
+            "flock",
+            "-d",
+            "flock_kg",
+        ])
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+        {
+            return provision_database(&credentials_in(&dir)?);
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -320,11 +505,17 @@ pub async fn mirror_membership(
 /// Phase-3 headline metrics over the trailing `days` window. Ensures the
 /// telemetry tables first so a fresh reader (Insights panel opened before any
 /// agent ran) gets zeros, not an error.
-pub async fn insights(days: i64, kg_url: Option<String>) -> Result<flock_kg::InsightsSummary, String> {
+pub async fn insights(
+    days: i64,
+    kg_url: Option<String>,
+) -> Result<flock_kg::InsightsSummary, String> {
     let engine = kg(kg_url.as_deref().unwrap_or(KG_URL))?;
     let _ = engine.ensure_event_schema().await;
     let since = chrono::Utc::now() - chrono::Duration::days(days.clamp(1, 3650));
-    engine.insights_summary(since).await.map_err(|e| e.to_string())
+    engine
+        .insights_summary(since)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ─── Live graph reads (sidebar card) ─────────────────────────────────────────
@@ -334,10 +525,13 @@ pub async fn insights(days: i64, kg_url: Option<String>) -> Result<flock_kg::Ins
 /// point flock at a centrally hosted graph instead (Settings → Graph).
 /// connect_lazy never touches the network at init, so creating an entry is
 /// safe even when the target is down — queries fail fast (3s) instead.
-static KG_POOLS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, flock_kg::KnowledgeGraph>>> =
-    std::sync::OnceLock::new();
+static KG_POOLS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, flock_kg::KnowledgeGraph>>,
+> = std::sync::OnceLock::new();
 
 fn kg(url: &str) -> Result<flock_kg::KnowledgeGraph, String> {
+    let resolved = resolved_url(url)?;
+    let url = resolved.as_str();
     let pools = KG_POOLS.get_or_init(Default::default);
     let mut map = pools.lock().unwrap();
     if let Some(existing) = map.get(url) {
@@ -348,27 +542,16 @@ fn kg(url: &str) -> Result<flock_kg::KnowledgeGraph, String> {
     Ok(fresh)
 }
 
-/// Host:port of a postgres:// URL, for the reachability probe. Falls back
-/// to the local engine's address when parsing fails.
-fn db_addr_of(url: &str) -> String {
-    let after_at = url.rsplit('@').next().unwrap_or("");
-    let hostport = after_at.split('/').next().unwrap_or("");
-    if hostport.is_empty() {
-        DB_ADDR.to_string()
-    } else if hostport.contains(':') {
-        hostport.to_string()
-    } else {
-        format!("{hostport}:5432")
-    }
-}
-
 #[derive(Debug, Serialize)]
 pub struct GraphOverview {
     pub stats: flock_kg::GraphStats,
 }
 
 /// Sidebar summary: workspace-scoped counts + latest activity.
-pub async fn overview(workspace_id: Option<String>, kg_url: Option<String>) -> Result<GraphOverview, String> {
+pub async fn overview(
+    workspace_id: Option<String>,
+    kg_url: Option<String>,
+) -> Result<GraphOverview, String> {
     let kg = kg(kg_url.as_deref().unwrap_or(KG_URL))?;
     let stats = kg
         .workspace_stats(workspace_id.as_deref())
@@ -380,7 +563,9 @@ pub async fn overview(workspace_id: Option<String>, kg_url: Option<String>) -> R
 /// Grounding brief for a workspace (empty when nothing's been recorded yet).
 pub async fn brief(workspace_id: String, kg_url: Option<String>) -> Result<String, String> {
     let kg = kg(kg_url.as_deref().unwrap_or(KG_URL))?;
-    kg.workspace_brief(&workspace_id).await.map_err(|e| e.to_string())
+    kg.workspace_brief(&workspace_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ─── Graph Explorer reads ────────────────────────────────────────────────────
@@ -395,9 +580,14 @@ pub async fn list_nodes(
     kg_url: Option<String>,
 ) -> Result<Vec<flock_kg::KgNode>, String> {
     let kg = kg(kg_url.as_deref().unwrap_or(KG_URL))?;
-    kg.list_nodes(workspace_id.as_deref(), kind.as_deref(), query.as_deref(), limit.unwrap_or(100))
-        .await
-        .map_err(|e| e.to_string())
+    kg.list_nodes(
+        workspace_id.as_deref(),
+        kind.as_deref(),
+        query.as_deref(),
+        limit.unwrap_or(100),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// A node's immediate neighbors (both directions), for the detail pane.
@@ -438,14 +628,23 @@ pub async fn recall(
     let _ = kg.ensure_event_schema().await;
     let since = chrono::Utc::now() - chrono::Duration::days(days.clamp(1, 3650));
     let ws = workspace_id.as_deref();
-    let passes = kg.recent_groundings(ws, 40).await.map_err(|e| e.to_string())?;
-    let top = kg.recall_counts(ws, since, 200).await.map_err(|e| e.to_string())?;
+    let passes = kg
+        .recent_groundings(ws, 40)
+        .await
+        .map_err(|e| e.to_string())?;
+    let top = kg
+        .recall_counts(ws, since, 200)
+        .await
+        .map_err(|e| e.to_string())?;
     // Coverage's numerator comes from `recall_stats`, not from `top.len()`.
     // The leaderboard is capped at 200, so counting its rows quietly turned
     // coverage into a floor on any graph big enough for the question to matter
     // — and a metric that understates only on large graphs is the same class of
     // mistake as one that overstates on small ones.
-    let stats = kg.recall_stats(ws, since).await.map_err(|e| e.to_string())?;
+    let stats = kg
+        .recall_stats(ws, since)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(RecallReport { passes, top, stats })
 }
 
@@ -463,6 +662,10 @@ pub async fn subgraph(
 
 /// `docker compose down` (data volume is preserved).
 pub fn down() -> Result<(), String> {
+    let dir = graph_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let _operation = flock_pty::egress::private_file_lock(&dir.join("operation.lock"))
+        .map_err(|e| e.to_string())?;
     let dir = materialize_infra()?;
     let bin = docker_bin().ok_or("Can't find the docker command.")?;
     let out = Command::new(bin)
@@ -524,7 +727,9 @@ async fn backup_once(url: &str) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let Ok(file) = std::fs::File::create(&tmp) else { return };
+    let Ok(file) = std::fs::File::create(&tmp) else {
+        return;
+    };
     let mut w = std::io::BufWriter::new(file);
 
     // Read first, then move into place. A truncated or half-written file
@@ -623,8 +828,49 @@ mod tests {
     fn status_separates_a_missing_cli_from_a_stopped_daemon() {
         let s = status(None);
         if s.docker_ready {
-            assert!(s.docker_cli.is_some(), "a ready daemon implies a located CLI");
+            assert!(
+                s.docker_cli.is_some(),
+                "a ready daemon implies a located CLI"
+            );
         }
         assert!(!s.container_running || s.docker_ready);
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    #[test]
+    fn credentials_are_private_stable_and_install_specific() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("flock-credential-test-{}", uuid::Uuid::new_v4()));
+        let a = credentials_in(&dir).unwrap();
+        let b = credentials_in(&dir).unwrap();
+        assert_eq!(a.admin, b.admin);
+        assert_eq!(a.runtime, b.runtime);
+        assert_ne!(a.admin, a.runtime);
+        assert_eq!(
+            std::fs::metadata(dir.join("credentials.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let other = credentials_in(&dir.join("other-install")).unwrap();
+        assert_ne!(a.runtime, other.runtime);
+        assert!(!runtime_url(&a).contains(&a.admin));
+        std::fs::write(dir.join("credentials.json"), "corrupt").unwrap();
+        assert!(
+            credentials_in(&dir).is_err(),
+            "corruption must not silently regenerate credentials"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("credentials.json")).unwrap(),
+            "corrupt"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

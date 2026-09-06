@@ -1,0 +1,130 @@
+/* Task and live status form the primary line; identity and execution mode
+   remain visible on a secondary line, with terminal output at full contrast. */
+.pane-topbar.pane-task-topbar {
+  height: auto;
+  min-height: 58px;
+  padding-block: 5px;
+  gap: 8px;
+  border-bottom: 1px solid var(--rule-faint);
+}
+.pane-task-topbar .pane-topbar-lead {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.pane-task-row, .pane-identity-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.pane-identity-row { overflow: hidden; }
+.pane-task-topbar .pane-topbar-intent,
+.pane-task-placeholder {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+  text-align: left;
+  font-size: var(--fs-sm);
+  font-style: normal;
+  font-weight: var(--weight-medium);
+  line-height: 1.5;
+  color: var(--text-hi);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-task-placeholder { color: var(--text-low); font-weight: normal; }
+.pane-live-status {
+  flex: 0 0 auto;
+  color: var(--text-mid);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.pane-live-status-awaiting_input, .pane-live-status-blocked { color: var(--yellow); }
+.pane-live-status-failed { color: var(--orange); }
+.pane-live-status-working, .pane-live-status-done { color: var(--action); }
+.pane-task-topbar .pane-topbar-actions { gap: 2px; }
+.pane-task-topbar .pane-chip-lent { min-width: 0; max-width: 110px; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; }
+.pane-identity-row .agent-kind-badge { flex-shrink: 0; }
+
+.input-sync-strip {
+  display: flex;
+  align-items: flex-start;
+  flex-shrink: 0;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--yellow) 50%, var(--border-hover));
+  background: color-mix(in srgb, var(--yellow) 9%, var(--bg-window));
+  color: var(--yellow);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  zoom: var(--ui-scale, 1);
+}
+.input-sync-strip > svg { flex: 0 0 auto; margin-top: 3px; }
+.input-sync-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.input-sync-copy > span { color: var(--text-mid); }
+.input-sync-recipients { overflow-wrap: anywhere; }
+.input-sync-stop, .attention-pin-button {
+  min-height: 28px;
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  font: inherit;
+  color: var(--text-hi);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-chip);
+  background: var(--bg-window);
+  cursor: pointer;
+}
+.input-sync-stop:hover, .attention-pin-button:hover { background: var(--bg-hover); }
+.input-sync-stop:focus-visible, .attention-pin-button:focus-visible, .attention-row:focus-visible {
+  outline: 2px solid var(--action);
+  outline-offset: -2px;
+}
+.attention-section-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.attention-section-header .pr-popover-activity-head { margin: 0; }
+.attention-pin-button { font-size: var(--fs-xs); }
+.attention-row-list { display: flex; flex-direction: column; gap: 2px; }
+.attention-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  padding: 9px 8px;
+  border: 0;
+  border-radius: var(--radius-chip);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.attention-row:hover { background: var(--bg-hover); }
+.attention-row-task { color: var(--text-hi); font-size: var(--fs-sm); line-height: 1.4; overflow-wrap: anywhere; }
+.attention-row-place { color: var(--text-mid); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.attention-row-status { color: var(--yellow); font-size: var(--fs-xs); }
+.attention-row-duration { color: var(--text-mid); }
+.attention-row-hint { color: var(--text-low); font-size: var(--fs-xs); }
+.attention-pinned-panel {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--rule-faint);
+  padding: 8px 16px;
+  background: var(--bg-window);
+  font-family: var(--font-sans);
+  zoom: var(--ui-scale, 1);
+}
+.attention-pinned-panel h2 { margin: 0; font-size: var(--fs-sm); font-weight: var(--weight-medium); color: var(--text-hi); }
+.attention-pinned-panel .attention-row-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  max-height: 170px;
+  overflow: auto;
+  gap: 4px 12px;
+}
+.attention-pinned-empty { color: var(--text-mid); font-size: var(--fs-sm); margin: 8px 0 2px; }
+@media (max-width: 700px) {
+  .input-sync-strip { flex-wrap: wrap; }
+  .input-sync-stop { margin-left: 24px; }
+  .attention-pinned-panel .attention-row-list { max-height: 130px; }
+}

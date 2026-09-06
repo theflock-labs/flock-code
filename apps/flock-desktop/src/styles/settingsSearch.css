@@ -1,0 +1,49 @@
+.settings-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--rule-faint);
+  flex-shrink: 0;
+}
+.settings-search-bar label { font-size: var(--fs-sm); color: var(--text-mid); }
+.settings-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-chip);
+  background: var(--bg-window);
+  color: var(--text-hi);
+  font: inherit;
+  font-size: var(--fs-base);
+}
+.settings-search-input:focus-visible { outline: 2px solid var(--action); outline-offset: 1px; }
+.settings-search-input::placeholder { color: var(--text-low); }
+.settings-search-bar button { min-height: 28px; }
+.settings-search-count { margin: 0 0 12px; font-size: var(--fs-sm); color: var(--text-low); }
+.settings-search-list { margin: 0; padding: 0; list-style: none; }
+.settings-search-list li + li { border-top: 1px solid var(--rule-faint); }
+.settings-search-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 12px 8px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--radius-chip);
+  color: var(--text-hi);
+  cursor: pointer;
+}
+.settings-search-result:hover { background: var(--sel-quiet); }
+.settings-search-result:focus-visible { outline: 2px solid var(--action); outline-offset: -2px; }
+.settings-search-result-label { font-family: var(--font-sans); font-size: var(--fs-base); font-weight: var(--weight-medium); }
+.settings-search-result-section, .settings-search-result-description { font-family: var(--font-sans); font-size: var(--fs-sm); color: var(--text-low); }
+.settings-search-destination { outline: 2px solid var(--action); outline-offset: 4px; border-radius: var(--radius-chip); scroll-margin: 12px; }
+.settings-search-section { display: flex; flex-direction: column; gap: 18px; }
+.settings-search-content { display: flex; flex-direction: column; gap: 18px; }
+.settings-search-content[hidden] { display: none; }
+.settings-oauth-footer { flex-wrap: wrap; gap: 8px; }
+.settings-oauth-footer > span { flex: 1; font-size: var(--fs-sm); color: var(--text-mid); }

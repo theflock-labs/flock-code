@@ -34,8 +34,10 @@ services:
       - "127.0.0.1:15432:5432"
     environment:
       POSTGRES_USER: flock
-      POSTGRES_PASSWORD: flock
+      POSTGRES_PASSWORD_FILE: /run/secrets/admin-password
       POSTGRES_DB: flock_kg
+    secrets:
+      - admin-password
     volumes:
       - flock-graph-data:/var/lib/postgresql/data
       - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
@@ -47,3 +49,7 @@ services:
 
 volumes:
   flock-graph-data:
+
+secrets:
+  admin-password:
+    file: ./admin-password

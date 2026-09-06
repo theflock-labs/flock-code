@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, act, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, act, fireEvent, waitFor } from "@testing-library/react";
 
 // The cockpit had no test that ever rendered it. Everything below the mocks is
 // the real App: 4,000 lines of hooks, effects and layout, mounted the way the
@@ -35,8 +35,8 @@ const RESULTS: Record<string, unknown> = {
   listWorkspaces: [WORKSPACE],
   getCwd: "/tmp/repo",
   restoreWorkspace: SAVED_STATE,
-  spawnPane: "pane-1",
-  getPersistedPaneBuffer: null,
+  spawnPane: { id: "pane-1", workspace_id: WORKSPACE.id, kind: "claude", status: "idle", rows: 24, cols: 80 },
+  getPersistedPaneBuffer: [],
   containerStatus: { available: false, daemon_running: false, image_ready: false },
   hasGithubToken: false,
   getAgentPref: "claude",
@@ -140,6 +140,7 @@ vi.mock("./lib/flockId", async (importOriginal) => ({
 }));
 
 vi.mock("./lib/presence", () => ({
+  getAblyClient: () => null,
   connectPresence: vi.fn(async () => {}),
   disconnectPresence: vi.fn(),
   updateAgentCount: vi.fn(async () => {}),
@@ -156,6 +157,8 @@ vi.mock("./components/Terminal", () => ({
 vi.mock("./components/RemoteTerminal", () => ({ default: () => <div data-testid="remote-term" /> }));
 
 import App from "./App";
+import { OPEN_FEATURE_TOUR_EVENT } from "./lib/onboarding";
+import { OPEN_GRAPH_EXPLORER_EVENT } from "./lib/graphSettings";
 
 // Node exposes its own half-implemented localStorage global that shadows
 // jsdom's, so supply a real one rather than depending on which wins.
@@ -246,6 +249,87 @@ describe("App smoke", () => {
     expect(container.querySelector(".app-shell")).toBeTruthy();
     expect(container.querySelector(".crash")).toBeNull();
     RESULTS.restoreWorkspace = SAVED_STATE;
+  });
+});
+
+describe("App UX entry points", () => {
+  afterEach(() => {
+    RESULTS.listWorkspaces = [WORKSPACE];
+    RESULTS.restoreWorkspace = SAVED_STATE;
+    delete RESULTS.graphListNodes;
+  });
+
+  it("takes first-run users directly from the short intro to agent setup", async () => {
+    localStorage.removeItem("flock:onboarding-seen");
+    RESULTS.listWorkspaces = [];
+    await mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up my first agent" }));
+    expect(await screen.findByRole("dialog", { name: "New workspace" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Welcome to flock" })).toBeNull();
+    expect(localStorage.getItem("flock:onboarding-seen")).toBe("1");
+    expect(localStorage.getItem("flock:first-agent-launched")).toBeNull();
+  });
+
+  it("opens the optional feature tour without replaying the first-run intro", async () => {
+    await mount();
+    act(() => window.dispatchEvent(new Event(OPEN_FEATURE_TOUR_EVENT)));
+    expect(await screen.findByRole("dialog", { name: "Feature tour" })).toBeTruthy();
+    expect(screen.queryByText("Set up my first agent")).toBeNull();
+    expect(localStorage.getItem("flock:first-agent-launched")).toBe("1");
+  });
+
+  it("opens knowledge in the originating workspace, including explicit all-workspace scope", async () => {
+    RESULTS.graphListNodes = [];
+    await mount();
+    const tauri = await import("./lib/tauri");
+    act(() => window.dispatchEvent(new CustomEvent(OPEN_GRAPH_EXPLORER_EVENT, { detail: { workspaceId: "origin-workspace" } })));
+    await waitFor(() => expect(tauri.graphListNodes).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: "origin-workspace" }), expect.any(String)));
+    // Escape closes the explorer; its next opening must use that event's
+    // explicit null rather than silently falling back to the focused repo.
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    act(() => window.dispatchEvent(new CustomEvent(OPEN_GRAPH_EXPLORER_EVENT, { detail: { workspaceId: null } })));
+    await waitFor(() => expect(tauri.graphListNodes).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId: null }), expect.any(String)));
+  });
+
+  it("restores the user's pinned attention preference and lets them unpin it", async () => {
+    localStorage.setItem("flock:attention-pinned", "1");
+    await mount();
+    expect(screen.getByRole("region", { name: "Pinned attention list" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Unpin list" }));
+    expect(screen.queryByRole("region", { name: "Pinned attention list" })).toBeNull();
+    expect(localStorage.getItem("flock:attention-pinned")).toBe("0");
+  });
+
+  it("reveals a waiting agent when another pane is zoomed before acknowledging it", async () => {
+    localStorage.setItem("flock:attention-pinned", "1");
+    RESULTS.restoreWorkspace = JSON.stringify({
+      agentKind: "claude", focusedPaneId: "pane-a", zoomedPaneId: "pane-a",
+      layoutTree: { type: "split", dir: "horizontal", ratio: 0.5,
+        first: { type: "leaf", paneId: "pane-a" }, second: { type: "leaf", paneId: "pane-b" } },
+      panes: [
+        { id: "pane-a", cmd: "claude", args: [], cwd: "/tmp/repo", displayName: "Pluto" },
+        { id: "pane-b", cmd: "claude", args: [], cwd: "/tmp/repo", displayName: "Hazel", intent: "Fix checkout validation" },
+      ],
+    });
+    const tauri = await import("./lib/tauri");
+    vi.mocked(tauri.spawnPane)
+      .mockResolvedValueOnce({ id: "live-a", workspace_id: WORKSPACE.id, kind: "claude", status: "working", rows: 24, cols: 80 })
+      .mockResolvedValueOnce({ id: "live-b", workspace_id: WORKSPACE.id, kind: "claude", status: "awaiting_input", rows: 24, cols: 80 });
+    const geometry = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, top: 0, left: 0, right: 900, bottom: 700, width: 900, height: 700, toJSON: () => ({}),
+    });
+    try {
+      await mount();
+      expect(screen.getByTestId("term-live-a")).toBeTruthy();
+      expect(screen.queryByTestId("term-live-b")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /Fix checkout validation.*Hazel/ }));
+      await waitFor(() => expect(screen.getByTestId("term-live-b")).toBeTruthy());
+      expect(screen.queryByTestId("term-live-a")).toBeNull();
+      expect(tauri.ackPaneAttention).toHaveBeenCalledWith("live-b");
+      expect(screen.getByRole("button", { name: "Unzoom Pane" })).toBeTruthy();
+    } finally {
+      geometry.mockRestore();
+    }
   });
 });
 

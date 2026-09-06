@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import PaneArea, { type BorrowedPane } from "./PaneArea";
 import PoppedPaneWindow from "./PoppedPaneWindow";
 import type { Pane, Workspace } from "../types";
+import { broadcastKey, clearBroadcast, isBroadcasting } from "../lib/broadcastInput";
 
 // popOutPane removes the leaf only from the tab you clicked. The other
 // workspace that still lays that id out keeps a Terminal, and the pop-out
@@ -13,8 +14,8 @@ import type { Pane, Workspace } from "../types";
 // layout after each direction of the pop.
 
 vi.mock("./Terminal", () => ({
-  default: ({ paneId, visible }: { paneId: string; visible: boolean }) => (
-    <div data-testid={`term-${paneId}`} data-visible={visible ? "1" : "0"} />
+  default: ({ paneId, visible, broadcastGroup }: { paneId: string; visible: boolean; broadcastGroup?: string[] | null }) => (
+    <div data-testid={`term-${paneId}`} data-visible={visible ? "1" : "0"} data-broadcast={broadcastGroup?.join(",") ?? ""} />
   ),
 }));
 vi.mock("./ExternalTerminalButton", () => ({ default: () => null }));
@@ -209,7 +210,98 @@ beforeEach(() => {
   } as unknown as typeof ResizeObserver;
 });
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); clearBroadcast(broadcastKey("owner", "owner-tab")); clearBroadcast(broadcastKey("owner", "other-tab")); });
+
+describe("visible keyboard input sync disclosure and recipients", () => {
+  function pairWorkspace(): Workspace {
+    return workspace("owner", {
+      panes: [pane(), pane({ id: "p2", displayName: "Hazel", intent: "Fix the login redirect", status: "awaiting_input" })],
+      tabs: [{ id: "owner-tab", name: "1", layoutTree: {
+        type: "split", dir: "horizontal", ratio: 0.5,
+        first: { type: "leaf", paneId: "p1" }, second: { type: "leaf", paneId: "p2" },
+      }, focusedPaneId: "p1", zoomedPaneId: null }],
+    });
+  }
+
+  it("discloses names and exact delivery count, and stops without closing the tab", () => {
+    render(<PaneArea workspace={pairWorkspace()} isVisible {...handlers()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sync keyboard input to visible local panes" }));
+    expect(screen.getByRole("status").textContent).toBe("Input is synced to 2 panes");
+    expect(screen.getByText("Recipients: Pluto, Hazel")).toBeTruthy();
+    expect(screen.getByTestId("term-p1").dataset.broadcast).toBe("p1,p2");
+    expect(screen.getByTestId("term-p2").dataset.broadcast).toBe("p1,p2");
+    expect(screen.getByRole("button", { name: "Agent intent: Fix the login redirect" })).toBeTruthy();
+    expect(screen.getByText("Needs input")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Stop syncing" }));
+    expect(isBroadcasting(broadcastKey("owner", "owner-tab"))).toBe(false);
+    expect(screen.queryByRole("region", { name: "Keyboard input sync" })).toBeNull();
+    expect(screen.getByTestId("term-p1").dataset.broadcast).toBe("");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Sync keyboard input to visible local panes" }));
+  });
+
+  it("pauses delivery under zoom and resumes only when both panes are visible", () => {
+    const ws = pairWorkspace();
+    const view = render(<PaneArea workspace={ws} isVisible {...handlers()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sync keyboard input to visible local panes" }));
+    const zoomed = { ...ws, tabs: [{ ...ws.tabs[0], zoomedPaneId: "p1" }] };
+    view.rerender(<PaneArea workspace={zoomed} isVisible {...handlers()} />);
+    expect(screen.getByRole("status").textContent).toBe("Input sync is paused");
+    expect(screen.getByText("Unzoom to sync with other visible panes.")).toBeTruthy();
+    expect(screen.getByTestId("term-p1").dataset.broadcast).toBe("");
+    view.rerender(<PaneArea workspace={ws} isVisible {...handlers()} />);
+    expect(screen.getByRole("status").textContent).toBe("Input is synced to 2 panes");
+  });
+
+  it("excludes popped and booting panes while retaining borrowed local recipients", () => {
+    const ws = pairWorkspace();
+    const borrowed = loan(ws.panes[1], workspace("home", { name: "Other repo" }));
+    const borrower = { ...ws, panes: [ws.panes[0]] };
+    const view = render(<PaneArea workspace={borrower} borrowed={borrowed} isVisible {...handlers()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sync keyboard input to visible local panes" }));
+    expect(screen.getByText("Recipients: Pluto, Hazel (Other repo)")).toBeTruthy();
+    expect(screen.getByTestId("term-p1").dataset.broadcast).toBe("p1,p2");
+    view.rerender(<PaneArea workspace={borrower} borrowed={borrowed} poppedOutIds={new Set(["p2"])} isVisible {...handlers()} />);
+    expect(screen.getByRole("status").textContent).toBe("Input sync is paused");
+    expect(screen.getByTestId("term-p1").dataset.broadcast).toBe("");
+    view.rerender(<PaneArea workspace={{ ...ws, panes: [ws.panes[0], { ...ws.panes[1], booting: true }] }} isVisible {...handlers()} />);
+    expect(within(screen.getByRole("region", { name: "Keyboard input sync" })).getByRole("status").textContent).toBe("Input sync is paused");
+    expect(screen.getByTestId("term-p2").dataset.broadcast).toBe("");
+  });
+
+  it("clears hidden tabs' delivery groups and excludes remote streams", () => {
+    const ws = pairWorkspace();
+    const other = { id: "other-tab", name: "2", layoutTree: { type: "leaf" as const, paneId: "remote" }, focusedPaneId: "remote", zoomedPaneId: null };
+    const withOther = { ...ws, panes: [...ws.panes, pane({ id: "remote", streamId: "stream", displayName: "Remote agent" })], tabs: [...ws.tabs, other] };
+    const view = render(<PaneArea workspace={withOther} isVisible {...handlers()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sync keyboard input to visible local panes" }));
+    view.rerender(<PaneArea workspace={{ ...withOther, focusedTabId: "other-tab" }} isVisible {...handlers()} />);
+    expect(screen.queryByRole("region", { name: "Keyboard input sync" })).toBeNull();
+    expect(screen.getByTestId("term-p1").dataset.broadcast).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Sync keyboard input to visible local panes" }));
+    expect(screen.getByText("No ready local panes are visible.")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("Input sync is paused");
+    // Stopping one tab does not silently change another tab's explicit mode.
+    fireEvent.click(screen.getByRole("button", { name: "Stop syncing" }));
+    expect(isBroadcasting(broadcastKey("owner", "owner-tab"))).toBe(true);
+    act(() => clearBroadcast(broadcastKey("owner", "owner-tab")));
+  });
+
+  it("isolates identical legacy tab IDs across workspaces and clears modes on removal", () => {
+    const ws = pairWorkspace();
+    const other = { ...ws, id: "other", name: "Other" };
+    const view = render(<>
+      <div data-testid="sync-owner"><PaneArea workspace={ws} isVisible {...handlers()} /></div>
+      <div data-testid="sync-other"><PaneArea workspace={other} isVisible={false} {...handlers()} /></div>
+    </>);
+    const ownerView = within(screen.getByTestId("sync-owner"));
+    fireEvent.click(ownerView.getByRole("button", { name: "Sync keyboard input to visible local panes" }));
+    expect(isBroadcasting(broadcastKey("owner", "owner-tab"))).toBe(true);
+    expect(isBroadcasting(broadcastKey("other", "owner-tab"))).toBe(false);
+    expect(within(screen.getByTestId("sync-other")).queryByRole("region", { name: "Keyboard input sync" })).toBeNull();
+    view.unmount();
+    expect(isBroadcasting(broadcastKey("owner", "owner-tab"))).toBe(false);
+  });
+});
 
 describe("one PTY driver after popping out a borrowed pane", () => {
   it("popping from the borrower does not leave a visible driver in the owner", () => {

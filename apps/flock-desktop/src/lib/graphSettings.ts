@@ -13,6 +13,24 @@ export const OPEN_GRAPH_SETUP_EVENT = "flock:open-graph-setup";
  * the sidebar Graph card and handled in App. */
 export const OPEN_GRAPH_EXPLORER_EVENT = "flock:open-graph-explorer";
 
+/** Preserve the workspace that initiated navigation. Explicit null opens all
+ * workspaces; a plain Event lets App use its currently focused workspace. */
+export interface GraphExplorerOpenDetail {
+  workspaceId: string | null;
+}
+
+export type GraphExplorerView = "list" | "graph" | "recall";
+const VIEW_KEY = "flock:graph-explorer-view";
+
+export function getGraphExplorerView(): GraphExplorerView {
+  const value = localStorage.getItem(VIEW_KEY);
+  return value === "graph" || value === "recall" ? value : "list";
+}
+
+export function setGraphExplorerView(view: GraphExplorerView): void {
+  localStorage.setItem(VIEW_KEY, view);
+}
+
 export function getGraphEnabled(): boolean {
   return localStorage.getItem(STORAGE_KEY) === "1";
 }
@@ -37,16 +55,22 @@ export function onGraphEnabledChange(handler: (enabled: boolean) => void): () =>
 
 const URL_KEY = "flock:graph-url";
 
-export const DEFAULT_GRAPH_URL = "postgresql://flock:flock@127.0.0.1:15432/flock_kg";
+// Empty asks the native backend to resolve this installation's private
+// credentials. Never persist a shared password or copy it into agent config.
+export const DEFAULT_GRAPH_URL = "";
+const LEGACY_LOCAL_URLS = new Set([
+  "postgresql://flock:flock@127.0.0.1:15432/flock_kg",
+  "postgresql://flock:flock@localhost:15432/flock_kg",
+]);
 
 export function getGraphUrl(): string {
   const v = localStorage.getItem(URL_KEY)?.trim();
-  return v || DEFAULT_GRAPH_URL;
+  return !v || LEGACY_LOCAL_URLS.has(v) ? DEFAULT_GRAPH_URL : v;
 }
 
 export function setGraphUrl(url: string): void {
   const v = url.trim();
-  if (!v || v === DEFAULT_GRAPH_URL) localStorage.removeItem(URL_KEY);
+  if (!v || LEGACY_LOCAL_URLS.has(v)) localStorage.removeItem(URL_KEY);
   else localStorage.setItem(URL_KEY, v);
   // Re-announce the enabled state so everything that bakes the URL in rebuilds
   // against the new one — above all the grounding hooks, whose command string

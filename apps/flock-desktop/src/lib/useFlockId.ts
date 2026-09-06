@@ -13,7 +13,8 @@ import {
   supabase,
   type IdProfile,
 } from "./flockId";
-import { startUsageSync, stopUsageSync } from "./usageStats";
+import { setUsageConsent } from "./usageStats";
+import { refreshAuthorization, getAblyClient } from "./presence";
 import { isWindowActive, onWindowActiveChange } from "./windowActive";
 import type { Notification } from "../components/NotificationsBadge";
 import type { Friend } from "../types";
@@ -32,14 +33,20 @@ export function useFlockId(pushNotification: (n: Omit<Notification, "id" | "time
   /** Load the signed-in profile and friend list from flock ID. Presence
    * state from Ably events that already fired is preserved via the
    * functional updater; the friendships themselves live server-side. */
-  const refreshIdFriends = useCallback(async () => {
+  const refreshIdFriends = useCallback(async (options?: { requireProfile?: boolean }) => {
     if (!isIdConfigured()) {
       setIdProfile(null);
       setFriends([]);
       setIdChecked(true);
       return;
     }
-    const profile = await getMyProfile().catch(() => null);
+    const profile = await getMyProfile().catch((error) => {
+      if (options?.requireProfile) throw error;
+      return null;
+    });
+    if (options?.requireProfile && !profile?.handle) {
+      throw new Error("Your handle was saved, but your profile couldn’t be loaded. Try again.");
+    }
     // Heal a rotated/stale Google avatar. The handle_new_user trigger seeds
     // profiles.avatar_url once at first sign-up and never refreshes it, so a
     // changed Google photo (or a since-rotated avatar URL) would stay stale
@@ -60,6 +67,7 @@ export function useFlockId(pushNotification: (n: Omit<Notification, "id" | "time
         synced = { ...profile, avatar_url: live };
       }
     }
+    setUsageConsent(!!synced?.id && synced.usage_sharing === true);
     setIdProfile(synced);
     setIdChecked(true);
     if (!synced) {
@@ -94,7 +102,13 @@ export function useFlockId(pushNotification: (n: Omit<Notification, "id" | "time
   useEffect(() => {
     refreshIdFriends();
     // Live: Supabase realtime pushes friendship changes (requests, accepts).
-    const unsubAuth = onAuthChange(() => refreshIdFriends());
+    const unsubAuth = onAuthChange(() => { setUsageConsent(false); void refreshIdFriends(); });
+    const privacyChanged = () => {
+      setUsageConsent(false);
+      void refreshIdFriends();
+      if (getAblyClient()) void refreshAuthorization().catch(() => {});
+    };
+    window.addEventListener("flock:social-privacy-changed", privacyChanged);
     const unsubFriendships = subscribeFriendships(() => refreshIdFriends());
     // Fallback for when realtime isn't enabled on the project, so an incoming
     // request never sits invisible until the next reload. The realtime
@@ -102,7 +116,7 @@ export function useFlockId(pushNotification: (n: Omit<Notification, "id" | "time
     // 60s (not 20s), paused while hidden, with a refresh on return.
     const poll = setInterval(() => { if (isWindowActive()) refreshIdFriends(); }, 60000);
     const unsubActive = onWindowActiveChange((active) => { if (active) refreshIdFriends(); });
-    return () => { unsubAuth(); unsubFriendships(); clearInterval(poll); unsubActive(); };
+    return () => { unsubAuth(); unsubFriendships(); clearInterval(poll); unsubActive(); window.removeEventListener("flock:social-privacy-changed", privacyChanged); };
   }, [refreshIdFriends]);
 
   // Who-did-what friend notifications for the status bar (the coarse
@@ -123,10 +137,9 @@ export function useFlockId(pushNotification: (n: Omit<Notification, "id" | "time
   // Torn down when the session ends — the scan is I/O-heavy and writes to the
   // signed-in profile, so it has no business running signed-out.
   useEffect(() => {
-    if (!idProfile?.id) return;
-    startUsageSync();
-    return () => stopUsageSync();
-  }, [idProfile?.id]);
+    setUsageConsent(!!idProfile?.id && idProfile.usage_sharing === true);
+    return () => setUsageConsent(false);
+  }, [idProfile?.id, idProfile?.usage_sharing]);
 
   const addIdFriend = useCallback(async (input: string) => {
     const result = await addFriendOrInvite(input);

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { onActivateKey } from "../lib/a11y";
 import { agentHookStatus, installAgentHook, voiceGetEnabled } from "../lib/tauri";
+import { FIRST_AGENT_LAUNCHED_EVENT, hasLaunchedFirstAgent, OPEN_FEATURE_TOUR_EVENT } from "../lib/onboarding";
 import IconButton from "./IconButton";
 import { XIcon } from "./friendIcons";
 
@@ -31,6 +32,10 @@ interface Action {
   /** true = configured (✓), false = not yet, undefined = not a setup item. */
   done?: boolean;
   busy?: boolean;
+  busyLabel?: string;
+  status?: "checking" | "ready" | "missing" | "error";
+  error?: string;
+  retry?: () => void;
   /** Hide entirely (contextual actions like "review PRs" with no PRs). */
   visible?: boolean;
   run: () => void;
@@ -63,10 +68,36 @@ export default function QuickActions({
   const [hookOn, setHookOn] = useState<boolean | null>(null);
   const [voiceOn, setVoiceOn] = useState<boolean | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [hookError, setHookError] = useState("");
+  const [voiceError, setVoiceError] = useState("");
+  const [installError, setInstallError] = useState("");
+  const [launched, setLaunched] = useState(hasLaunchedFirstAgent);
+
+  const checkHooks = async () => {
+    setHookOn(null);
+    setHookError("");
+    try { setHookOn(await agentHookStatus("claude")); }
+    catch (error) { setHookError(String(error)); }
+  };
+  const checkVoice = async () => {
+    setVoiceOn(null);
+    setVoiceError("");
+    try { setVoiceOn(await voiceGetEnabled()); }
+    catch (error) { setVoiceError(String(error)); }
+  };
 
   useEffect(() => {
-    agentHookStatus("claude").then(setHookOn).catch(() => setHookOn(true));
-    voiceGetEnabled().then(setVoiceOn).catch(() => setVoiceOn(true));
+    void checkHooks();
+    void checkVoice();
+    const refresh = () => { void checkHooks(); void checkVoice(); };
+    // Settings may have changed while this panel stayed mounted.
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
+  useEffect(() => {
+    const update = () => setLaunched(hasLaunchedFirstAgent());
+    window.addEventListener(FIRST_AGENT_LAUNCHED_EVENT, update);
+    return () => window.removeEventListener(FIRST_AGENT_LAUNCHED_EVENT, update);
   }, []);
   useEffect(() => onQuickActionsHiddenChange(() => setHidden(getQuickActionsHidden())), []);
 
@@ -79,11 +110,12 @@ export default function QuickActions({
 
   const installHooks = async () => {
     setInstalling(true);
+    setInstallError("");
     try {
       await installAgentHook("claude");
-      setHookOn(true);
-    } catch {
-      /* keep the action visible so it can be retried */
+      await checkHooks();
+    } catch (error) {
+      setInstallError(`Couldn’t install live agent status: ${String(error)}`);
     } finally {
       setInstalling(false);
     }
@@ -96,7 +128,11 @@ export default function QuickActions({
       doneLabel: "Live agent status on",
       hint: "Show what each agent is doing in the sidebar",
       done: hookOn === true,
-      busy: installing,
+      status: hookError ? "error" : hookOn === null ? "checking" : hookOn ? "ready" : "missing",
+      busy: installing || (hookOn === null && !hookError),
+      busyLabel: installing ? "Installing…" : "Checking live agent status…",
+      error: installError || (hookError ? `Couldn’t check live agent status: ${hookError}` : undefined),
+      retry: installError ? installHooks : checkHooks,
       run: installHooks,
       doneRun: () => onSettings("integrations"),
       icon: <PulseIcon />,
@@ -107,6 +143,7 @@ export default function QuickActions({
       doneLabel: "GitHub connected",
       hint: "Review PRs and see checks inline",
       done: githubConnected,
+      status: githubConnected ? "ready" : "missing",
       run: () => onSettings("github"),
       icon: <GithubIcon />,
     },
@@ -116,6 +153,11 @@ export default function QuickActions({
       doneLabel: "Voice dictation on",
       hint: "Hold a hotkey and talk into any agent",
       done: voiceOn === true,
+      status: voiceError ? "error" : voiceOn === null ? "checking" : voiceOn ? "ready" : "missing",
+      busy: voiceOn === null && !voiceError,
+      busyLabel: "Checking voice dictation…",
+      error: voiceError ? `Couldn’t check voice dictation: ${voiceError}` : undefined,
+      retry: checkVoice,
       run: () => onSettings("voice"),
       icon: <MicIcon />,
     },
@@ -126,6 +168,14 @@ export default function QuickActions({
       visible: prCount > 0,
       run: onOpenPrManager,
       icon: <ReviewIcon />,
+    },
+    {
+      id: "tour",
+      label: "Explore the feature tour",
+      hint: "Learn about panes, worktrees, PRs, voice, and Graph",
+      visible: launched,
+      run: () => window.dispatchEvent(new Event(OPEN_FEATURE_TOUR_EVENT)),
+      icon: <BoltIcon />,
     },
     {
       id: "workspace",
@@ -166,8 +216,8 @@ export default function QuickActions({
           {visible.map((a) => {
             const isDone = a.done === true;
             return (
+              <div key={a.id}>
               <button
-                key={a.id}
                 className={`qa-item${isDone ? " done" : ""}`}
                 onClick={isDone && a.doneRun ? a.doneRun : a.run}
                 disabled={a.busy}
@@ -175,14 +225,24 @@ export default function QuickActions({
                 <span className="qa-item-icon">{isDone ? <CheckIcon /> : a.icon}</span>
                 <span className="qa-item-body">
                   <span className="qa-item-label">
-                    {a.busy ? "Installing…" : isDone ? a.doneLabel ?? a.label : a.label}
+                    {a.busy ? a.busyLabel ?? "Working…" : isDone ? a.doneLabel ?? a.label : a.label}
                   </span>
                   <span className="qa-item-hint">{a.hint}</span>
+                  {a.status && <span className={`qa-readiness ${a.status}`}>
+                    {a.status === "ready" ? "Ready" : a.status === "missing" ? "Missing setup" : a.status === "error" ? "Couldn’t check" : "Checking…"}
+                  </span>}
                 </span>
                 <span className="qa-item-go">
                   <ChevronRight />
                 </span>
               </button>
+              {a.error && <div className="qa-recovery" role="alert">
+                <span>{a.error}</span>
+                <button className="btn-ghost settings-btn" disabled={a.busy} onClick={a.retry}>
+                  {a.id === "hooks" && installError ? "Retry installation" : "Check again"}
+                </button>
+              </div>}
+              </div>
             );
           })}
         </div>

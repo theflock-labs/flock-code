@@ -1,4 +1,4 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
+import type { VercelRequest, VercelResponse } from "./http.ts";
 
 // Sends the flock invite email on behalf of a signed-in user.
 //
@@ -262,7 +262,7 @@ ${agentRow("Lark", "opencode", "needs input", "3m", "Wire the merge queue into t
       </td></tr>
 
       <tr><td align="center" style="border-top:1px solid ${HAIR_SOFT_ON_PAPER};padding-top:26px;">
-        <span style="font-family:${SANS};font-size:12.5px;line-height:1.75;color:${SLATE_SOFT};">Sign in with Google using <span style="color:${INK};">this email address</span><br>and you and <span style="color:${INK};font-weight:600;">${at}</span> are connected automatically.</span>
+        <span style="font-family:${SANS};font-size:12.5px;line-height:1.75;color:${SLATE_SOFT};">Sign in with Google using <span style="color:${INK};">this email address</span><br>and you and <span style="color:${INK};font-weight:600;">${at}</span> can accept the friend request in flock.</span>
       </td></tr>
 
     </table>
@@ -299,7 +299,7 @@ function inviteText(inv: Inviter): string {
     `in one cockpit, sharing one memory. @${inv.handle} pulled up the second chair.\n\n` +
     `Download for Mac: https://theflock.sh/?ref=${encodeURIComponent(inv.handle)}\n` +
     `Free and open source. No card required. Apple Silicon, macOS 12+.\n\n` +
-    `Sign in with Google using this email address and you and @${inv.handle} are connected automatically.`
+    `Sign in with Google using this email address and you and @${inv.handle} can accept the friend request in flock.`
   );
 }
 

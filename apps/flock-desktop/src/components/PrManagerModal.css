@@ -1,0 +1,10 @@
+.pr-manager-modal .pr-detail-title { white-space: normal; overflow-wrap: anywhere; }
+.pr-manager-modal .pr-detail-actions { flex-wrap: wrap; }
+.pr-manager-modal .pr-detail-actions button { min-height: 32px; }
+.pr-manager-modal .pr-detail-actions button:disabled,
+.pr-manager-modal .pr-review-all:disabled { cursor: not-allowed; opacity: .6; }
+.pr-manager-modal .pr-action-context { font-size: var(--fs-base); color: var(--text-mid); line-height: 1.5; }
+.pr-manager-modal .pr-action-context strong { color: var(--text-hi); }
+.pr-manager-modal .pr-detail-review summary { cursor: pointer; }
+.pr-manager-modal .pr-detail-review summary:focus-visible { outline: 2px solid var(--action); outline-offset: 3px; }
+.pr-manager-modal .pr-review-feedback { color: var(--text-mid); white-space: pre-wrap; max-width: 60ch; padding-top: 6px; line-height: 1.5; }

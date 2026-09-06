@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: Desktop tests and build
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Check whitespace and release safeguards
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -n "$BASE_SHA" && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then
+            git diff --check "$BASE_SHA" HEAD
+          fi
+          bash -n scripts/release.sh
+          python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+      - name: Install desktop dependencies from lockfile
+        run: npm ci --prefix apps/flock-desktop
+      - name: Test desktop frontend
+        run: npm test --prefix apps/flock-desktop -- --maxWorkers=2
+      - name: Build and stage the sidecar from this commit
+        run: |
+          cargo build --locked --release -p flock-mcp
+          mkdir -p apps/flock-desktop/src-tauri/binaries
+          cp target/release/flock-mcp "apps/flock-desktop/src-tauri/binaries/flock-mcp-$(rustc -vV | sed -n 's/^host: //p')"
+      - name: Test Rust workspace
+        run: cargo test --workspace --locked
+      - name: Compile the production desktop application
+        working-directory: apps/flock-desktop
+        run: npm run tauri -- build --no-bundle --ci -- --locked
+
+  service:
+    name: Presence service tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - run: npm ci
+        working-directory: services/presence-auth
+      - run: npm run check && npm test
+        working-directory: services/presence-auth
+      - name: Verify social authorization in a disposable database
+        run: python3 services/flock-id/tests/run.py
+
+  security:
+    name: Dependency security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - run: python3 scripts/audit-dependencies.py
+
+  dependency-review:
+    name: Review new dependencies
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: never
+
+  required:
+    name: CI required
+    if: always()
+    needs: [desktop, service, security, dependency-review]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every applicable check
+        env:
+          DESKTOP: ${{ needs.desktop.result }}
+          SERVICE: ${{ needs.service.result }}
+          SECURITY: ${{ needs.security.result }}
+          DEPENDENCIES: ${{ needs.dependency-review.result }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          test "$DESKTOP" = success
+          test "$SERVICE" = success
+          test "$SECURITY" = success
+          if test "$EVENT" = pull_request; then
+            test "$DEPENDENCIES" = success
+          else
+            test "$DEPENDENCIES" = skipped
+          fi

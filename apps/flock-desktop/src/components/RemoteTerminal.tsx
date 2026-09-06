@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { createDragSelect } from "../lib/dragSelect";
-import { getAblyClient } from "../lib/presence";
-import { subscribeToStream } from "../lib/session";
+import { getStreamGrant, onRealtimeContext } from "../lib/presence";
+import { subscribeToStream, streamChannels } from "../lib/session";
 import { getEffectiveTheme, getXtermTheme, TERMINAL_FONT_FAMILY } from "../lib/theme";
 
 interface Props {
@@ -78,15 +78,25 @@ export default function RemoteTerminal({ streamId, focused, interactive }: Props
       containerRef.current.style.transform = `scale(${scale})`;
     };
 
-    const client = getAblyClient();
-    const ch = client?.channels.get(`flock:stream:${streamId}`) ?? null;
+    const channels = streamChannels(streamId);
+    const ch = channels?.output ?? null;
+    const authorized = () => !!channels && getStreamGrant(streamId)?.grant_id === channels.grant.grant_id;
+    const unsubAuthorization = onRealtimeContext(() => {
+      if (!authorized()) {
+        term.options.disableStdin = true;
+        term.write("\r\n[Sharing ended or authorization expired]\r\n");
+        void ch?.detach().catch(() => {});
+      }
+    });
 
     // Grid sizing from the owner
     let unsubDims = () => {};
     if (ch) {
-      const dimsHandler = (msg: { data?: { cols?: number; rows?: number } }) => {
+      const dimsHandler = (msg: { clientId?: string | null; data?: { cols?: number; rows?: number } }) => {
+        if (!authorized() || msg.clientId !== channels?.grant.owner_id) return;
         const { cols, rows } = msg.data ?? {};
-        if (typeof cols === "number" && typeof rows === "number") {
+        if (typeof cols === "number" && typeof rows === "number" && Number.isInteger(cols) && Number.isInteger(rows)
+            && cols > 0 && rows > 0 && cols <= 500 && rows <= 500) {
           term.resize(cols, rows);
           requestAnimationFrame(fitToOuter);
         }
@@ -105,15 +115,15 @@ export default function RemoteTerminal({ streamId, focused, interactive }: Props
     // can race past us.
     if (ch) {
       ch.attach()
-        .then(() => ch.publish("ready", { at: Date.now() }))
+        .then(() => authorized() ? channels?.control.publish("ready", { at: Date.now() }) : undefined)
         .catch(() => {});
     }
 
     // Co-pilot: forward keystrokes to the owner's PTY.
     let inputDisposer: { dispose(): void } | null = null;
-    if (interactive && ch) {
+    if (interactive && channels?.input) {
       inputDisposer = term.onData((data) => {
-        ch.publish("input", { text: data }).catch(() => {});
+        if (authorized()) channels.input?.publish("input", { text: data }).catch(() => {});
       });
     }
 
@@ -127,6 +137,7 @@ export default function RemoteTerminal({ streamId, focused, interactive }: Props
       window.removeEventListener("mousemove", onDragMove);
       window.removeEventListener("mouseup", onDragUp);
       dragSelect.dispose();
+      unsubAuthorization();
       unsubDims();
       unsubData();
       inputDisposer?.dispose();

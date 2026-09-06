@@ -12,6 +12,7 @@ import {
   isIdConfigured,
   onAuthChange,
   setIdConfig,
+  setSocialPrivacy,
   signIn,
   signOut,
   type IdProfile,
@@ -29,6 +30,7 @@ export default function AccountSection() {
   const [error, setError] = useState("");
   const [handleInput, setHandleInput] = useState("");
   const [handleSaving, setHandleSaving] = useState(false);
+  const [privacySaving, setPrivacySaving] = useState(false);
   const [handleSaved, setHandleSaved] = useState(false);
 
   // Config inputs shown only while unconfigured (pre-release / self-hosting).
@@ -237,6 +239,59 @@ export default function AccountSection() {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className="settings-section">
+        <div className="settings-section-header">Privacy</div>
+        <div className="settings-hint">
+          Sharing is off by default. Only accepted friends can see what you choose to share.
+          Existing friendships remain in your Friends list; remove anyone you do not want to share with.
+        </div>
+        <label className="settings-row">
+          <span>
+            <span className="settings-label">Share usage with friends</span>
+            <span className="settings-hint" style={{ display: "block", margin: 0 }}>
+              Uploads prompt, agent and workspace counts plus machine-wide Claude Code token and cost totals,
+              including Claude sessions outside flock. Prompt and transcript text is not uploaded by this setting.
+              Turning it off stops uploads and deletes your synced usage totals and history.
+            </span>
+          </span>
+          <input type="checkbox" checked={profile?.usage_sharing === true} disabled={privacySaving || !profile}
+            onChange={async e => {
+              const enabled = e.currentTarget.checked;
+              setPrivacySaving(true); setError("");
+              try { await setSocialPrivacy(enabled, null, !enabled); await refresh(); }
+              catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+              finally { setPrivacySaving(false); }
+            }} />
+        </label>
+        <div className="settings-row">
+          <span className="settings-hint">You can also delete usage uploaded before these privacy controls were introduced.</span>
+          <button className="btn-ghost settings-btn" disabled={privacySaving || !profile}
+            onClick={async () => {
+              setPrivacySaving(true); setError("");
+              try { await setSocialPrivacy(false, null, true); await refresh(); }
+              catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+              finally { setPrivacySaving(false); }
+            }}>Delete synced usage and stop sharing</button>
+        </div>
+        <label className="settings-row">
+          <span>
+            <span className="settings-label">Share online status with friends</span>
+            <span className="settings-hint" style={{ display: "block", margin: 0 }}>
+              Shows accepted friends when flock is online and how many agents are running.
+              Turning it off removes your online status; existing access expires within one minute.
+            </span>
+          </span>
+          <input type="checkbox" checked={profile?.presence_sharing === true} disabled={privacySaving || !profile}
+            onChange={async e => {
+              const enabled = e.currentTarget.checked;
+              setPrivacySaving(true); setError("");
+              try { await setSocialPrivacy(null, enabled); await refresh(); }
+              catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+              finally { setPrivacySaving(false); }
+            }} />
+        </label>
       </div>
 
       {/* ─── Connections ─────────────────────────────────────────────── */}

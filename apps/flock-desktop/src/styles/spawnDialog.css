@@ -2,13 +2,8 @@
    Scoped under .sd- so they never collide with the shared .modal-* rules in
    global.css. Reuses .modal-overlay / .modal only as the frame. */
 
-/* 600, not the old 480, and the reason is the agent grid below: four cards on
-   one row need ~95px of label space each, and 480 leaves 65, which wrapped
-   "Claude Code" onto two lines and made every card taller. Both dialogs that
-   use this sheet get it, so both lose a row.
-   Two columns was tried at 780 and was worse — half of that is not enough for
-   either card grid, so they overflowed and the dialog gained a horizontal
-   scrollbar on top of the height problem it was supposed to fix. */
+/* A single-column form keeps paths and execution summaries readable. Agent
+   choices wrap to fit the available width without shrinking their labels. */
 .sd {
   width: 600px;
   max-width: calc(100vw - 32px);
@@ -72,6 +67,10 @@
   min-height: 0;
 }
 .sd-body::-webkit-scrollbar { width: 6px; }
+.sd-configuration { border: 0; margin: 0; min-width: 0; }
+.sd-configuration:disabled .sd-agent,
+.sd-configuration:disabled .sd-mode,
+.sd-configuration:disabled .sd-layout { cursor: default; }
 .sd-body::-webkit-scrollbar-thumb {
   background: var(--border-subtle);
   border-radius: 3px;
@@ -86,7 +85,7 @@
    whole argument for the policy. */
 .sd-label {
   font-family: var(--font-sans);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: var(--weight-medium);
   letter-spacing: var(--tracking-normal);
   text-transform: none;
@@ -132,7 +131,7 @@
 }
 
 .sd-dir { display: flex; gap: 6px; align-items: stretch; }
-.sd-dir .sd-input { flex: 1; font-size: var(--fs-sm); }
+.sd-dir .sd-input { flex: 1; min-width: 0; font-size: var(--fs-base); }
 .sd-browse {
   white-space: nowrap;
   flex-shrink: 0;
@@ -150,13 +149,11 @@
 .sd-browse:hover { border-color: var(--text-low); color: var(--text-hi); }
 
 /* ── Agent segmented control ─────────────────────────────────────────────── */
-/* One column per agent. At three it wrapped, so the fourth sat alone on a
-   second row beside two empty cells: a whole row of dialog height spent on
-   nothing, in both dialogs that use this grid. Keep this equal to
-   AGENT_KINDS.length. */
+/* Fit the available width instead of assuming an agent count. Labels keep
+   their reading size when another agent or a narrow window adds a row. */
 .sd-agents {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
   gap: 6px;
 }
 .sd-agent {
@@ -186,8 +183,7 @@
    different profile), and refusing to let someone pick the agent they know
    they have would be a worse failure than letting them try. Selection still
    reads through, so a picked-but-missing agent is dim AND outlined. */
-.sd-agent.missing { opacity: 0.45; }
-.sd-agent.missing:hover { opacity: 0.7; }
+.sd-agent.missing { border-style: dashed; }
 /* Official agent mark, tinted with the kind color; replaces the old dot. */
 .sd-agent-logo {
   color: var(--kind-color, var(--action));
@@ -497,4 +493,62 @@
   border-radius: 3px;
   padding: 1px 5px;
   font-size: var(--fs-xs);
+}
+
+.sd-agent-with-status { flex-direction: column; align-items: stretch; gap: 4px; }
+.sd-agent-name { display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap; }
+.sd-agent-status { font-size: var(--fs-sm); font-weight: var(--weight-normal); text-align: center; }
+.sd-summary, .sd-readiness {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--bg-window);
+  color: var(--text-mid);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.sd-summary strong { color: var(--text-hi); font-size: var(--fs-base); }
+.sd-summary code { font-family: var(--font-mono); color: var(--text-hi); }
+.sd-recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.sd-override { display: flex; align-items: center; gap: 8px; padding-block: 5px; cursor: pointer; }
+.sd-override input { accent-color: var(--action); flex-shrink: 0; }
+.sd-customize-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 36px;
+  padding: 8px 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-hi);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  font-weight: var(--weight-strong);
+  text-align: left;
+  cursor: pointer;
+}
+.sd-customize-toggle span { color: var(--text-mid); font-size: var(--fs-sm); font-weight: var(--weight-normal); }
+.sd-customize { display: flex; flex-direction: column; gap: 13px; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 7px; }
+.sd-safety { grid-template-columns: minmax(0, 1fr); }
+.sd-safety > .sd-btn-ghost { justify-self: start; }
+.sd-toggle-tag.unavailable { color: var(--text-mid); background: transparent; border-color: var(--border-subtle); }
+.sd-safety .sd-toggle.disabled { opacity: 1; }
+.sd-agent:focus-visible, .sd-mode:focus-visible, .sd-layout:focus-visible, .sd-customize-toggle:focus-visible {
+  outline: 2px solid var(--action);
+  outline-offset: 3px;
+}
+@media (max-width: 480px) {
+  .sd-pair { grid-template-columns: minmax(0, 1fr); }
+  .sd-layouts { grid-template-columns: repeat(3, 1fr); }
+  .sd-branch-row { flex-wrap: wrap; }
+  .sd-modes { grid-template-columns: minmax(0, 1fr); }
+  .sd-foot { flex-wrap: wrap; padding-inline: 16px; }
+  .sd-foot-keys { display: none; }
 }

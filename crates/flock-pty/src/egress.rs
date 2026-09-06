@@ -123,20 +123,44 @@ function hostAllowed(host) {
 // An allowlisted name whose DNS answer points inside the network must not
 // become a way to reach the proxy's neighbours, the LAN, or the host.
 function isPublic(addr, family) {
+  // Reject malformed addresses and zone identifiers before normalization.
+  if (addr.includes('%') || net.isIP(addr) !== family) return false;
   if (family === 4) {
     const p = addr.split('.').map(Number);
-    if (p[0] === 0 || p[0] === 10 || p[0] === 127) return false;
+    if (p[0] === 0 || p[0] === 10 || p[0] === 127 || p[0] >= 224) return false;
     if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return false;
-    if (p[0] === 192 && p[1] === 168) return false;
+    if (p[0] === 192 && (p[1] === 168 || p[1] === 0 || (p[1] === 88 && p[2] === 99))) return false;
     if (p[0] === 169 && p[1] === 254) return false;
     if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return false;
-    if (p[0] >= 224) return false;
+    if (p[0] === 198 && (p[1] === 18 || p[1] === 19 || (p[1] === 51 && p[2] === 100))) return false;
+    if (p[0] === 203 && p[1] === 0 && p[2] === 113) return false;
     return true;
   }
-  const a = addr.toLowerCase();
-  if (a === '::1' || a === '::') return false;
-  if (a.startsWith('fe80') || a.startsWith('fc') || a.startsWith('fd')) return false;
-  if (a.startsWith('::ffff:')) return isPublic(a.slice(7), 4);
+  if (family !== 6) return false;
+  let a = addr.toLowerCase();
+  // Expand a dotted IPv4 tail before expanding the IPv6 zero compression.
+  if (a.includes('.')) {
+    const i = a.lastIndexOf(':');
+    const p = a.slice(i + 1).split('.').map(Number);
+    a = a.slice(0, i + 1) + ((p[0] << 8) | p[1]).toString(16) + ':' + ((p[2] << 8) | p[3]).toString(16);
+  }
+  const sides = a.split('::');
+  const left = sides[0] ? sides[0].split(':') : [];
+  const right = sides.length === 2 && sides[1] ? sides[1].split(':') : [];
+  const words = (sides.length === 2
+    ? [...left, ...Array(8 - left.length - right.length).fill('0'), ...right]
+    : left).map((p) => parseInt(p, 16));
+  if (words.length !== 8 || words.some((p) => !Number.isInteger(p))) return false;
+  if (words.slice(0, 5).every((p) => p === 0) && words[5] === 0xffff) {
+    return isPublic([words[6] >> 8, words[6] & 255, words[7] >> 8, words[7] & 255].join('.'), 4);
+  }
+  // Only global unicast 2000::/3. This excludes loopback, unspecified,
+  // compatible IPv4, translation, unique-local, multicast and all fe80::/10.
+  if ((words[0] & 0xe000) !== 0x2000) return false;
+  // Protocol assignments (including Teredo), documentation and 6to4 can
+  // encode destinations that must not bypass the IPv4 restrictions.
+  if (words[0] === 0x2001 && (words[1] < 0x0200 || words[1] === 0x0db8)) return false;
+  if (words[0] === 0x2002 || (words[0] === 0x3fff && words[1] < 0x1000)) return false;
   return true;
 }
 
@@ -202,23 +226,9 @@ pub fn allow_file_path() -> Option<PathBuf> {
     Some(crate::container::host_flock_dir()?.join("egress-allow.txt"))
 }
 
-/// The current policy.
-///
-/// Two failures that look alike and are not:
-///
-///   * **A corrupt or missing file reads as [`Egress::Open`].** The control is
-///     opt-in and off by default, so an unparseable file must not silently
-///     strand every secure workspace with no network and no explanation.
-///   * **A shared directory that was never injected reads as
-///     [`Egress::Restricted`].** That is not a user's configuration, it is this
-///     process having spawned a jail before `flock-core` resolved
-///     `shared_data_dir()` (see [`crate::container::set_shared_dir`]) — a
-///     programming error, and one whose *quiet* answer would be to hand a
-///     workspace the operator restricted a jail with the whole network. The
-///     control that says "this agent may not reach the internet" is the last
-///     one that should guess when it cannot find its own configuration.
-///
-/// The restricted branch is reachable only from that bug, so it also logs.
+/// The current policy. Only a genuinely absent file keeps the initial opt-in
+/// default. A read error or invalid document fails closed and is logged; a
+/// damaged restriction must never silently grant unrestricted networking.
 pub fn policy() -> Egress {
     policy_in(policy_path())
 }
@@ -236,21 +246,126 @@ pub(crate) fn policy_in(path: Option<PathBuf>) -> Egress {
         );
         return Egress::Restricted;
     };
-    let Ok(text) = std::fs::read_to_string(path) else { return Egress::Open };
-    match serde_json::from_str::<serde_json::Value>(&text) {
-        Ok(v) if v.get("restrict").and_then(|r| r.as_bool()) == Some(true) => Egress::Restricted,
-        _ => Egress::Open,
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+            && std::fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) => return Egress::Open,
+        Err(e) => {
+            tracing::error!(target: "flock_pty::egress", "cannot read egress policy: {e}; failing closed");
+            return Egress::Restricted;
+        }
+    };
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Policy {
+        restrict: bool,
+    }
+    match serde_json::from_str::<Policy>(&text) {
+        Ok(Policy { restrict: false }) => Egress::Open,
+        Ok(Policy { restrict: true }) => Egress::Restricted,
+        Err(e) => {
+            tracing::error!(target: "flock_pty::egress", "invalid egress policy: {e}; failing closed");
+            Egress::Restricted
+        }
     }
 }
 
-/// Write the policy flag, preserving nothing else (the file has one key).
+/// Replace a security setting without exposing a partial/truncated document.
+/// The temporary file is owner-only and must be created exclusively.
+pub fn atomic_private_write(path: &Path, text: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("setting has no parent directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let tmp = dir.join(format!(".flock-setting-{}-{stamp}", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    // Only clean up a temporary file we actually created. A colliding
+    // create_new failure must not delete another writer's pending file.
+    let mut file = options.open(&tmp)?;
+    let result = (|| -> std::io::Result<()> {
+        file.write_all(text)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        #[cfg(unix)]
+        std::fs::File::open(dir)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result?;
+    Ok(())
+}
+
+/// Read an owner-only regular secret without following a final symlink.
+pub fn read_private_file(path: &Path) -> anyhow::Result<String> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(metadata.is_file(), "secret must be a regular file");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        anyhow::ensure!(
+            metadata.permissions().mode() & 0o077 == 0,
+            "secret must have owner-only permissions"
+        );
+        anyhow::ensure!(
+            metadata.uid() == unsafe { libc::geteuid() },
+            "secret must belong to the current user"
+        );
+    }
+    let mut value = String::new();
+    file.take(8193).read_to_string(&mut value)?;
+    anyhow::ensure!(value.len() <= 8192, "secret file is too large");
+    Ok(value)
+}
+
+/// A process-scoped file descriptor holding an inter-process operation lock.
+/// Closing it releases the lock even after an error or panic.
+pub struct PrivateFileLock {
+    _file: std::fs::File,
+}
+
+pub fn private_file_lock(path: &Path) -> anyhow::Result<PrivateFileLock> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            anyhow::bail!("another graph operation is running; wait for it to finish and retry");
+        }
+    }
+    Ok(PrivateFileLock { _file: file })
+}
+
 pub fn set_policy(restrict: bool) -> anyhow::Result<()> {
     let path = policy_path().ok_or_else(|| anyhow::anyhow!("shared data dir not set"))?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, format!("{{\"restrict\":{restrict}}}\n"))?;
-    Ok(())
+    atomic_private_write(&path, format!("{{\"restrict\":{restrict}}}\n").as_bytes())
 }
 
 /// One allowlist entry, or `None` if the line is a comment, blank, or not a
@@ -262,11 +377,19 @@ pub fn set_policy(restrict: bool) -> anyhow::Result<()> {
 /// rules, and one containing a quote is the shape of an argument-injection
 /// bug. Only letters, digits, `-`, `.` and a leading `*.` survive.
 fn parse_allow_line(line: &str) -> Option<String> {
-    let line = line.split('#').next().unwrap_or("").trim().to_ascii_lowercase();
+    let line = line
+        .split('#')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     if line.is_empty() {
         return None;
     }
-    let body = line.strip_prefix("*.").map(|r| format!(".{r}")).unwrap_or(line);
+    let body = line
+        .strip_prefix("*.")
+        .map(|r| format!(".{r}"))
+        .unwrap_or(line);
     let checkable = body.strip_prefix('.').unwrap_or(&body);
     if checkable.is_empty() || !checkable.contains('.') {
         return None;
@@ -283,20 +406,16 @@ fn parse_allow_line(line: &str) -> Option<String> {
 /// The effective allowlist: the built-in agent endpoints plus whatever the
 /// operator named, deduplicated and in a stable order (the order feeds a hash
 /// that decides whether a running proxy is stale, so it must not wobble).
-pub fn allowlist() -> Vec<String> {
+pub fn effective_allowlist(text: &str) -> Vec<String> {
     let mut out: Vec<String> = DEFAULT_ALLOW.iter().map(|s| s.to_string()).collect();
-    if let Some(path) = allow_file_path() {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            for line in text.lines() {
-                if let Some(entry) = parse_allow_line(line) {
-                    out.push(entry);
-                }
-            }
-        }
-    }
+    out.extend(text.lines().filter_map(parse_allow_line));
     out.sort();
     out.dedup();
     out
+}
+
+pub fn allowlist() -> Vec<String> {
+    effective_allowlist(&read_allow_file())
 }
 
 /// Read back the operator's file verbatim for the Settings pane, so editing it
@@ -319,8 +438,7 @@ pub fn write_allow_file(text: &str) -> anyhow::Result<()> {
     if !text.ends_with('\n') {
         text.push('\n');
     }
-    std::fs::write(path, text)?;
-    Ok(())
+    atomic_private_write(&path, text.as_bytes())
 }
 
 /// The per-workspace internal network. Per workspace, not per machine, so two
@@ -332,7 +450,10 @@ pub fn network_name(workspace_id: &str) -> String {
 
 /// The per-workspace proxy container.
 pub fn proxy_name(workspace_id: &str) -> String {
-    format!("flock-egress-{:016x}", crate::container::fnv1a(workspace_id))
+    format!(
+        "flock-egress-{:016x}",
+        crate::container::fnv1a(workspace_id)
+    )
 }
 
 /// Short digest of the effective allowlist, carried as a label on the proxy
@@ -429,7 +550,10 @@ pub fn ensure_script(docker: &Path, image: &str, workspace_id: &str, allow: &[St
 /// is not running simply leaves the containers for the next launch.
 pub fn reap_orphan_proxies(docker: &Path) {
     let run = |args: &[&str]| -> Option<String> {
-        let out = std::process::Command::new(docker).args(args).output().ok()?;
+        let out = std::process::Command::new(docker)
+            .args(args)
+            .output()
+            .ok()?;
         out.status
             .success()
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -476,7 +600,7 @@ mod tests {
     /// "unrestricted" to that hands a workspace the operator restricted a
     /// jail with the entire network and says nothing.
     #[test]
-    fn an_uninjected_shared_dir_fails_closed_but_a_missing_file_does_not() {
+    fn policy_errors_fail_closed_but_initial_absence_keeps_the_default() {
         assert_eq!(policy_in(None), Egress::Restricted);
 
         let dir = std::env::temp_dir().join(format!("flock-egress-policy-{}", std::process::id()));
@@ -484,14 +608,40 @@ mod tests {
         let path = dir.join("egress.json");
 
         let _ = std::fs::remove_file(&path);
-        assert_eq!(policy_in(Some(path.clone())), Egress::Open, "no file: the control is off");
+        assert_eq!(
+            policy_in(Some(path.clone())),
+            Egress::Open,
+            "no file: the control is off"
+        );
+
+        std::os::unix::fs::symlink(dir.join("missing-target"), &path).unwrap();
+        assert_eq!(policy_in(Some(path.clone())), Egress::Restricted, "a dangling policy link is an error, not initial absence");
+        std::fs::remove_file(&path).unwrap();
 
         std::fs::write(&path, "{ not json").unwrap();
         assert_eq!(
             policy_in(Some(path.clone())),
-            Egress::Open,
-            "a corrupt file must not strand every secure workspace with no network"
+            Egress::Restricted,
+            "corruption must not remove a restriction"
         );
+
+        for invalid in [
+            "{}",
+            "null",
+            r#"{"restrict":"false"}"#,
+            r#"{"restrict":false,"extra":true}"#,
+        ] {
+            std::fs::write(&path, invalid).unwrap();
+            assert_eq!(policy_in(Some(path.clone())), Egress::Restricted);
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(
+            policy_in(Some(path.clone())),
+            Egress::Restricted,
+            "unreadable document"
+        );
+        std::fs::remove_dir(&path).unwrap();
 
         std::fs::write(&path, r#"{"restrict":false}"#).unwrap();
         assert_eq!(policy_in(Some(path.clone())), Egress::Open);
@@ -503,12 +653,97 @@ mod tests {
     }
 
     #[test]
+    fn proxy_normalizes_ip_addresses_before_deciding() {
+        // Exercise the actual shipped JavaScript, not a second Rust implementation.
+        let prefix = PROXY_SCRIPT.split("function deny").next().unwrap();
+        let cases = r#"
+const assert = require('node:assert/strict');
+for (const ip of ['::ffff:7f00:1', '0:0:0:0:0:ffff:7f00:1', '::ffff:127.0.0.1',
+  '::ffff:192.168.1.1', 'febf::1', 'fe90::1', 'fe80::1%eth0', 'fc00::1', '::', '::1',
+  '::127.0.0.1', 'ff02::1', '2002:7f00:0001::', '2001:db8::1', 'garbage']) {
+  assert.equal(isPublic(ip, 6), false, ip);
+}
+for (const ip of ['0.1.2.3', '127.0.0.1', '100.64.0.1', '169.254.2.3', '192.168.1.1',
+  '198.18.0.1', '224.0.0.1', '999.1.2.3']) assert.equal(isPublic(ip, 4), false, ip);
+for (const ip of ['8.8.8.8', '1.1.1.1']) assert.equal(isPublic(ip, 4), true, ip);
+for (const ip of ['2606:4700:4700::1111', '::ffff:0808:0808', '::ffff:8.8.8.8']) {
+  assert.equal(isPublic(ip, 6), true, ip);
+}
+"#;
+        let output = std::process::Command::new("node")
+            .arg("-e")
+            .arg(format!("{prefix}{cases}"))
+            .output()
+            .expect("Node.js is required to test the shipped egress proxy");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn atomic_settings_are_complete_and_owner_only() {
+        let dir =
+            std::env::temp_dir().join(format!("flock-atomic-settings-{}", std::process::id()));
+        let path = dir.join("policy.json");
+        atomic_private_write(&path, b"old").unwrap();
+        atomic_private_write(&path, b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn private_files_reject_symlinks_broad_permissions_and_parallel_locks() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("flock-private-settings-{}", std::process::id()));
+        let path = dir.join("secret");
+        atomic_private_write(&path, b"private").unwrap();
+        assert_eq!(read_private_file(&path).unwrap(), "private");
+        let link = dir.join("symlink");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(read_private_file(&link).is_err());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(read_private_file(&path).is_err());
+        let first = private_file_lock(&dir.join("operation.lock")).unwrap();
+        assert!(private_file_lock(&dir.join("operation.lock")).is_err());
+        drop(first);
+        assert!(private_file_lock(&dir.join("operation.lock")).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn allow_lines_that_are_not_hostnames_are_dropped() {
-        assert_eq!(parse_allow_line("api.example.com"), Some("api.example.com".into()));
-        assert_eq!(parse_allow_line("  API.Example.COM  "), Some("api.example.com".into()));
-        assert_eq!(parse_allow_line("*.example.com"), Some(".example.com".into()));
-        assert_eq!(parse_allow_line(".example.com"), Some(".example.com".into()));
-        assert_eq!(parse_allow_line("example.com # the CDN"), Some("example.com".into()));
+        assert_eq!(
+            parse_allow_line("api.example.com"),
+            Some("api.example.com".into())
+        );
+        assert_eq!(
+            parse_allow_line("  API.Example.COM  "),
+            Some("api.example.com".into())
+        );
+        assert_eq!(
+            parse_allow_line("*.example.com"),
+            Some(".example.com".into())
+        );
+        assert_eq!(
+            parse_allow_line(".example.com"),
+            Some(".example.com".into())
+        );
+        assert_eq!(
+            parse_allow_line("example.com # the CDN"),
+            Some("example.com".into())
+        );
         assert_eq!(parse_allow_line("# just a comment"), None);
         assert_eq!(parse_allow_line(""), None);
         // A bare label is not a host worth allowing, and matching it would be
@@ -537,7 +772,11 @@ mod tests {
         assert!(!allow.iter().any(|h| h.contains("pypi")));
         // Every default must survive the same parse the operator's lines get.
         for h in allow {
-            assert_eq!(parse_allow_line(h).as_deref(), Some(*h), "default {h} is not a valid rule");
+            assert_eq!(
+                parse_allow_line(h).as_deref(),
+                Some(*h),
+                "default {h} is not a valid rule"
+            );
         }
     }
 
@@ -576,14 +815,22 @@ mod tests {
         // that is what lets the loser of a two-pane race use the winner's
         // proxy instead of failing on the name conflict.
         let checks = s.matches("ps -q --filter name=").count();
-        assert_eq!(checks, 2, "the proxy must be re-tested after the attempt: {s}");
+        assert_eq!(
+            checks, 2,
+            "the proxy must be re-tested after the attempt: {s}"
+        );
         // The allowlist rides in as one env var, quoted.
         assert!(s.contains("'FLOCK_EGRESS_ALLOW=.anthropic.com'"));
     }
 
     #[test]
     fn a_changed_allowlist_replaces_a_running_proxy() {
-        let a = ensure_script(Path::new("/docker"), "img", "ws-1", &[".anthropic.com".into()]);
+        let a = ensure_script(
+            Path::new("/docker"),
+            "img",
+            "ws-1",
+            &[".anthropic.com".into()],
+        );
         let b = ensure_script(
             Path::new("/docker"),
             "img",
@@ -661,7 +908,9 @@ mod tests {
         // and every later run then dies on the name conflict instead of testing
         // anything.
         for name in ["flock-e2e-egress", &proxy_name(workspace)] {
-            let _ = std::process::Command::new(&docker).args(["rm", "-f", name]).output();
+            let _ = std::process::Command::new(&docker)
+                .args(["rm", "-f", name])
+                .output();
         }
 
         // `--noproxy '*'` is the interesting half: it is what an agent that
@@ -732,15 +981,30 @@ mod tests {
                 .join("e2e-egress.jsonl"),
         );
 
-        assert!(out.contains("FLOCK_EGRESS_PROBE_DONE"), "probe never finished: {out}");
+        assert!(
+            out.contains("FLOCK_EGRESS_PROBE_DONE"),
+            "probe never finished: {out}"
+        );
         // The API the agent needs still answers (any status but curl's "could
         // not connect" 000 means the TLS session was established end to end).
-        assert!(!out.contains("ALLOWED=000"), "the allowlisted host was unreachable: {out}");
+        assert!(
+            !out.contains("ALLOWED=000"),
+            "the allowlisted host was unreachable: {out}"
+        );
         // Everything else is refused by the proxy…
-        assert!(out.contains("DENIED=000"), "a host off the allowlist was reachable: {out}");
+        assert!(
+            out.contains("DENIED=000"),
+            "a host off the allowlist was reachable: {out}"
+        );
         // …and cannot be reached around it either.
-        assert!(out.contains("DIRECT=000"), "the jail had a route that bypassed the proxy: {out}");
+        assert!(
+            out.contains("DIRECT=000"),
+            "the jail had a route that bypassed the proxy: {out}"
+        );
         // The host's own loopback services are gone with the default bridge.
-        assert!(out.contains("HOSTNAME_RESOLVES=no"), "host.docker.internal still resolves: {out}");
+        assert!(
+            out.contains("HOSTNAME_RESOLVES=no"),
+            "host.docker.internal still resolves: {out}"
+        );
     }
 }

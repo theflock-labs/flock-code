@@ -5,7 +5,7 @@ import PaneArea from "./components/PaneArea";
 import { RailResizer, loadRailWidth, saveRailWidth, SIDEBAR_W, RIGHT_RAIL_W } from "./components/RailResizer";
 import Splash from "./components/Splash";
 import CommandBar, { type Command } from "./components/CommandBar";
-import { OPEN_GRAPH_SETUP_EVENT, OPEN_GRAPH_EXPLORER_EVENT, getGraphEnabled, getGraphUrl, onGraphEnabledChange } from "./lib/graphSettings";
+import { OPEN_GRAPH_SETUP_EVENT, OPEN_GRAPH_EXPLORER_EVENT, getGraphEnabled, getGraphUrl, onGraphEnabledChange, type GraphExplorerOpenDetail } from "./lib/graphSettings";
 import { usePtyFileDrop } from "./lib/usePtyFileDrop";
 import { recordUsage } from "./lib/usageStats";
 import { isToastSuppressed } from "./lib/toastSuppression";
@@ -19,7 +19,8 @@ import type { Budget } from "./lib/budgets";
 import { isWindowActive, onWindowActiveChange } from "./lib/windowActive";
 import { useFlockId } from "./lib/useFlockId";
 import { useGithubPrs } from "./lib/useGithubPrs";
-import NotificationsBadge, { overallCheckStatus } from "./components/NotificationsBadge";
+import NotificationsBadge, { AttentionPanel, overallCheckStatus } from "./components/NotificationsBadge";
+import { collectAttentionAgents } from "./lib/agentMonitoring";
 import StatusBar from "./components/StatusBar";
 import ContextMenu, { MenuItem } from "./components/ContextMenu";
 import SessionToasts, { type ToastItem } from "./components/SessionToast";
@@ -125,7 +126,7 @@ import { branchForAgent, normalizePlan, previewBranches, slugify } from "./lib/b
 import { cleanupPlan, raceStem, raceTabName } from "./lib/race";
 import { fetchBase } from "./lib/baseFetch";
 import { randomAgentName } from "./lib/agentNames";
-import { hasSeenOnboarding, markOnboardingSeen } from "./lib/onboarding";
+import { hasSeenOnboarding, markOnboardingSeen, markFirstAgentLaunched, OPEN_FEATURE_TOUR_EVENT } from "./lib/onboarding";
 import { split, remove, firstPaneId, buildGridLayout, remapLayoutTree, pruneLayoutTree, allPaneIds, setRatioAtPath, balanceLayoutTree, swapPanes, type SplitPath } from "./lib/layout";
 import { setRestoreHistory } from "./lib/restoreHistory";
 import { stepPaneFontSize, stepUiScale } from "./lib/uiScale";
@@ -384,6 +385,19 @@ export default function App() {
   // an incoming observe/task/copilot "Accept" a silent no-op.
   const handleSessionMsgRef = useRef<(m: SessionMsg) => void>(() => {});
   const [showOnboarding, setShowOnboarding] = useState(() => !hasSeenOnboarding());
+  const [onboardingMode, setOnboardingMode] = useState<"intro" | "tour">("intro");
+  useEffect(() => {
+    const open = () => { setDialog({ kind: "none" }); setOnboardingMode("tour"); setShowOnboarding(true); };
+    window.addEventListener(OPEN_FEATURE_TOUR_EVENT, open);
+    return () => window.removeEventListener(OPEN_FEATURE_TOUR_EVENT, open);
+  }, []);
+  const [attentionPinned, setAttentionPinned] = useState(() => {
+    try { return localStorage.getItem("flock:attention-pinned") === "1"; } catch { return false; }
+  });
+  const toggleAttentionPin = () => setAttentionPinned((previous) => {
+    try { localStorage.setItem("flock:attention-pinned", previous ? "0" : "1"); } catch { /* optional UI preference */ }
+    return !previous;
+  });
   const [showGraphSetup, setShowGraphSetup] = useState(false);
   const [taskDialog, setTaskDialog] = useState<{ login: string; windowId: string; avatar?: string } | null>(null);
 
@@ -398,8 +412,13 @@ export default function App() {
 
   // Full-area Graph Explorer, opened from the sidebar Graph card.
   const [showGraphExplorer, setShowGraphExplorer] = useState(false);
+  const [graphExplorerWorkspaceId, setGraphExplorerWorkspaceId] = useState<string | null>(null);
   useEffect(() => {
-    const open = () => setShowGraphExplorer(true);
+    const open = (event: Event) => {
+      const detail = (event as CustomEvent<GraphExplorerOpenDetail>).detail;
+      setGraphExplorerWorkspaceId(detail && typeof detail === "object" && "workspaceId" in detail ? detail.workspaceId : focusedWsIdRef.current);
+      setShowGraphExplorer(true);
+    };
     window.addEventListener(OPEN_GRAPH_EXPLORER_EVENT, open);
     return () => window.removeEventListener(OPEN_GRAPH_EXPLORER_EVENT, open);
   }, []);
@@ -658,6 +677,7 @@ export default function App() {
 
         const agentName = agentNames[i];
         const pane = await spawnPane({ workspaceId, cmd: sp.cmd, args, cwd: sp.cwd, rows: 24, cols: 80, agentName, secure, graphEnabled: getGraphEnabled() });
+        markFirstAgentLaunched();
 
         // Scrollback (feature A): hand the freshly spawned terminal its
         // pre-restart history to paint before going live, keyed by the new
@@ -873,11 +893,7 @@ export default function App() {
   // Agents currently blocked on the user (live status, not logged events) —
   // the notification pill reflects this over a stale "is working" event, since
   // "needs input" is what the user actually has to act on right now.
-  const attentionAgents = workspaces.flatMap((w) =>
-    w.panes
-      .filter((p) => p.status === "awaiting_input" || p.status === "blocked")
-      .map((p) => ({ workspaceId: w.id, paneId: p.id, name: p.displayName ?? "Agent", workspaceName: w.name })),
-  );
+  const attentionAgents = useMemo(() => collectAttentionAgents(workspaces), [workspaces]);
 
   // Live tally behind the notification pill's fallback headline, so it states
   // what is true now rather than replaying the last thing that happened.
@@ -1443,6 +1459,7 @@ export default function App() {
           graphEnabled: getGraphEnabled(),
           setupRepo: d.setupRepo,
         });
+        markFirstAgentLaunched();
         // The PTY is live, so the terminal can mount and take over sizing it.
         // Still `booting` though: what it shows until the agent announces
         // itself is flock's own plumbing, and the card stays over it.
@@ -1746,6 +1763,7 @@ export default function App() {
         graphEnabled: getGraphEnabled(),
         setupRepo,
       });
+      markFirstAgentLaunched();
     } catch (e) {
       // Spawn failed (e.g. secure mode with Docker down). Roll back the
       // optimistic pane so a dead placeholder isn't left behind, surface the
@@ -1786,13 +1804,11 @@ export default function App() {
     // If this is a co-pilot workspace, set up streaming so the partner sees
     // this new local pane as a remote pane on their side.
     if (ws.copilot) {
-      const client = (await import("./lib/presence")).getAblyClient();
-      if (client) {
-        const ch = client.channels.get(`flock:stream:${paneId}`);
-        await ch.attach();
-        const { startStream } = await import("./lib/streamPublisher");
-        // Only the co-pilot partner may type into this newly shared pane.
-        startStream(paneId, ch, { allowInput: true, allowedInputFrom: ws.copilot.partnerLogin });
+      try {
+        const { shareCopilotPane } = await import("./lib/session");
+        await shareCopilotPane(ws.copilot.partnerLogin, ws.copilot.sessionId, paneId);
+      } catch (error) {
+        pushNotification({ status: "failure", category: "agent", priority: true, text: `Agent started, but sharing failed: ${error instanceof Error ? error.message : error}` });
       }
     }
 
@@ -2574,6 +2590,7 @@ export default function App() {
         graphEnabled: getGraphEnabled(),
         setupRepo: fresh ? ws.repo_path : undefined,
       });
+      markFirstAgentLaunched();
     } catch (e) {
       pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't spawn ${cmd}: ${e instanceof Error ? e.message : e}` });
       throw e;
@@ -2582,12 +2599,11 @@ export default function App() {
     // Co-pilot: share this new pane so the partner sees it as a remote pane and
     // may type into it (mirrors spawnAgentInWorkspace).
     if (ws.copilot) {
-      const client = (await import("./lib/presence")).getAblyClient();
-      if (client) {
-        const ch = client.channels.get(`flock:stream:${pane.id}`);
-        await ch.attach();
-        const { startStream } = await import("./lib/streamPublisher");
-        startStream(pane.id, ch, { allowInput: true, allowedInputFrom: ws.copilot.partnerLogin });
+      try {
+        const { shareCopilotPane } = await import("./lib/session");
+        await shareCopilotPane(ws.copilot.partnerLogin, ws.copilot.sessionId, pane.id);
+      } catch (error) {
+        pushNotification({ status: "failure", category: "agent", priority: true, text: `Agent started, but sharing failed: ${error instanceof Error ? error.message : error}` });
       }
     }
     // Everything layout-related is derived inside the updater, from the tree
@@ -3182,7 +3198,10 @@ export default function App() {
         return updated = {
           ...w,
           focusedTabId: tab.id,
-          tabs: w.tabs.map((t) => t.id === tab.id ? { ...t, focusedPaneId: paneId } : t),
+          // A focused pane must also be visible. Retarget an existing zoom so
+          // attention navigation cannot acknowledge an agent behind another
+          // pane while leaving its terminal hidden.
+          tabs: w.tabs.map((t) => t.id === tab.id ? { ...t, focusedPaneId: paneId, zoomedPaneId: t.zoomedPaneId ? paneId : null } : t),
         };
       }),
     );
@@ -3588,7 +3607,8 @@ export default function App() {
 
     if (ws?.copilot) {
       const myPaneIds = ws.panes.filter((p) => !p.streamId).map((p) => p.id);
-      await endCopilot(ws.copilot.partnerLogin, ws.copilot.partnerWid, ws.copilot.sessionId, myPaneIds);
+      await endCopilot(ws.copilot.partnerLogin, ws.copilot.partnerWid, ws.copilot.sessionId, myPaneIds)
+        .catch(() => pushNotification({ status: "info", category: "agent", priority: true, text: "Local sharing stopped, but the remote session could not be notified. Check your connection." }));
     } else if (ws?.observe) {
       endObserve(ws.observe.ownerLogin, ws.observe.ownerWid, ws.observe.sessionId);
     } else {
@@ -4308,7 +4328,6 @@ export default function App() {
     const isSelf = msg.from === idProfile?.handle;
     const friend = friends.find((f) => f.handle === msg.from);
     if (!friend && !isSelf) return;
-    const focusedWs = workspaces.find((w) => w.id === focusedWsId);
 
     // ── Observe ──────────────────────────────────────────────────────────────
     if (msg.type === "observe_request") {
@@ -4321,7 +4340,7 @@ export default function App() {
         fromLogin: msg.from,
         fromAvatar: friend?.avatarUrl,
         sessionId: msg.session_id,
-        onAccept: () => {
+        onAccept: async () => {
           // Resolve the shared pane NOW — the toast may have arrived while
           // no pane was focused (the old silent no-op), or focus moved.
           const target = resolveShareTarget();
@@ -4330,9 +4349,17 @@ export default function App() {
             pushNotification({ status: "info", category: "agent", priority: true, text: `No agent running to share — @${msg.from}'s request was declined. Spawn an agent and have them retry.` });
             return;
           }
-          observeSharesRef.current.set(msg.session_id, target.pane.id);
-          acceptObserve(msg.from, msg.from_wid, msg.session_id, target.pane.id, target.pane.displayName ?? target.pane.kind);
-          pushNotification({ status: "success", category: "agent", priority: false, text: `@${msg.from} is watching ${target.pane.displayName ?? target.pane.kind} live` });
+          try {
+            await acceptObserve(msg.from, msg.from_wid, msg.session_id, target.pane.id, target.pane.displayName ?? target.pane.kind);
+            if (!workspacesRef.current.some(w => w.panes.some(p => p.id === target.pane.id))) {
+              endObserve(msg.from, msg.from_wid, msg.session_id, target.pane.id);
+              return;
+            }
+            observeSharesRef.current.set(msg.session_id, target.pane.id);
+            pushNotification({ status: "success", category: "agent", priority: false, text: `@${msg.from} is watching ${target.pane.displayName ?? target.pane.kind} live` });
+          } catch (error) {
+            pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't share the terminal: ${error instanceof Error ? error.message : error}. Check your connection and friendship, then try again.` });
+          }
         },
         onDecline: () => declineObserve(msg.from, msg.from_wid, msg.session_id),
       }]);
@@ -4410,9 +4437,6 @@ export default function App() {
 
     // ── Co-pilot ─────────────────────────────────────────────────────────────
     if (msg.type === "copilot_invite") {
-      const myPanes: CopilotPane[] = (focusedWs?.panes ?? []).map((p) => ({
-        id: p.id, label: p.kind,
-      }));
       pushNotification({ status: "info", category: "agent", priority: false, text: `@${msg.from} invited you to co-pilot` });
       if (isToastSuppressed("copilot_invite")) return;
       setSessionToasts((prev) => [...prev, {
@@ -4422,16 +4446,25 @@ export default function App() {
         fromAvatar: friend?.avatarUrl,
         sessionId: msg.session_id,
         onAccept: async () => {
+          try {
+            await acceptCopilot(msg.from, msg.from_wid, msg.session_id, []);
+          } catch (error) {
+            pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't join co-pilot: ${error instanceof Error ? error.message : error}` });
+            return;
+          }
           const shell = newCopilotWorkspace(msg.session_id, msg.from, msg.from_wid, friend?.avatarUrl, "connected");
           const ws = mergePartnerPanes(shell, msg.panes);
           setWorkspaces((prev) => [...prev, ws]);
           setFocusedWsId(ws.id);
           setSidebarTab("workspaces"); // surface the shared workspace immediately
-          await acceptCopilot(msg.from, msg.from_wid, msg.session_id, []);
           // Auto-spawn a local agent — pass ws directly to avoid closure race
           await spawnAgentInWorkspace(ws.id, undefined, ws).catch(console.error);
         },
-        onDecline: () => endCopilot(msg.from, msg.from_wid, msg.session_id, myPanes.map((p) => p.id)),
+        onDecline: () => {
+          // No local panes belong to an invitation we have not accepted.
+          void endCopilot(msg.from, msg.from_wid, msg.session_id, [])
+            .catch(() => pushNotification({ status: "info", category: "agent", priority: true, text: "Invitation dismissed locally, but the sender could not be notified." }));
+        },
       }]);
     }
     if (msg.type === "copilot_accept") {
@@ -4478,7 +4511,13 @@ export default function App() {
   };
 
   const handleCopilot = async (login: string, windowId: string, avatar?: string) => {
-    const sessionId = await inviteCopilot(login, windowId, []);
+    let sessionId: string;
+    try {
+      sessionId = await inviteCopilot(login, windowId, []);
+    } catch (error) {
+      pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't invite @${login} to co-pilot: ${error instanceof Error ? error.message : error}` });
+      return;
+    }
     const cws = newCopilotWorkspace(sessionId, login, windowId, avatar);
     setWorkspaces((prev) => [...prev, cws]);
     setFocusedWsId(cws.id);
@@ -4951,7 +4990,7 @@ export default function App() {
       <SignInGate
         checking={!idChecked}
         needsHandle={!!idProfile && !idProfile.handle}
-        onReady={refreshIdFriends}
+        onReady={() => refreshIdFriends({ requireProfile: true })}
       />
     );
   }
@@ -4984,8 +5023,11 @@ export default function App() {
           agents={agentTally}
           onOpenPr={() => { if (wsChecks) openUrl(wsChecks.pr_url).catch(console.error); }}
           onOpenPane={openNotificationPane}
+          attentionPinned={attentionPinned}
+          onToggleAttentionPin={toggleAttentionPin}
         />
       </div>
+      {attentionPinned && <AttentionPanel agents={attentionAgents} onOpenPane={openNotificationPane} onUnpin={toggleAttentionPin} />}
       <div className="app-main">
         <Sidebar
           collapsed={effectiveSidebarCollapsed}
@@ -5392,7 +5434,9 @@ export default function App() {
         <ContextMenu x={contextMenu.x} y={contextMenu.y} items={contextMenu.items} onClose={() => setContextMenu(null)} />
       )}
       {showOnboarding && (
-        <OnboardingDialog onDone={() => { markOnboardingSeen(); setShowOnboarding(false); }} />
+        <OnboardingDialog mode={onboardingMode}
+          onStart={() => { markOnboardingSeen(); setShowOnboarding(false); setDialog({ kind: "new-workspace" }); }}
+          onDone={() => { markOnboardingSeen(); setShowOnboarding(false); }} />
       )}
       {/* Rendered after OnboardingDialog so "Set up now" from the tutorial's
           graph step opens the wizard on top of it. */}
@@ -5401,8 +5445,8 @@ export default function App() {
       )}
       {showGraphExplorer && (
         <GraphExplorer
-          workspaceId={focusedWsId}
-          workspaceName={focusedWs?.name ?? null}
+          workspaceId={graphExplorerWorkspaceId}
+          workspaceName={workspaces.find((workspace) => workspace.id === graphExplorerWorkspaceId)?.name ?? null}
           onClose={() => setShowGraphExplorer(false)}
         />
       )}

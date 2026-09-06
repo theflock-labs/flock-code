@@ -18,7 +18,7 @@ interface Props {
   /** Signed in but no handle yet → skip straight to the claim step. */
   needsHandle: boolean;
   /** Sign-in / handle-claim finished — the app re-reads ID state. */
-  onReady: () => void;
+  onReady: () => void | Promise<void>;
 }
 
 const GoogleMark = () => (
@@ -49,8 +49,9 @@ export default function SignInGate({ checking, needsHandle, onReady }: Props) {
     setBusy(provider);
     try {
       await signIn(provider);
-      const profile = await getMyProfile().catch(() => null);
-      if (profile?.handle) onReady();
+      const profile = await getMyProfile();
+      if (!profile) throw new Error("Your account profile couldn’t be loaded. Try signing in again.");
+      if (profile.handle) await onReady();
       else setPhase("handle");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -66,7 +67,7 @@ export default function SignInGate({ checking, needsHandle, onReady }: Props) {
     setError("");
     try {
       await claimHandle(handle);
-      onReady();
+      await onReady();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -148,6 +149,10 @@ export default function SignInGate({ checking, needsHandle, onReady }: Props) {
               <span className="signin-handle-at">@</span>
               <input
                 className="signin-gate-field signin-handle-input"
+                aria-label="Handle"
+                aria-describedby="signin-handle-guidance"
+                disabled={saving}
+                maxLength={32}
                 value={handleInput}
                 onChange={(e) => {
                   setHandleInput(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""));
@@ -167,13 +172,13 @@ export default function SignInGate({ checking, needsHandle, onReady }: Props) {
             >
               {saving ? "Claiming…" : "Claim handle"}
             </button>
-            <p className="signin-gate-fineprint">
-              Lowercase letters, digits, - and _. Three characters or more.
+            <p id="signin-handle-guidance" className="signin-gate-fineprint">
+              3–32 lowercase letters, digits, - or _. Start with a letter or digit.
             </p>
           </div>
         )}
 
-        {error && <div className="signin-gate-error">{error}</div>}
+        {error && <div className="signin-gate-error" role="alert">{error}</div>}
       </div>
     </div>
   );

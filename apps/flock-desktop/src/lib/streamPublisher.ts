@@ -1,4 +1,5 @@
 import type Ably from "ably";
+import { getStreamGrant, onRealtimeContext } from "./presence";
 import { resizePty, sendInput } from "./tauri";
 import { noteInjectedInput } from "./terminalRegistry";
 
@@ -12,6 +13,9 @@ interface StreamState {
   lastRows: number;
   unsubReady?: () => void;
   unsubInput?: () => void;
+  unsubAuthorization?: () => void;
+  streamId: string;
+  grantId: string;
 }
 
 const activeStreams = new Map<string, StreamState>();
@@ -31,6 +35,7 @@ const MAX_BUFFER_BYTES = 16 * 1024;
 function flush(paneId: string) {
   const s = activeStreams.get(paneId);
   if (!s || s.buffer.length === 0) return;
+  if (getStreamGrant(s.streamId)?.grant_id !== s.grantId) { stopStream(paneId); return; }
   // Concatenate buffered chunks into one Uint8Array
   const total = new Uint8Array(s.bufferedBytes);
   let offset = 0;
@@ -49,6 +54,10 @@ function flush(paneId: string) {
 }
 
 export interface StartStreamOptions {
+  controlChannel: Ably.RealtimeChannel;
+  inputChannel?: Ably.RealtimeChannel;
+  streamId: string;
+  grantId: string;
   /** Co-pilot streams accept typed input from the remote side; observe
    * streams are strictly read-only. */
   allowInput?: boolean;
@@ -73,7 +82,7 @@ async function bootstrapViewer(state: StreamState) {
     await new Promise((r) => setTimeout(r, 200));
     dims = knownDims.get(paneId);
   }
-  if (!dims || !activeStreams.has(paneId)) return;
+  if (!dims || activeStreams.get(paneId) !== state || getStreamGrant(state.streamId)?.grant_id !== state.grantId) return;
 
   state.lastCols = dims.cols;
   state.lastRows = dims.rows;
@@ -89,6 +98,7 @@ async function bootstrapViewer(state: StreamState) {
   //    Re-read knownDims at each call — a fit can land between the two
   //    awaits and a captured pair would undo it (see forceAgentRepaint).
   await new Promise((r) => setTimeout(r, 40));
+  if (activeStreams.get(paneId) !== state) return;
   const bump = knownDims.get(paneId) ?? dims;
   await resizePty(paneId, bump.rows + 1, bump.cols).catch(() => {});
   await new Promise((r) => setTimeout(r, 40));
@@ -98,12 +108,17 @@ async function bootstrapViewer(state: StreamState) {
   state.lastRows = restore.rows;
 }
 
-export function startStream(paneId: string, channel: Ably.RealtimeChannel, opts: StartStreamOptions = {}) {
+export function startStream(paneId: string, channel: Ably.RealtimeChannel, opts: StartStreamOptions) {
+  stopStream(paneId);
+  if (getStreamGrant(opts.streamId)?.grant_id !== opts.grantId) return;
   const state: StreamState = {
     channel, buffer: [], bufferedBytes: 0, flushTimer: null, paneId,
-    lastCols: 0, lastRows: 0,
+    lastCols: 0, lastRows: 0, streamId: opts.streamId, grantId: opts.grantId,
   };
   activeStreams.set(paneId, state);
+  state.unsubAuthorization = onRealtimeContext(() => {
+    if (getStreamGrant(opts.streamId)?.grant_id !== opts.grantId) stopStream(paneId);
+  });
 
   // requestFit is unused on purpose. A remote fit must never drive the
   // owner's PTY: the owner's Terminal has its own size, and resizing here
@@ -111,18 +126,21 @@ export function startStream(paneId: string, channel: Ably.RealtimeChannel, opts:
 
   // Every viewer announces itself after subscribing; re-run the bootstrap
   // so late joiners and re-mounts get a clean, correctly sized frame.
-  const readyHandler = () => { bootstrapViewer(state); };
-  channel.subscribe("ready", readyHandler);
-  state.unsubReady = () => channel.unsubscribe("ready", readyHandler);
+  const readyHandler = (msg: Ably.Message) => {
+    if (msg.clientId === opts.allowedInputFrom && getStreamGrant(opts.streamId)?.grant_id === opts.grantId) void bootstrapViewer(state);
+  };
+  opts.controlChannel.subscribe("ready", readyHandler);
+  state.unsubReady = () => { opts.controlChannel.unsubscribe("ready", readyHandler); void opts.controlChannel.detach().catch(() => {}); };
 
   // Co-pilot: the partner's keystrokes land in this PTY. Gate strictly on the
   // publisher's Ably-verified clientId — a third party who learned the channel
   // UUID must never be able to inject input (that would be remote code
   // execution, since agents run with permission-bypass flags).
-  if (opts.allowInput && opts.allowedInputFrom) {
+  if (opts.allowInput && opts.allowedInputFrom && opts.inputChannel) {
+    const inputChannel = opts.inputChannel;
     const allowedFrom = opts.allowedInputFrom;
     const inputHandler = (msg: Ably.Message) => {
-      if (msg.clientId !== allowedFrom) return;
+      if (msg.clientId !== allowedFrom || getStreamGrant(opts.streamId)?.grant_id !== opts.grantId) return;
       const text = (msg.data as { text?: string } | undefined)?.text;
       if (typeof text !== "string" || text.length === 0 || text.length > 4096) return;
       sendInput(paneId, new TextEncoder().encode(text)).catch(() => {});
@@ -131,8 +149,8 @@ export function startStream(paneId: string, channel: Ably.RealtimeChannel, opts:
       // Queue" would only see the half of the line they typed themselves.
       noteInjectedInput(paneId, text);
     };
-    channel.subscribe("input", inputHandler);
-    state.unsubInput = () => channel.unsubscribe("input", inputHandler);
+    inputChannel.subscribe("input", inputHandler);
+    state.unsubInput = () => { inputChannel.unsubscribe("input", inputHandler); void inputChannel.detach().catch(() => {}); };
   }
 
   bootstrapViewer(state);
@@ -152,7 +170,8 @@ export function stopStream(paneId: string) {
   const s = activeStreams.get(paneId);
   if (!s) return;
   if (s.flushTimer !== null) clearTimeout(s.flushTimer);
-  flush(paneId); // send any pending bytes before detaching
+  // Drop buffered bytes on revoke/end.
+  s.unsubAuthorization?.();
   s.unsubReady?.();
   s.unsubInput?.();
   s.channel.detach().catch(() => {});
@@ -178,4 +197,11 @@ export function publishBytes(paneId: string, bytes: Uint8Array) {
 
 export function isStreaming(paneId: string): boolean {
   return activeStreams.has(paneId);
+}
+
+/** Stop every local publisher belonging to this server session. */
+export function stopSessionStreams(sessionId: string) {
+  for (const [paneId, state] of activeStreams) {
+    if (getStreamGrant(state.streamId)?.session_id === sessionId) stopStream(paneId);
+  }
 }

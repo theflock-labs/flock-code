@@ -7,6 +7,39 @@
 // your typing into every agent — is a footgun. Flip it on when you want it.
 
 import { useEffect, useReducer } from "react";
+import { allPaneIds } from "./layout";
+import type { Pane, WorkspaceTab } from "../types";
+
+/** Old saved workspaces can each have a tab named `tab-legacy`. A sync mode
+ * belongs to one workspace's tab, even when their historical IDs coincide. */
+export function broadcastKey(workspaceId: string, tabId: string): string {
+  return JSON.stringify([workspaceId, tabId]);
+}
+
+/** The same recipients power both the visible disclosure and actual delivery.
+ * Borrowed local panes have a real PTY here; streams and pop-out windows do
+ * not. Boot cards are excluded until the agent has taken over its terminal. */
+export function broadcastRecipients(
+  tab: WorkspaceTab,
+  panes: readonly Pane[],
+  borrowed?: ReadonlyMap<string, { pane: Pane }>,
+  poppedOutIds?: ReadonlySet<string>,
+): Pane[] {
+  const ids = tab.zoomedPaneId
+    ? [tab.zoomedPaneId]
+    : tab.layoutTree ? allPaneIds(tab.layoutTree) : [];
+  const byId = new Map(panes.map((pane) => [pane.id, pane]));
+  return [...new Set(ids)].flatMap((id) => {
+    const pane = byId.get(id) ?? borrowed?.get(id)?.pane;
+    return pane && !pane.streamId && !pane.spawning && !pane.booting && !poppedOutIds?.has(id)
+      ? [pane] : [];
+  });
+}
+
+export function broadcastIsActive(key: string, tab: WorkspaceTab, recipients: readonly Pane[], visible: boolean): boolean {
+  return visible && isBroadcasting(key) && recipients.length > 1
+    && recipients.some((pane) => pane.id === tab.focusedPaneId);
+}
 
 const enabled = new Set<string>();
 const listeners = new Set<() => void>();

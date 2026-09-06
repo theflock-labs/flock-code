@@ -1,5 +1,10 @@
 -- flock ID: profiles + friend graph on Supabase.
--- Run once in the Supabase SQL editor (or `supabase db push`).
+-- BOOTSTRAP ONLY: this file is not the final deployed schema.
+-- Before exposing the API, apply this file ONCE, then EVERY numbered migration
+-- in filename order through at least 013_social_privacy.sql (and any later
+-- migrations). Earlier policies below intentionally retain historical behavior;
+-- 013 supplies the required consent, accepted-friend and stream protections.
+-- See PRIVACY.md for the coordinated database/service/client rollout.
 --
 -- Identity lives in Supabase Auth (federated Google); this schema
 -- adds the public profile (handle, display name, avatar) and the friendship

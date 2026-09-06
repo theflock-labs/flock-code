@@ -10,7 +10,7 @@ import IconButton from "./IconButton";
 import { XIcon } from "./friendIcons";
 import { BroadcastIcon, CollapseIcon, ExpandIcon, PanelLeftIcon, PanelRightIcon, PopOutIcon, RaceIcon, SplitDownIcon, SplitRightIcon } from "./paneIcons";
 import ExternalTerminalButton from "./ExternalTerminalButton";
-import { isBroadcasting, toggleBroadcast, useBroadcast } from "../lib/broadcastInput";
+import { broadcastIsActive, broadcastKey, broadcastRecipients, clearBroadcast, isBroadcasting, toggleBroadcast, useBroadcast } from "../lib/broadcastInput";
 import BranchChip from "./BranchChip";
 import ContextMeter from "./ContextMeter";
 import { onAgentStatus, type RepoMap } from "../lib/tauri";
@@ -21,6 +21,8 @@ import { allPaneIds, computeBorders, computeLayout, setRatioAtPath, type BorderR
 import { getFocusedTab } from "../lib/tabs";
 import type { AgentStatusStr, LayoutNode, Pane, SplitDir, Workspace, WorkspaceTab } from "../types";
 import { BranchIcon } from "./settingsIcons";
+import { paneStatusLabel } from "../lib/agentMonitoring";
+import "../styles/monitoring.css";
 
 /** A pane laid out in one of this workspace's tabs but owned by another. The
  *  fields are exactly what the tile has to draw truthfully and cannot read off
@@ -141,6 +143,7 @@ function PaneArea({
   onError,
 }: Props) {
   const gridRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
   // The workspace id is bound here rather than in App, so App can hand every
   // PaneArea the same handler identity (see the stable-handler block there).
   const spawnAgentHere = useCallback(() => onSpawnAgent(workspace.id), [onSpawnAgent, workspace.id]);
@@ -197,7 +200,22 @@ function PaneArea({
   // Subscribe to broadcast toggles so the toolbar switch reflects the current
   // tab's sync state (the flag lives in a module store, not workspace state).
   useBroadcast();
-  const focusedBroadcasting = isBroadcasting(focusedTab.id);
+  const focusedBroadcastKey = broadcastKey(workspace.id, focusedTab.id);
+  const focusedBroadcasting = isBroadcasting(focusedBroadcastKey);
+  const broadcastKeysRef = useRef<string[]>([]);
+  useEffect(() => {
+    const keys = workspace.tabs.map((tab) => broadcastKey(workspace.id, tab.id));
+    for (const old of broadcastKeysRef.current) if (!keys.includes(old)) clearBroadcast(old);
+    broadcastKeysRef.current = keys;
+  }, [workspace.id, workspace.tabs]);
+  useEffect(() => () => {
+    for (const key of broadcastKeysRef.current) clearBroadcast(key);
+  }, []);
+  const syncRecipients = useMemo(
+    () => broadcastRecipients(focusedTab, workspace.panes, borrowed, poppedOutIds),
+    [focusedTab, workspace.panes, borrowed, poppedOutIds],
+  );
+  const syncActive = broadcastIsActive(focusedBroadcastKey, focusedTab, syncRecipients, isVisible);
 
   // Where the external-terminal button lands: the focused agent's own cwd, so a
   // per-agent worktree opens as itself rather than as the shared checkout. A
@@ -240,7 +258,7 @@ function PaneArea({
            identity (branch + repo) sat against the pane-action cluster. The tab
            bar used to be a second 40px row below this one; merging them buys
            back that whole band of chrome for terminal. ─────────────────────── */}
-      <div className="pane-header">
+      <div className="pane-header" ref={headerRef}>
         {/* Left-sidebar expand — only while the rail is hidden. Collapsing it
             is the rail's own job now (see .brand-collapse in Sidebar), which
             keeps this row for the workspace's tabs; bringing it back has to
@@ -412,10 +430,10 @@ function PaneArea({
             where it is unambiguous about which pane it zooms; this one had to
             guess between the zoomed pane and the focused one. */}
         <IconButton
-          className={`header-btn${focusedBroadcasting ? " active" : ""}`}
+          className={`header-btn input-sync-toggle${focusedBroadcasting ? " active" : ""}`}
           icon={<BroadcastIcon />}
-          label={focusedBroadcasting ? "Stop syncing input to all panes" : "Sync input to all panes in this tab"}
-          onClick={() => toggleBroadcast(focusedTab.id)}
+          label={focusedBroadcasting ? "Stop syncing keyboard input" : "Sync keyboard input to visible local panes"}
+          onClick={() => toggleBroadcast(focusedBroadcastKey)}
         />
         <IconButton
           className="header-btn danger"
@@ -438,6 +456,36 @@ function PaneArea({
           />
         )}
       </div>
+
+      {focusedBroadcasting && (
+        <section className="input-sync-strip" aria-label="Keyboard input sync">
+          <BroadcastIcon />
+          <div className="input-sync-copy">
+            <strong role="status">{syncActive
+              ? `Input is synced to ${syncRecipients.length} panes`
+              : "Input sync is paused"}</strong>
+            <span>{syncActive
+              ? "Every keystroke and text paste goes to these panes."
+              : focusedTab.zoomedPaneId
+                ? "Unzoom to sync with other visible panes."
+                : syncRecipients.length < 2
+                  ? "At least two visible local agents must be ready."
+                  : "Focus one of these local panes to resume syncing."}</span>
+            <span className="input-sync-recipients">
+              {syncRecipients.length > 0
+                ? `${syncActive ? "Recipients" : "Ready panes"}: ${syncRecipients.map((pane) => {
+                  const home = borrowed?.get(pane.id)?.workspaceName;
+                  return `${pane.displayName ?? pane.kind}${home ? ` (${home})` : ""}`;
+                }).join(", ")}`
+                : "No ready local panes are visible."}
+            </span>
+          </div>
+          <button type="button" className="input-sync-stop" onClick={() => {
+            clearBroadcast(focusedBroadcastKey);
+            headerRef.current?.querySelector<HTMLButtonElement>(".input-sync-toggle")?.focus();
+          }}>Stop syncing</button>
+        </section>
+      )}
 
       {/* ─── Pane grid — one absolutely-stacked layer per tab, only the
            focused tab's layer visible, so switching tabs doesn't unmount
@@ -598,14 +646,17 @@ function TabLayer({
     [displayTree, gridSize, tab.zoomedPaneId],
   );
 
-  // Broadcast/"sync input": when on for this tab, the visible panes (what's in
-  // paneRects, so zoom is respected) form the group every keystroke fans out to.
-  // Memoized so Terminal's shallow memo only re-registers when it truly changes.
+  // Resolve eligibility exactly as the strip does; hidden layers must never
+  // fan input out to a group the user cannot see.
   useBroadcast();
-  const broadcasting = isBroadcasting(tab.id);
+  const recipients = useMemo(
+    () => broadcastRecipients(tab, workspace.panes, borrowed, poppedOutIds),
+    [tab, workspace.panes, borrowed, poppedOutIds],
+  );
+  const broadcasting = broadcastIsActive(broadcastKey(workspace.id, tab.id), tab, recipients, paneAreaVisible && tabVisible);
   const broadcastGroup = useMemo<readonly string[] | null>(
-    () => (broadcasting ? paneRects.map((r) => r.paneId) : null),
-    [broadcasting, paneRects],
+    () => (broadcasting ? recipients.map((pane) => pane.id) : null),
+    [broadcasting, recipients],
   );
 
   // ─── Drag a pane onto another pane to swap their places ────────────────
@@ -824,7 +875,7 @@ function TabLayer({
               <div
                 key={paneId}
                 data-pane-id={paneId}
-                className={`terminal-pane${isFocused ? " focused" : ""}${broadcasting ? " broadcasting" : ""}${isDragSource ? " swap-source" : ""}${isSwapTarget ? " swap-target" : ""}`}
+                className={`terminal-pane${isFocused ? " focused" : ""}${broadcastGroup?.includes(paneId) ? " broadcasting" : ""}${isDragSource ? " swap-source" : ""}${isSwapTarget ? " swap-target" : ""}`}
                 style={{
                   position: "absolute",
                   left: rect.x,
@@ -845,8 +896,22 @@ function TabLayer({
                 }}
               >
                 {pane && (
-                  <div className={`pane-topbar${!tab.zoomedPaneId && paneRects.length > 1 ? " draggable" : ""}`}>
+                  <div className={`pane-topbar pane-task-topbar${!tab.zoomedPaneId && paneRects.length > 1 ? " draggable" : ""}`}>
                     <div className="pane-topbar-lead">
+                    <div className="pane-task-row">
+                      {pane.intent ? (
+                        <IntentLabel
+                          intent={pane.intent}
+                          intentRaw={pane.intentRaw}
+                          open={intentMenu?.paneId === paneId}
+                          onOpen={(rect) => setIntentMenu((m) => (m?.paneId === paneId ? null : { paneId, rect }))}
+                        />
+                      ) : <span className="pane-task-placeholder">{pane.spawning || pane.booting ? "Starting agent…" : "No task captured yet"}</span>}
+                      <span className={`pane-live-status pane-live-status-${pane.status}`}>
+                        {pane.spawning || pane.booting ? "Starting" : paneStatusLabel(pane.status)}
+                      </span>
+                    </div>
+                    <div className="pane-identity-row">
                     {/* The agent mark leads the bar: it's the one thing here
                         that's this pane's own identity. The old 3px accent tick
                         sat in this slot, but it repeated the workspace accent
@@ -856,7 +921,7 @@ function TabLayer({
                         color-coded mark identifies the kind, and the reclaimed
                         width goes to the pane's intent. */}
                     <AgentKindBadge kind={pane.kind} iconOnly size={12} />
-                    {pane.displayName && <span className="pane-topbar-name">{pane.displayName}</span>}
+                    <span className="pane-topbar-name" title={pane.displayName ?? pane.kind}>{pane.displayName ?? pane.kind}</span>
                     {/* Secure mode: the agent lives in a Docker jail that sees
                         only the workspace — worth saying on every pane, since
                         it's also the promise that bypass-permissions is safe. */}
@@ -906,22 +971,10 @@ function TabLayer({
                         onGitChanged={onGitChanged}
                       />
                     )}
-                    {/* How full this agent's context is. Sits after the
-                        identity chips and before the intent: it's a property of
-                        the conversation, not of the pane's setup, and the
-                        intent is the one thing here allowed to eat the
-                        remaining width. */}
+                    {/* Context and branch belong with execution metadata;
+                        the task above gets its own readable line. */}
                     <ContextMeter kind={pane.kind} sessionId={pane.sessionId} />
-                    {pane.intent && (
-                      <IntentLabel
-                        intent={pane.intent}
-                        intentRaw={pane.intentRaw}
-                        open={intentMenu?.paneId === paneId}
-                        onOpen={(rect) =>
-                          setIntentMenu((m) => (m?.paneId === paneId ? null : { paneId, rect }))
-                        }
-                      />
-                    )}
+                    </div>
                     </div>
                     <div className="pane-topbar-actions">
                     {pane.status === "working" && <WorkingBlocks cells={5} className="pane-topbar-wave" />}
@@ -973,7 +1026,7 @@ function TabLayer({
                               some agents make on startup, so hiding it would
                               be hiding it from the agent too. */}
                           {!pane?.spawning && (
-                            <Terminal paneId={paneId} focused={isFocused} visible={paneAreaVisible && tabVisible && !poppedOut} primary={!lent} onIntentCaptured={onIntentCaptured} onAgentStart={onAgentStart} broadcastGroup={broadcastGroup} />
+                            <Terminal paneId={paneId} focused={isFocused} visible={paneAreaVisible && tabVisible && !poppedOut} primary={!lent} onIntentCaptured={onIntentCaptured} onAgentStart={onAgentStart} broadcastGroup={broadcastGroup?.includes(paneId) ? broadcastGroup : null} />
                           )}
                           {(pane?.spawning || pane?.booting) && (
                             <PaneBootCard pane={pane} onReveal={onAgentStart} />
@@ -1030,7 +1083,7 @@ function TabLayer({
           {intentMenu && (
             <IntentHistoryMenu
               anchor={intentMenu.rect}
-              history={workspace.panes.find((p) => p.id === intentMenu.paneId)?.promptHistory ?? []}
+              history={(workspace.panes.find((p) => p.id === intentMenu.paneId) ?? borrowed?.get(intentMenu.paneId)?.pane)?.promptHistory ?? []}
               onPick={(text) => {
                 onSubmitPrompt(intentMenu.paneId, text);
                 onFocusPane(workspace.id, intentMenu.paneId);

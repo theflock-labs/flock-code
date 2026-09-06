@@ -2,12 +2,16 @@
   "name": "flock-presence-auth",
   "version": "1.0.0",
   "private": true,
-  "dependencies": {
-    "@types/uuid": "^10.0.0",
-    "@vercel/node": "^3.0.0",
-    "uuid": "^14.0.0"
-  },
   "devDependencies": {
-    "typescript": "^5.0.0"
-  }
+    "typescript": "^5.0.0",
+    "@types/node": "^24.0.0"
+  },
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test api/*.test.ts"
+  },
+  "type": "module"
 }

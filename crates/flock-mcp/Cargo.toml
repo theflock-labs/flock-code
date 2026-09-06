@@ -15,3 +15,4 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 flock-kg = { workspace = true }
+flock-pty = { workspace = true }

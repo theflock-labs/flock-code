@@ -10,6 +10,7 @@ import MergeQueueView from "./MergeQueueModal";
 import PrWatchSettings from "./PrWatchSettings";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import type { PullRequest } from "../types";
+import "./PrManagerModal.css";
 
 export type PrHubView = "prs" | "queue" | "repos";
 
@@ -152,7 +153,7 @@ export default function PrManagerModal({
                   ))}
                 </div>
                 {prs.length > 1 && (
-                  <button className="btn-mint-solid pr-review-all" onClick={onReviewAll}>
+                  <button className="btn-mint-solid pr-review-all" onClick={onReviewAll} disabled={reviewingPr !== null} aria-describedby={reviewingPr !== null ? "pr-review-startup" : undefined}>
                     + Review all with agents
                   </button>
                 )}
@@ -165,7 +166,7 @@ export default function PrManagerModal({
                     pr={selectedPr}
                     onReview={onReview}
                     reviewing={reviewingPr === selectedPr.number}
-                    reviewDisabled={reviewingPr !== null}
+                    reviewingPr={reviewingPr}
                     summary={summaries[`${selectedPr.repo}#${selectedPr.number}`]}
                     ghUser={ghUser}
                     queuedItem={mergeQueue.find((i) => i.repo === selectedPr.repo && i.number === selectedPr.number)}
@@ -211,11 +212,11 @@ function PrListItem({ pr, selected, reviewing, onSelect }: {
   );
 }
 
-function PrDetail({ pr, onReview, reviewing, reviewDisabled, summary, ghUser, queuedItem, onQueueAdd, onApprove, onOpenMergeQueue }: {
+function PrDetail({ pr, onReview, reviewing, reviewingPr, summary, ghUser, queuedItem, onQueueAdd, onApprove, onOpenMergeQueue }: {
   pr: PullRequest;
   onReview: (pr: PullRequest) => void;
   reviewing: boolean;
-  reviewDisabled: boolean;
+  reviewingPr: number | null;
   /** Stored agent-review summary for this PR, if one exists. */
   summary?: PrReviewSummary;
   ghUser: string | null;
@@ -252,6 +253,10 @@ function PrDetail({ pr, onReview, reviewing, reviewDisabled, summary, ghUser, qu
     (r) => r.author === ghUser && r.state.toUpperCase() === "APPROVED",
   );
 
+  const reviewBusyMessage = reviewingPr === null ? null : reviewing
+    ? `Starting an agent for PR #${pr.number}…`
+    : `An agent review is starting for PR #${reviewingPr}. You can start another once it is ready.`;
+
   const approve = async () => {
     if (approving || alreadyApproved) return;
     setActionError(null);
@@ -285,53 +290,7 @@ function PrDetail({ pr, onReview, reviewing, reviewDisabled, summary, ghUser, qu
         <div className="pr-detail-titlerow">
           <span className="pr-number">#{pr.number}</span>
           <span className="pr-detail-title">{pr.title}</span>
-          <div className="pr-detail-actions">
-            <button
-              className={`pr-action-btn pr-approve-btn${approving ? " loading" : ""}${alreadyApproved ? " done" : ""}`}
-              title={alreadyApproved
-                ? `Already approved as @${ghUser}`
-                : `Submit an approving review as @${ghUser ?? "the connected user"}`}
-              disabled={approving || alreadyApproved}
-              onClick={approve}
-            >
-              {approving
-                ? <span className="pr-review-spinner" />
-                : <><CheckIcon size={11} /> {alreadyApproved ? "approved" : "approve"}</>}
-            </button>
-            {queuedItem ? (
-              <button
-                className="pr-queued-chip"
-                title="Waiting in the merge queue — click to manage it"
-                onClick={onOpenMergeQueue}
-              >
-                in merge queue · #{queuedItem.position + 1} <ExternalLinkIcon size={10} />
-              </button>
-            ) : (
-              <button
-                className={`pr-action-btn pr-queue-btn${queueing ? " loading" : ""}`}
-                title="Add to the merge queue — merges automatically once approved and green, in order"
-                disabled={queueing}
-                onClick={queueMerge}
-              >
-                {queueing ? <span className="pr-review-spinner" /> : <><QueueIcon size={11} /> queue merge</>}
-              </button>
-            )}
-            <button
-              className={`pr-review-btn${reviewing ? " loading" : ""}`}
-              title={reviewing
-                ? "Checking out branch and starting agent…"
-                : `Check out ${headRef || `PR #${pr.number}`} and start an agent to review it`}
-              onClick={() => { if (!reviewDisabled) onReview(pr); }}
-            >
-              {reviewing ? <span className="pr-review-spinner" /> : <><ReviewIcon size={11} /> review</>}
-            </button>
-            <IconButton
-              className="pr-manager-gh-btn"
-              icon={<ExternalLinkIcon size={13} />}
-              label="Open on GitHub"
-              onClick={() => openPath(ghUrl).catch(console.error)}
-            />
-          </div>
+
         </div>
         <div className="pr-detail-meta">
           @{pr.author}
@@ -367,14 +326,77 @@ function PrDetail({ pr, onReview, reviewing, reviewDisabled, summary, ghUser, qu
             {details.reviews.length > 0 && (
               <div className="pr-detail-reviews">
                 {details.reviews.map((r, i) => (
-                  <span key={i} className={`pr-detail-review pr-review-${r.state.toLowerCase()}`} title={r.body}>
-                    {r.state.replace("_", " ").toLowerCase()} · @{r.author}
-                  </span>
+                  <details key={i} className={`pr-detail-review pr-review-${r.state.toLowerCase()}`}>
+                    <summary>{r.state.replaceAll("_", " ").toLowerCase()} · @{r.author}</summary>
+                    <div className="pr-review-feedback">{r.body || "No written feedback."}</div>
+                  </details>
                 ))}
               </div>
             )}
           </div>
-        ) : null}
+        ) : details ? (
+          <div className="pr-action-context">No checks or reviews reported yet.</div>
+        ) : <div className="pr-action-context" role="status">Loading checks and reviews…</div>}
+        <div className="pr-action-context">
+          {ghUser ? <>GitHub actions run as <strong>@{ghUser}</strong>.</> : "GitHub account unavailable — check your connection in Settings."}
+          {" "}Agent review checks out this branch and opens a review agent.
+        </div>
+          <div className="pr-detail-actions">
+            <button
+              className={`pr-action-btn pr-approve-btn${approving ? " loading" : ""}${alreadyApproved ? " done" : ""}`}
+              title={alreadyApproved
+                ? `Already approved as @${ghUser}`
+                : `Submit an approving review as @${ghUser ?? "the connected user"}`}
+              disabled={approving || alreadyApproved}
+              aria-busy={approving}
+              onClick={approve}
+            >
+              {approving
+                ? <><span className="pr-review-spinner" /> Approving on GitHub…</>
+                : <><CheckIcon size={11} /> {alreadyApproved ? "Approved on GitHub" : "Approve on GitHub"}</>}
+            </button>
+            {queuedItem ? (
+              <button
+                className="pr-queued-chip"
+                title="Waiting in the merge queue — click to manage it"
+                onClick={onOpenMergeQueue}
+              >
+                in merge queue · #{queuedItem.position + 1} <ExternalLinkIcon size={10} />
+              </button>
+            ) : (
+              <button
+                className={`pr-action-btn pr-queue-btn${queueing ? " loading" : ""}`}
+                title="Add to the merge queue — merges automatically once approved and green, in order"
+                disabled={queueing}
+                aria-busy={queueing}
+                aria-describedby="pr-queue-rules"
+                onClick={queueMerge}
+              >
+                {queueing ? <><span className="pr-review-spinner" /> Queueing…</> : <><QueueIcon size={11} /> Queue auto-merge</>}
+              </button>
+            )}
+            <button
+              className={`pr-review-btn${reviewing ? " loading" : ""}`}
+              title={reviewBusyMessage ?? `Check out ${headRef || `PR #${pr.number}`} and start an agent to review it`}
+              disabled={reviewingPr !== null}
+              aria-busy={reviewing}
+              aria-describedby={reviewingPr !== null ? "pr-review-startup" : undefined}
+              onClick={() => onReview(pr)}
+            >
+              {reviewing ? <><span className="pr-review-spinner" /> Starting review…</> : <><ReviewIcon size={11} /> Review with agent</>}
+            </button>
+            <IconButton
+              className="pr-manager-gh-btn"
+              icon={<ExternalLinkIcon size={13} />}
+              label="Open on GitHub"
+              onClick={() => openPath(ghUrl).catch(console.error)}
+            />
+          </div>
+        <div id="pr-queue-rules" className="pr-action-context">
+          Queued PRs merge automatically in order after approval and completed checks without failures.
+          GitHub branch rules still apply. Manage queued PRs in the Merge Queue tab.
+        </div>
+        {reviewBusyMessage && <div id="pr-review-startup" className="pr-action-context" role="status">{reviewBusyMessage}</div>}
       </div>
 
       {summary && (
