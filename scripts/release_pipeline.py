@@ -310,7 +310,8 @@ def build(args):
                 "tools": {name: run(command, cwd=source, env=clean_env, capture=True) for name, command in {
                     "rust": ["rustc", "--version"], "cargo": ["cargo", "--version"],
                     "node": ["node", "--version"], "npm": ["npm", "--version"], "minisign": ["minisign", "-v"],
-                    "tauri": [tauri, "--version"], "xcode": ["xcodebuild", "-version"],
+                    "tauri": [tauri, "--version"], "apple_clang": ["xcrun", "clang", "--version"],
+                    "macos_sdk": ["xcrun", "--sdk", "macosx", "--show-sdk-version"],
                     "macos": ["sw_vers", "-productVersion"]}.items()},
                 "locks": {path: digest(source / path) for path in ["Cargo.lock",
                     "apps/flock-desktop/package-lock.json", "services/presence-auth/package-lock.json"]},
