@@ -1,7 +1,7 @@
 {
   "name": "flock-desktop",
   "private": true,
-  "version": "0.7.45",
+  "version": "0.7.46",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -42,6 +42,6 @@
     "jsdom": "^29.1.1",
     "typescript": "~5.7.2",
     "vite": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
