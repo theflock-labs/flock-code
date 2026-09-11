@@ -24,7 +24,7 @@
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^5.5.0",
-    "ably": "^2.22.0",
+    "ably": "^2.28.0",
     "force-graph": "^1.51.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
