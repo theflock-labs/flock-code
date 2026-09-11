@@ -3,6 +3,7 @@ import io
 import json
 import os
 import plistlib
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -114,6 +115,74 @@ class ReleaseIntegrityTests(unittest.TestCase):
                 (directory / "latest.json").write_text(json.dumps(manifest))
                 with self.assertRaisesRegex(ValueError, "verified payload"):
                     artifacts.verify_updater(directory, self.version, "public fixture")
+
+    def test_smoke_runs_verified_extracted_updater_and_cleans_up_on_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "app.tar.gz"
+            self.archive(archive)
+            Path(str(archive) + ".sig").write_text("signature fixture")
+            script = Path("/fixture/smoke.sh")
+            environment = {"PATH": "/usr/bin"}
+            for fail in (False, True):
+                with self.subTest(fail=fail):
+                    events = []
+                    staged = []
+
+                    def signature(payload, signature, key):
+                        self.assertEqual((payload, signature, key),
+                                         (archive, "signature fixture", "public fixture"))
+                        events.append("signature")
+
+                    def macos(app, team):
+                        self.assertEqual(team, "TEAM")
+                        self.assertEqual((app / "Contents/MacOS/flock-desktop").read_bytes(),
+                                         b"application fixture")
+                        self.assertEqual((app / "Contents/MacOS/flock-mcp").read_bytes(),
+                                         b"sidecar fixture")
+                        staged.append(app)
+                        events.append("macos")
+
+                    def smoke(args, *, cwd, env):
+                        self.assertEqual(args, [script, staged[0]])
+                        self.assertEqual(cwd, staged[0].parent)
+                        self.assertNotEqual(cwd, archive.parent)
+                        self.assertIs(env, environment)
+                        events.append("smoke")
+                        if fail:
+                            raise subprocess.CalledProcessError(23, args)
+
+                    with patch.object(pipeline, "verify_signature", side_effect=signature), \
+                            patch.object(pipeline, "verify_macos", side_effect=macos), \
+                            patch.object(pipeline, "run", side_effect=smoke):
+                        if fail:
+                            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                                pipeline.smoke_updater(archive, self.version, "public fixture",
+                                                       "TEAM", script, environment)
+                            self.assertEqual(caught.exception.returncode, 23)
+                        else:
+                            pipeline.smoke_updater(archive, self.version, "public fixture",
+                                                   "TEAM", script, environment)
+                    self.assertEqual(events, ["signature", "macos", "smoke"])
+                    self.assertFalse(staged[0].parent.exists())
+
+    def test_smoke_rejects_bad_signature_or_unsafe_archive_before_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "app.tar.gz"
+            self.archive(archive)
+            Path(str(archive) + ".sig").write_text("signature fixture")
+            with patch.object(pipeline, "verify_signature", side_effect=ValueError("bad signature")), \
+                    patch.object(pipeline, "verify_macos") as macos, patch.object(pipeline, "run") as run:
+                with self.assertRaisesRegex(ValueError, "bad signature"):
+                    pipeline.smoke_updater(archive, self.version, "key", "TEAM", "smoke", {})
+                macos.assert_not_called()
+                run.assert_not_called()
+            self.archive(archive, extra=tarfile.TarInfo("flock.app/../../escape"))
+            with patch.object(pipeline, "verify_signature"), \
+                    patch.object(pipeline, "verify_macos") as macos, patch.object(pipeline, "run") as run:
+                with self.assertRaisesRegex(ValueError, "Unsafe updater archive path"):
+                    pipeline.smoke_updater(archive, self.version, "key", "TEAM", "smoke", {})
+                macos.assert_not_called()
+                run.assert_not_called()
 
     def test_signing_credentials_are_absent_during_compilation(self):
         environment = {"HOME": "/fixture", "PATH": "/usr/bin", "GH_TOKEN": "secret",

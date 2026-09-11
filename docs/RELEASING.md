@@ -103,6 +103,12 @@ macOS Accessibility permission. `SKIP_SMOKE`, ad-hoc signing and missing-updater
 fallbacks are not supported. The smoke test currently covers startup and window
 chrome; it does not establish complete feature/end-to-end coverage.
 
+The smoke test runs a fresh extraction of the signed updater archive in a
+separate staging directory, rather than the app in the Cargo build tree. The
+archive signature and contents are checked before extraction, and the staged
+app must pass the same Developer ID, notarization and Gatekeeper checks before
+launch. A smoke failure aborts the release and the staging directory is removed.
+
 The directory contains the DMG, updater tarball/signature, `latest.json`, release
 notes, a CycloneDX resolved-dependency inventory, and build provenance including
 commit, CI run, tools and lockfile hashes. `SHA256SUMS` covers all those files and
