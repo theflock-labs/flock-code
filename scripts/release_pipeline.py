@@ -8,13 +8,14 @@ import platform
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import tomllib
 import uuid
 from pathlib import Path
 from urllib.parse import quote
 
-from release_artifacts import (digest, payload_names, validate_version, verify_checksums,
+from release_artifacts import (digest, inspect_archive, payload_names, validate_version, verify_checksums,
                                verify_signature, verify_updater, write_checksums)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -169,6 +170,23 @@ def verify_macos(app, team_id):
     run(["spctl", "--assess", "--type", "execute", "--verbose=2", app])
 
 
+def smoke_updater(archive, version, public_key, team_id, script, env):
+    """Exercise the distributed app independently of the build tree."""
+    archive = Path(archive)
+    verify_signature(archive, Path(str(archive) + ".sig").read_text(), public_key)
+    inspect_archive(archive, version)
+    # A fresh build can run without exposing accessible windows inside the
+    # Cargo output tree. Stage the verified updater as a separate installation;
+    # the packaged smoke assertions and failure handling remain mandatory.
+    with tempfile.TemporaryDirectory(prefix="flock-smoke-", dir="/tmp") as temporary:
+        directory = Path(temporary)
+        with tarfile.open(archive, "r:gz") as package:
+            package.extractall(directory, filter="data")
+        app = directory / "flock.app"
+        verify_macos(app, team_id)
+        run([script, app], cwd=directory, env=env)
+
+
 def verify_dmg(dmg, version, team_id, expected_binaries):
     run(["hdiutil", "verify", dmg])
     run(["codesign", "--verify", "--strict", dmg])
@@ -285,7 +303,9 @@ def build(args):
             if notary.get("status") != "Accepted":
                 raise ValueError("Apple rejected DMG notarization")
             run(["xcrun", "stapler", "staple", dmg], env=clean_env)
-            run([source / "scripts/smoke.sh", app], cwd=source, env=clean_env)
+            smoke_updater(Path(str(app) + ".tar.gz"), version,
+                          config["plugins"]["updater"]["pubkey"], os.environ["APPLE_TEAM_ID"],
+                          source / "scripts/smoke.sh", clean_env)
             output.mkdir(parents=True)
             shutil.copy2(dmg, output / dmg.name)
             shutil.copy2(str(app) + ".tar.gz", output / f"flock_{version}.app.tar.gz")
