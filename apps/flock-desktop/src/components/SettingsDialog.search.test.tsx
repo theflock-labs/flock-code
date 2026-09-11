@@ -80,6 +80,15 @@ describe("Settings search navigation", () => {
     expect(screen.getByRole("tab", { name: "Appearance" }).getAttribute("aria-selected")).toBe("true");
   });
 
+  it("finds and focuses the terminal font picker without changing the preference", async () => {
+    await open();
+    fireEvent.keyDown(search("terminal font"), { key: "Enter" });
+    expect(document.activeElement).toBe(screen.getByLabelText("Terminal font"));
+    expect(localStorage.getItem("flock:terminal-font")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Terminal font"), { target: { value: "Menlo" } });
+    expect(localStorage.getItem("flock:terminal-font")).toBe("Menlo");
+  });
+
   it("finds session export through history vocabulary", async () => {
     await open();
     fireEvent.keyDown(search("history"), { key: "Enter" });

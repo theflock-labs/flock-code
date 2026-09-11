@@ -63,9 +63,6 @@ fn canonical_workspace_directory(raw: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-// Grants cannot be minted by create_workspace or a frontend preference. They
-// last for this app process and distinguish host execution from a Docker jail.
-type WorkspaceGrant = (String, PathBuf, PathBuf, bool);
 static EPHEMERAL_ROOTS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
 > = std::sync::OnceLock::new();
@@ -98,7 +95,7 @@ fn launch_paths(
         .cloned()
         .unwrap_or_else(|| cwd.clone());
     if !cwd.starts_with(&root) {
-        return Err("Co-pilot working directory is outside its approved root".into());
+        return Err("Co-pilot working directory is outside its registered root".into());
     }
     Ok((root, cwd))
 }
@@ -110,7 +107,7 @@ fn verify_launch_paths(root: &Path, cwd: &Path) -> Result<(), String> {
                 .ok_or("working directory is not valid Unicode")?,
         )? != path
         {
-            return Err("Working directory changed during approval; agent was not launched. Retry and verify the new path.".into());
+            return Err("Working directory changed while preparing the agent; agent was not launched. Retry and verify the new path.".into());
         }
     }
     Ok(())
@@ -120,46 +117,12 @@ fn visible_security_text(value: &str) -> String {
     value.chars().flat_map(char::escape_debug).collect()
 }
 
-static WORKSPACE_GRANTS: std::sync::OnceLock<
-    tokio::sync::Mutex<std::collections::HashSet<WorkspaceGrant>>,
-> = std::sync::OnceLock::new();
 // Serialize security resolution and launch for a workspace: a concurrent
 // secure spawn cannot race a host spawn past persistence of the secure flag.
 static WORKSPACE_LAUNCH_LOCKS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 > = std::sync::OnceLock::new();
 
-async fn authorize_workspace_launch(
-    app: &AppHandle,
-    workspace_id: &str,
-    root: &Path,
-    cwd: &Path,
-    secure: bool,
-) -> Result<(), String> {
-    let key = (
-        workspace_id.to_string(),
-        root.to_path_buf(),
-        cwd.to_path_buf(),
-        secure,
-    );
-    let mut grants = WORKSPACE_GRANTS.get_or_init(Default::default).lock().await;
-    if grants.contains(&key) {
-        return Ok(());
-    }
-    let mode = if secure {
-        "Run agents in a Docker jail with read/write access to this working directory."
-    } else {
-        "Run agents directly on your computer with your account's file and network access."
-    };
-    let extra = if cwd.starts_with(root) {
-        ""
-    } else {
-        "\n\nThis directory is outside the workspace root. Allow it as an additional working directory only if you recognize this worktree."
-    };
-    native_security_approval(app, "Allow workspace execution?", format!("Workspace root:\n{}\n\nAgent working directory:\n{}\n\n{mode}{extra}\n\nThis approval lasts until flock quits.", visible_security_text(&root.to_string_lossy()), visible_security_text(&cwd.to_string_lossy()))).await?;
-    grants.insert(key);
-    Ok(())
-}
 // ─── Workspaces ──────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -516,8 +479,8 @@ pub async fn spawn_pane(
     let pane_id = pane_id
         .filter(|id| !id.is_empty())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    // Creating a row is not a grant. Look up the canonical workspace root,
-    // then require native approval for this exact working directory and mode.
+    // Starting an agent is the user's request to execute in this workspace.
+    // Resolve and validate its directories without a separate launch prompt.
     let workspace = state
         .wm
         .list()
@@ -531,16 +494,7 @@ pub async fn spawn_pane(
         launch_paths(&workspace_id, workspace.as_ref().map(|w| w.repo_path.as_str()), cwd.as_deref(), &roots)?
     };
     let cwd_path = Some(canonical_cwd);
-    authorize_workspace_launch(
-        &app,
-        &workspace_id,
-        &workspace_root,
-        cwd_path.as_deref().unwrap(),
-        secure,
-    )
-    .await?;
-    // A path can be replaced while the native prompt is open. Verify again
-    // before repo_identity performs any host Git access.
+    // Verify the resolved paths before repo_identity performs any host Git access.
     verify_launch_paths(&workspace_root, cwd_path.as_deref().unwrap())?;
     if workspace.is_none() {
         EPHEMERAL_ROOTS
@@ -2974,7 +2928,7 @@ mod secure_lookup_tests {
 }
 
 #[cfg(test)]
-mod workspace_authorization_tests {
+mod workspace_launch_path_tests {
     use super::*;
 
     #[test]
@@ -2997,20 +2951,20 @@ mod workspace_authorization_tests {
             canonical_workspace_directory(root.join("looks-in-scope").to_str().unwrap()).unwrap();
         assert!(
             !canonical.starts_with(root.canonicalize().unwrap()),
-            "native approval must show the actual external directory"
+            "launch validation must resolve the actual external directory"
         );
-        let approved = root.canonicalize().unwrap();
+        let resolved = root.canonicalize().unwrap();
         std::fs::rename(&root, dir.join("original-repo")).unwrap();
         std::os::unix::fs::symlink(&outside, &root).unwrap();
         assert!(
-            verify_launch_paths(&approved, &approved).is_err(),
-            "replacement during the native prompt must abort before Git/spawn"
+            verify_launch_paths(&resolved, &resolved).is_err(),
+            "path replacement during launch preparation must abort before Git/spawn"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn ephemeral_sessions_require_valid_ids_explicit_paths_and_keep_their_approved_root() {
+    fn ephemeral_sessions_require_valid_ids_explicit_paths_and_keep_their_registered_root() {
         let dir = std::env::temp_dir().join(format!("flock-ephemeral-security-{}", Uuid::new_v4()));
         let root = dir.join("repo");
         let other = dir.join("private");
@@ -3030,7 +2984,7 @@ mod workspace_authorization_tests {
         let (candidate, _) = launch_paths(&id, None, Some(root_text), &registered).unwrap();
         assert!(
             registered.is_empty(),
-            "resolving a candidate never creates a native grant"
+            "resolving a candidate does not register a session"
         );
         registered.insert(id.clone(), candidate);
         assert!(launch_paths(&id, None, Some(other.to_str().unwrap()), &registered).is_err());
@@ -3038,20 +2992,30 @@ mod workspace_authorization_tests {
     }
 
     #[test]
-    fn native_grants_do_not_cross_workspace_directory_or_execution_mode() {
-        let root = PathBuf::from("/repo");
-        let accepted: WorkspaceGrant = ("workspace-a".into(), root.clone(), root.clone(), true);
-        let grants = std::collections::HashSet::from([accepted]);
-        assert!(!grants.contains(&("workspace-b".into(), root.clone(), root.clone(), true)));
-        assert!(!grants.contains(&(
-            "workspace-a".into(),
-            root.clone(),
-            PathBuf::from("/private"),
-            true
-        )));
-        assert!(
-            !grants.contains(&("workspace-a".into(), root.clone(), root, false)),
-            "a jail grant must never grant host execution"
-        );
+    fn stored_workspaces_resolve_the_repo_and_external_worktrees() {
+        let dir = std::env::temp_dir().join(format!("flock-workspace-launch-{}", Uuid::new_v4()));
+        let root = dir.join("repo");
+        let worktree = dir.join("worktrees/agent");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        let registered = std::collections::HashMap::new();
+        for cwd in [None, Some(worktree.to_str().unwrap())] {
+            let (resolved_root, resolved_cwd) = launch_paths(
+                "workspace-a",
+                Some(root.to_str().unwrap()),
+                cwd,
+                &registered,
+            )
+            .unwrap();
+            assert_eq!(resolved_root, root.canonicalize().unwrap());
+            assert_eq!(
+                resolved_cwd,
+                if cwd.is_some() { &worktree } else { &root }
+                    .canonicalize()
+                    .unwrap()
+            );
+            verify_launch_paths(&resolved_root, &resolved_cwd).unwrap();
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

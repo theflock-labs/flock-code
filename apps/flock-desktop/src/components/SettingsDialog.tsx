@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import ModalCloseButton from "./ModalCloseButton";
+import TerminalFontSetting from "./TerminalFontSetting";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import {
   githubCheck, githubDisconnect, githubOauthStart, githubOauthPoll,
@@ -861,6 +862,8 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
                 );
               })}
             </div>
+
+            <TerminalFontSetting />
 
             {/* Two independent sizes: the panes are the text you read all day,
                 the chrome is the frame around them. See lib/uiScale.ts. */}

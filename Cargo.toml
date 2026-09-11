@@ -12,7 +12,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.7.46"
+version = "0.7.47"
 authors = ["the flock authors"]
 
 [workspace.dependencies]
