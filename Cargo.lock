@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "flock-cli"
-version = "0.7.46"
+version = "0.7.47"
 dependencies = [
  "anyhow",
  "flock-core",
@@ -1723,7 +1723,7 @@ dependencies = [
 
 [[package]]
 name = "flock-core"
-version = "0.7.46"
+version = "0.7.47"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1740,7 +1740,7 @@ dependencies = [
 
 [[package]]
 name = "flock-desktop"
-version = "0.7.46"
+version = "0.7.47"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1775,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "flock-kg"
-version = "0.7.46"
+version = "0.7.47"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1793,7 +1793,7 @@ dependencies = [
 
 [[package]]
 name = "flock-mcp"
-version = "0.7.46"
+version = "0.7.47"
 dependencies = [
  "anyhow",
  "flock-kg",
@@ -1807,7 +1807,7 @@ dependencies = [
 
 [[package]]
 name = "flock-pty"
-version = "0.7.46"
+version = "0.7.47"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1822,7 +1822,7 @@ dependencies = [
 
 [[package]]
 name = "flock-tui"
-version = "0.7.46"
+version = "0.7.47"
 dependencies = [
  "anyhow",
  "crossterm 0.28.1",
