@@ -88,21 +88,19 @@
   src: url("../assets/fonts/IBMPlexMono-600.woff2") format("woff2");
 }
 
-/* Hack (MIT License) — still the terminal's face, and the one Terminal.tsx
-   preloads before xterm measures glyph width. It is the only bundled mono with
-   full box-drawing and block coverage, which is what an agent TUI is made of.
-   Behind Plex everywhere else. */
+/* Hack (MIT License) — chrome fallback and an opt-in terminal font.
+   Font-face descriptors need literal weights, not CSS custom properties. */
 @font-face {
   font-family: "Hack";
   font-style: normal;
-  font-weight: var(--weight-normal);
+  font-weight: 400;
   font-display: block;
   src: url("../assets/fonts/Hack-Regular.woff2") format("woff2");
 }
 @font-face {
   font-family: "Hack";
   font-style: normal;
-  font-weight: var(--weight-strong);
+  font-weight: 700;
   font-display: block;
   src: url("../assets/fonts/Hack-Bold.woff2") format("woff2");
 }
@@ -7841,6 +7839,24 @@ body.rail-resizing .right-rail { transition: none; }
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.terminal-font-setting { margin-top: 14px; }
+.terminal-font-setting .settings-row { flex-wrap: wrap; }
+.terminal-font-setting select { width: 210px; max-width: 100%; margin: 0; }
+.terminal-font-custom { display: grid; gap: 6px; margin-bottom: 10px; }
+.terminal-font-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.terminal-font-actions .modal-input { flex: 1 1 180px; min-width: 0; margin: 0; }
+.terminal-font-preview {
+  flex: 1 1 210px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-base);
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--text-hi);
+}
+.terminal-font-preview strong { font-weight: 700; }
+.terminal-font-setting .settings-btn:disabled { opacity: 0.35; cursor: default; }
 
 /* Agent pane size stepper: − 13px + Reset, sitting at the right of its row. */
 .pane-font-stepper {
