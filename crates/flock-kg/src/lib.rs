@@ -644,6 +644,9 @@ pub struct KnowledgeGraph {
 
 /// The SELECT list every node read shares — kept in one place so adding a
 /// column can't silently miss a query.
+// Formatted queries below interpolate only this static projection (optionally
+// qualified by a literal table alias). AssertSqlSafe covers that SQL structure;
+// all caller-supplied values must continue to use bind parameters.
 const NODE_COLS: &str =
     "id, kind, label, body, workspace_id, created_by_agent, created_at, updated_at, archived_at, outcome, shipped_in";
 
@@ -1590,7 +1593,7 @@ impl KnowledgeGraph {
     ) -> Result<Written> {
         if upsert_by_title {
             if let Some(id) = self.find_by_title(kind, label, workspace_id).await? {
-                let node = sqlx::query_as::<_, RawNode>(&format!(
+                let node = sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
                     r#"
                     UPDATE kg_node
                     SET body = $2, updated_at = now(),
@@ -1598,7 +1601,7 @@ impl KnowledgeGraph {
                     WHERE id = $1
                     RETURNING {NODE_COLS}
                     "#
-                ))
+                )))
                 .bind(id)
                 .bind(body)
                 .bind(agent_id)
@@ -1608,13 +1611,13 @@ impl KnowledgeGraph {
                 return Ok(Written { node: node.into_kg_node(), updated: true });
             }
         }
-        let node = sqlx::query_as::<_, RawNode>(&format!(
+        let node = sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
             r#"
             INSERT INTO kg_node (kind, label, body, outcome, workspace_id, created_by_agent, org_id, team_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING {NODE_COLS}
             "#
-        ))
+        )))
         .bind(kind)
         .bind(label)
         .bind(body)
@@ -2410,7 +2413,7 @@ impl KnowledgeGraph {
             }
         }
         if rows.is_empty() {
-            rows = sqlx::query_as::<_, RawNode>(&format!(
+            rows = sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
                 r#"
                 SELECT {NODE_COLS}
                 FROM kg_node n
@@ -2424,7 +2427,7 @@ impl KnowledgeGraph {
                 ORDER BY updated_at DESC
                 LIMIT $5
                 "#
-            ))
+            )))
             .bind(req.kind.as_deref())
             .bind(ws)
             .bind(req.include_superseded)
@@ -2464,7 +2467,7 @@ impl KnowledgeGraph {
         include_superseded: bool,
         limit: i64,
     ) -> Result<Vec<RawNode>> {
-        Ok(sqlx::query_as::<_, RawNode>(&format!(
+        Ok(sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT {NODE_COLS}
             FROM kg_node n
@@ -2482,7 +2485,7 @@ impl KnowledgeGraph {
                      updated_at DESC
             LIMIT $5
             "#
-        ))
+        )))
         .bind(kind)
         .bind(ws)
         .bind(include_superseded)
@@ -2505,7 +2508,7 @@ impl KnowledgeGraph {
         include_superseded: bool,
         limit: i64,
     ) -> Result<Vec<RawNode>> {
-        Ok(sqlx::query_as::<_, RawNode>(&format!(
+        Ok(sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT {NODE_COLS}
             FROM kg_node n
@@ -2519,7 +2522,7 @@ impl KnowledgeGraph {
             ORDER BY embedding <=> $4
             LIMIT $5
             "#
-        ))
+        )))
         .bind(kind)
         .bind(ws)
         .bind(include_superseded)
@@ -2535,7 +2538,7 @@ impl KnowledgeGraph {
         let depth = req.depth.unwrap_or(2).min(5) as i64;
 
         let rows = if let Some(edge_type) = &req.edge_type {
-            sqlx::query_as::<_, RawNode>(&format!(
+            sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
                 r#"
                 WITH RECURSIVE reachable (node_id, depth) AS (
                     SELECT to_node_id, 1 FROM kg_edge
@@ -2551,14 +2554,14 @@ impl KnowledgeGraph {
                 JOIN reachable r ON n.id = r.node_id
                 "#,
                 COLS = node_cols_prefixed("n")
-            ))
+            )))
             .bind(req.node_id)
             .bind(edge_type)
             .bind(depth)
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as::<_, RawNode>(&format!(
+            sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
                 r#"
                 WITH RECURSIVE reachable (node_id, depth) AS (
                     SELECT to_node_id, 1 FROM kg_edge WHERE from_node_id = $1
@@ -2573,7 +2576,7 @@ impl KnowledgeGraph {
                 JOIN reachable r ON n.id = r.node_id
                 "#,
                 COLS = node_cols_prefixed("n")
-            ))
+            )))
             .bind(req.node_id)
             .bind(depth)
             .fetch_all(&self.pool)
@@ -2629,7 +2632,7 @@ impl KnowledgeGraph {
         if path.is_empty() {
             return Ok(vec![]);
         }
-        let files = sqlx::query_as::<_, RawNode>(&format!(
+        let files = sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT {NODE_COLS}
             FROM kg_node
@@ -2638,7 +2641,7 @@ impl KnowledgeGraph {
             ORDER BY created_at DESC
             LIMIT 5
             "#
-        ))
+        )))
         .bind(&path)
         .fetch_all(&self.pool)
         .await?;
@@ -2954,7 +2957,7 @@ impl KnowledgeGraph {
         .await
         .unwrap_or(0);
 
-        stats.latest = sqlx::query_as::<_, RawNode>(&format!(
+        stats.latest = sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT {NODE_COLS}
             FROM kg_node
@@ -2964,7 +2967,7 @@ impl KnowledgeGraph {
             ORDER BY updated_at DESC
             LIMIT 1
             "#
-        ))
+        )))
         .bind(workspace_id)
         .fetch_optional(&self.pool)
         .await?
@@ -3049,7 +3052,7 @@ impl KnowledgeGraph {
         let limit = limit.clamp(1, 500);
         // Treat an empty/whitespace query as "no query" (browse mode).
         let query = query.map(str::trim).filter(|q| !q.is_empty());
-        let mut rows = sqlx::query_as::<_, RawNode>(&format!(
+        let mut rows = sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT {NODE_COLS}
             FROM kg_node
@@ -3062,7 +3065,7 @@ impl KnowledgeGraph {
             ORDER BY updated_at DESC
             LIMIT $4
             "#
-        ))
+        )))
         .bind(workspace_id)
         .bind(kind)
         .bind(query)
@@ -3074,7 +3077,7 @@ impl KnowledgeGraph {
         // rows); a cold embedder or vector-side error keeps the FTS result.
         if let Some(q) = query {
             if let Some(qvec) = embed::try_embed(q).await {
-                let semantic = sqlx::query_as::<_, RawNode>(&format!(
+                let semantic = sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
                     r#"
                     SELECT {NODE_COLS}
                     FROM kg_node
@@ -3085,7 +3088,7 @@ impl KnowledgeGraph {
                     ORDER BY embedding <=> $3
                     LIMIT $4
                     "#
-                ))
+                )))
                 .bind(workspace_id)
                 .bind(kind)
                 .bind(pgvector::Vector::from(qvec))
@@ -3101,9 +3104,9 @@ impl KnowledgeGraph {
 
     /// One node by id (with body), for the explorer's detail pane.
     pub async fn node(&self, id: Uuid) -> Result<Option<KgNode>> {
-        let row = sqlx::query_as::<_, RawNode>(&format!(
+        let row = sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
             "SELECT {NODE_COLS} FROM kg_node WHERE id = $1"
-        ))
+        )))
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
@@ -3114,7 +3117,7 @@ impl KnowledgeGraph {
     /// connecting edge type and whether it points out from or into the node.
     pub async fn neighbors(&self, id: Uuid) -> Result<Vec<KgNeighbor>> {
         let cols = node_cols_prefixed("n");
-        let rows = sqlx::query_as::<_, RawNeighbor>(&format!(
+        let rows = sqlx::query_as::<_, RawNeighbor>(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT {cols}, e.edge_type, 'out' AS direction
             FROM kg_edge e JOIN kg_node n ON n.id = e.to_node_id
@@ -3124,7 +3127,7 @@ impl KnowledgeGraph {
             FROM kg_edge e JOIN kg_node n ON n.id = e.from_node_id
             WHERE e.to_node_id = $1
             "#
-        ))
+        )))
         .bind(id)
         .fetch_all(&self.pool)
         .await?;
@@ -3167,7 +3170,7 @@ impl KnowledgeGraph {
         // off-canvas and vanish — leaving the very isolation this fixes. Hubs
         // are the connective tissue, so they always ride along with their
         // neighbours.
-        let hubs = sqlx::query_as::<_, RawNode>(&format!(
+        let hubs = sqlx::query_as::<_, RawNode>(sqlx::AssertSqlSafe(format!(
             r#"
             SELECT DISTINCT {COLS}
             FROM kg_node n
@@ -3177,7 +3180,7 @@ impl KnowledgeGraph {
               AND e.from_node_id = ANY($1)
             "#,
             COLS = node_cols_prefixed("n")
-        ))
+        )))
         .bind(&base_ids)
         .fetch_all(&self.pool)
         .await
@@ -3507,7 +3510,7 @@ fn rel_time(t: DateTime<Utc>) -> String {
 }
 
 /// The shared node column list with a table alias prefix, for joins.
-fn node_cols_prefixed(alias: &str) -> String {
+fn node_cols_prefixed(alias: &'static str) -> String {
     NODE_COLS
         .split(", ")
         .map(|c| format!("{alias}.{c}"))
