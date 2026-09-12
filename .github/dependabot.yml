@@ -15,6 +15,13 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      react:
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
   - package-ecosystem: npm
     directory: /services/presence-auth
     schedule:

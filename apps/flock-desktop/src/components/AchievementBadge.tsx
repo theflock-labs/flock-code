@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, type JSX } from "react";
 import type { GlyphKey } from "../lib/achievements";
 
 // A minted-enamel hexagonal seal. Colour is carried entirely by the fill
