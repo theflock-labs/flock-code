@@ -28,7 +28,7 @@ futures = "0.3"
 portable-pty = "0.9"
 
 # Persistence
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "postgres", "runtime-tokio", "macros", "migrate", "uuid", "chrono"] }
+sqlx = { version = "0.9", default-features = false, features = ["sqlite", "postgres", "runtime-tokio", "macros", "migrate", "uuid", "chrono"] }
 pgvector = { version = "0.4", features = ["sqlx"] }
 
 # Local embeddings (bge-small-en-v1.5) for the graph's hybrid search.

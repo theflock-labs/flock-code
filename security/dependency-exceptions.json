@@ -26,17 +26,6 @@
       "source": "https://rustsec.org/advisories/RUSTSEC-2026-0194.html"
     },
     {
-      "id": "RUSTSEC-2023-0071",
-      "package": "rsa",
-      "version": "0.9.10",
-      "scope": "not-in-release",
-      "owner": "@remiminnebo",
-      "expires": "2026-12-04",
-      "reason": "Unused SQLx MySQL optional dependency: not enabled in the SQLite/Postgres release feature graph.",
-      "action": "Remove via supported upstream update; any supported-target expansion must resolve this advisory before enabling the dependency.",
-      "source": "https://rustsec.org/advisories/RUSTSEC-2023-0071.html"
-    },
-    {
       "id": "RUSTSEC-2024-0436",
       "package": "paste",
       "version": "1.0.15",
