@@ -158,14 +158,16 @@ fn input_device_pref_path() -> PathBuf {
 /// Names of available microphone input devices, via cpal. First entry is
 /// always the currently-selected one's marker via `get_input_device()`
 /// matching by name — device *names* aren't stable identifiers across
-/// reboots/reconnects on every platform, but it's what cpal exposes and is
-/// good enough for a user-facing picker (falls back to the system default
-/// automatically if the named device disappears).
+/// reboots/reconnects on every platform. Keep matching the description's name
+/// to preserve existing preferences; fall back to the system default if the
+/// named device disappears.
 pub fn list_input_devices() -> Vec<String> {
     use cpal::traits::{DeviceTrait, HostTrait};
     let host = cpal::default_host();
     match host.input_devices() {
-        Ok(devices) => devices.filter_map(|d| d.name().ok()).collect(),
+        Ok(devices) => devices
+            .filter_map(|d| d.description().ok().map(|desc| desc.name().to_owned()))
+            .collect(),
         Err(e) => {
             tracing::warn!("voice: failed to list input devices: {e}");
             Vec::new()
@@ -767,7 +769,11 @@ fn run_capture_thread(
     let device = match &wanted_name {
         Some(name) => {
             let found = host.input_devices().ok().and_then(|mut devices| {
-                devices.find(|d| d.name().map(|n| &n == name).unwrap_or(false))
+                devices.find(|d| {
+                    d.description()
+                        .map(|desc| desc.name() == name)
+                        .unwrap_or(false)
+                })
             });
             match found {
                 Some(d) => d,
@@ -800,7 +806,7 @@ fn run_capture_thread(
             return;
         }
     };
-    let sample_rate = config.sample_rate().0;
+    let sample_rate = config.sample_rate();
     let channels = config.channels();
     let sample_format = config.sample_format();
     let err_fn = |err| tracing::error!("voice: cpal stream error: {err}");
@@ -841,7 +847,7 @@ fn run_capture_thread(
             let app_cb = app.clone();
             let last_emit_cb = Arc::clone(&last_emit);
             device.build_input_stream(
-                &config.into(),
+                config.into(),
                 move |data: &[f32], _: &_| {
                     if append_capped(&buf, data, max_samples) {
                         tracing::warn!(
@@ -860,7 +866,7 @@ fn run_capture_thread(
             let app_cb = app.clone();
             let last_emit_cb = Arc::clone(&last_emit);
             device.build_input_stream(
-                &config.into(),
+                config.into(),
                 move |data: &[i16], _: &_| {
                     // Convert straight into the buffer. The old code built a
                     // throwaway `Vec<f32>` on every callback — a heap
