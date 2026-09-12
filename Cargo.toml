@@ -33,7 +33,7 @@ pgvector = { version = "0.4", features = ["sqlx"] }
 
 # Local embeddings (bge-small-en-v1.5) for the graph's hybrid search.
 # Text models only — the default image-models feature is dead weight here.
-fastembed = { version = "5", default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
+fastembed = { version = "6", default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
 vt100 = "0.15"
 
 # Serialization
