@@ -37,7 +37,7 @@ export default function QueueCaptureOverlay({ onSave, onClose }: Props) {
     if (imgs.length === 0) return;
     setImages((prev) => [
       ...prev,
-      ...imgs.map((p) => ({ ...p, url: URL.createObjectURL(new Blob([p.data], { type: `image/${p.ext}` })) })),
+      ...imgs.map((p) => ({ ...p, url: URL.createObjectURL(new Blob([new Uint8Array(p.data)], { type: `image/${p.ext}` })) })),
     ]);
     setHint(null);
   }, []);
