@@ -348,7 +348,8 @@ impl WorkspaceManager {
              WHERE started_at < ? AND (ended_at IS NULL OR ended_at >= ?)
              ORDER BY started_at DESC LIMIT ?"
         );
-        let rows = sqlx::query(&sql)
+        // Only the static column list is interpolated; every filter stays bound.
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(to)
             .bind(from)
             .bind(limit)
