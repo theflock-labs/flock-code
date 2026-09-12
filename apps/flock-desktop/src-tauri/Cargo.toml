@@ -57,7 +57,7 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 # Voice-to-text: mic capture + local Whisper inference.
 # App is macOS-only (see rest of this file / tauri.conf.json) — "metal"
 # enables Core ML/Metal GPU acceleration for inference on Apple Silicon.
-cpal = "0.15"
+cpal = "0.18"
 whisper-rs = { version = "0.14", features = ["metal"] }
 base64 = "0.22.1"
 
