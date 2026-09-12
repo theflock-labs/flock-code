@@ -24,7 +24,27 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP="${1:-$REPO_DIR/target/release/bundle/macos/flock.app}"
 BIN="$APP/Contents/MacOS/flock-desktop"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+APP_PID=""
+
+cleanup() {
+  local status=$?
+  trap - EXIT
+  if [ -n "$APP_PID" ]; then
+    kill "$APP_PID" 2>/dev/null || true
+    wait "$APP_PID" 2>/dev/null || true
+  fi
+  # WebKit helpers can finish writing after the main process exits. Retry only
+  # removal of this run's disposable profile; never turn a failed check green.
+  for attempt in 1 2 3 4 5; do
+    if rm -rf "$WORK" 2>/dev/null; then
+      exit "$status"
+    fi
+    if [ "$attempt" -lt 5 ]; then sleep 1; fi
+  done
+  echo "!! smoke: could not remove temporary profile at $WORK" >&2
+  exit 1
+}
+trap cleanup EXIT
 
 fail() { echo "!! smoke: $*" >&2; exit 1; }
 step() { echo "── smoke: $*"; }
@@ -73,7 +93,6 @@ APP_PID=$!
 # The `wait` reaps the killed child inside the trap: without it bash prints its
 # own "Terminated: 15" job notice after the PASS line, which reads like the
 # smoke test failed at the moment it succeeded.
-trap 'kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 alive() { kill -0 "$APP_PID" 2>/dev/null; }
 
@@ -175,6 +194,7 @@ if [ ! -d "$AUTH_SRC" ]; then
 fi
 
 kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true
+APP_PID=""
 
 B="$WORK/cockpit"
 mkdir -p "$B/home" "$B/repo" "$B/ready"
@@ -194,7 +214,6 @@ export HOME="$B/home"
 step "launching into the cockpit"
 "$BIN" >"$B/app.log" 2>&1 &
 APP_PID=$!
-trap 'kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 step "waiting for 2 panes to report ready"
 for _ in $(seq 1 90); do

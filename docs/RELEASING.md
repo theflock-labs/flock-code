@@ -2,7 +2,7 @@
 
 Production releases require a clean, versioned commit that passed the `CI`
 workflow on protected `master`, plus an immutable `vX.Y.Z` tag pointing at that
-commit. Live branch-review/CI and immutable-tag protections are checked before
+commit. Live branch PR/CI and immutable-tag protections are checked before
 building or publishing; missing protection stops the release. The script never
 bumps versions, commits, pushes, modifies the
 website checkout, replaces `/Applications/flock.app`, or announces releases.
@@ -10,20 +10,19 @@ website checkout, replaces `/Applications/flock.app`, or announces releases.
 ## Activate the repository controls
 
 The desired API payloads live in
-[repository-controls.json](../.github/repository-controls.json). Land the workflow
-first and confirm that `CI required` is a GitHub Actions check. Add another trusted
-maintainer to [CODEOWNERS](../.github/CODEOWNERS): a PR author cannot approve their
-own PR, and the current sole owner cannot satisfy code-owner review on their own
-changes. Do not solve this by turning off admin enforcement.
+[repository-controls.json](../.github/repository-controls.json). The project uses
+an explicit single-maintainer release policy: `remiminnebo` reviews and merges
+release PRs after CI passes. A separate reviewer approval is not required, since
+a PR author cannot approve their own PR. [CODEOWNERS](../.github/CODEOWNERS)
+identifies the maintainer without requiring self-approval.
 
-The current single-maintainer rule already requires PRs and GitHub Actions
-`CI required`, enforces the rule for administrators, and restricts updates to
-`remiminnebo`. Force pushes and deletion are blocked. It requires zero reviewer
-approvals so the sole maintainer can merge their own PR after CI passes. The
-payload below adds the independent code-owner review requirements needed for
-production releases; the release script continues to reject the current rule
-until those review requirements are active. Adding a reviewer does not grant
-them permission to merge into `master`.
+The release script requires the PR rule to be active, strict GitHub Actions
+`CI required`, administrator enforcement, and an update allowlist containing
+only `remiminnebo`. Teams, apps and PR-review bypass actors are not permitted;
+force pushes and deletion are blocked. It also verifies immutable release tags.
+Removing the PR rule, weakening CI or granting another account merge authority
+stops the release. The zero-approval policy does not bypass any build, signing,
+notarization, packaged smoke or artifact verification step.
 
 Apply the reviewed payloads using a repository administrator account:
 
@@ -44,8 +43,9 @@ gh api --method POST repos/theflock-labs/flock-code/rulesets --input /tmp/flock-
 
 Update an existing ruleset by its ID instead of creating duplicates. Verify the
 resulting branch protection, rulesets, security-and-analysis and automated
-security-fixes API responses. Check that an unapproved/failing test PR is blocked
-from merging. Tags can be created by maintainers, but cannot be rewritten or
+security-fixes API responses. Check that a failing test PR is blocked from
+merging and only the maintainer can merge a passing one. Tags can be created by
+maintainers, but cannot be rewritten or
 deleted. Publishing additionally proves that the tag names a checked master
 commit. Ordinary contributor workflows have read-only permissions, immutable
 Action SHAs and no signing/deployment secrets; dependency review does not post PR
@@ -60,10 +60,12 @@ format check. Destructive database integration tests must use disposable fixture
 
 ## Prepare and build
 
-Use Apple Silicon macOS with Xcode, the versions in `rust-toolchain.toml` and
+Use Apple Silicon macOS with Xcode Command Line Tools (or full Xcode), the versions in `rust-toolchain.toml` and
 `.node-version`, Python 3.11+, GitHub CLI, Docker, and `minisign`. npm is the version
 bundled with that exact Node distribution. Install the Developer ID certificate
-in the login keychain. Set these environment variables explicitly; the script
+in the login keychain. The active developer tools must provide the macOS SDK,
+`clang`, `notarytool` and `stapler`; the full Xcode application is not required
+for this desktop-only target. Set these environment variables explicitly; the script
 does not silently source `scripts/release.env`:
 
 - `APPLE_SIGNING_IDENTITY`: `Developer ID Application: … (TEAMID)`.
@@ -100,6 +102,12 @@ artifact set is completed. The terminal running the packaged smoke test needs
 macOS Accessibility permission. `SKIP_SMOKE`, ad-hoc signing and missing-updater
 fallbacks are not supported. The smoke test currently covers startup and window
 chrome; it does not establish complete feature/end-to-end coverage.
+
+The smoke test runs a fresh extraction of the signed updater archive in a
+separate staging directory, rather than the app in the Cargo build tree. The
+archive signature and contents are checked before extraction, and the staged
+app must pass the same Developer ID, notarization and Gatekeeper checks before
+launch. A smoke failure aborts the release and the staging directory is removed.
 
 The directory contains the DMG, updater tarball/signature, `latest.json`, release
 notes, a CycloneDX resolved-dependency inventory, and build provenance including

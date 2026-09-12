@@ -108,22 +108,13 @@ export function getXtermTheme(theme: ThemeId) {
   return XTERM_THEMES[theme];
 }
 
-/** The terminal face, for every xterm the app opens — local panes and the
- *  mirrored co-pilot view alike, so a shared session looks like the pane it
- *  came from.
- *
- *  Hack leads here even though IBM Plex Mono is the brand's code face, and the
- *  reason is coverage rather than taste: the Plex cut vendored in
- *  src/assets/fonts is the website's latin subset, 229 codepoints with no
- *  box-drawing, block or geometric glyphs at all. Every agent that runs a TUI
- *  draws its frames and spinners out of exactly those ranges, so putting Plex
- *  first would send each one through per-glyph fallback into a font with
- *  different advance widths — which is how a terminal's columns come apart.
- *  Hack carries the full set. Plex still owns chrome and metadata via
- *  --font-mono in global.css, where nothing has to line up in columns.
- *  Swap the order the day a complete Plex Mono is vendored. */
+/** Default and fallback stack for local and mirrored terminals. An explicit
+ *  Appearance preference can select another face; see terminalFont.ts.
+ *  Keep xterm's normal/bold defaults for the CLI's ANSI emphasis.
+ *  Keep the bundled Plex latin subset out of this stack: it lacks the
+ *  box-drawing and block glyphs used by agent TUIs. */
 export const TERMINAL_FONT_FAMILY =
-  '"Hack", "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Code", Consolas, monospace';
+  'ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
 
 const XTERM_THEMES: Record<ThemeId, Record<string, string>> = {
   // Nightfall — the brand's night palette: paper as the ground, ink as the

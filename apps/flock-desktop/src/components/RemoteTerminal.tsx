@@ -4,6 +4,7 @@ import { createDragSelect } from "../lib/dragSelect";
 import { getStreamGrant, onRealtimeContext } from "../lib/presence";
 import { subscribeToStream, streamChannels } from "../lib/session";
 import { getEffectiveTheme, getXtermTheme, TERMINAL_FONT_FAMILY } from "../lib/theme";
+import { bindTerminalFont } from "../lib/terminalFont";
 
 interface Props {
   streamId: string;
@@ -128,6 +129,7 @@ export default function RemoteTerminal({ streamId, focused, interactive }: Props
     }
 
     const ro = new ResizeObserver(fitToOuter);
+    const unsubscribeFont = bindTerminalFont(term, () => requestAnimationFrame(fitToOuter));
     ro.observe(outerRef.current);
     requestAnimationFrame(fitToOuter);
     setTimeout(fitToOuter, 80);
@@ -142,6 +144,7 @@ export default function RemoteTerminal({ streamId, focused, interactive }: Props
       unsubData();
       inputDisposer?.dispose();
       ro.disconnect();
+      unsubscribeFont();
       term.dispose();
       termRef.current = null;
     };

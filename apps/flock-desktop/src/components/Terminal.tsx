@@ -11,6 +11,7 @@ import { getRestoreHistory } from "../lib/restoreHistory";
 import { publishBytes, publishDims, recordDims } from "../lib/streamPublisher";
 import { getEffectiveTheme, getXtermTheme, onThemeChange, TERMINAL_FONT_FAMILY } from "../lib/theme";
 import { getStoredPaneFontSize, onPaneFontSizeChange } from "../lib/uiScale";
+import { bindTerminalFont } from "../lib/terminalFont";
 import { noteInjectedInput, registerSniffer, registerTerminal, unregisterSniffer, unregisterTerminal } from "../lib/terminalRegistry";
 import { handleImagePaste } from "../lib/imageAttach";
 import { IntentSniffer } from "../lib/intentSniffer";
@@ -634,20 +635,6 @@ function Terminal({ paneId, focused, visible, onIntentCaptured, broadcastGroup, 
     // workspace gets its context on first reveal instead.
     if (visibleRef.current) claimWebgl();
 
-    // xterm measures glyph width via canvas at open() time. If the Hack
-    // webfont (font-display: swap) hasn't finished loading yet, it
-    // silently measures the fallback font instead and never re-measures
-    // once the real font arrives — DOM text reflows automatically on a
-    // font swap, but xterm's canvas does not. Force a re-fit + redraw
-    // once the font is actually ready.
-    document.fonts
-      .load(`${term.options.fontSize}px "Hack"`)
-      .catch(() => {})
-      .finally(() => {
-        fit.fit();
-        term.refresh(0, term.rows - 1);
-      });
-
     // Bind backend PTY output → xterm. `cancelled` guards the async
     // registrations against unmount-before-resolve (StrictMode remounts,
     // fast pane churn) — otherwise the resolved subscription leaks with
@@ -770,6 +757,7 @@ function Terminal({ paneId, focused, visible, onIntentCaptured, broadcastGroup, 
       term.options.fontSize = px;
       fitKeepingBottom(term, fit);
     });
+    const unsubscribeFont = bindTerminalFont(term, () => fitKeepingBottom(term, fit));
 
     return () => {
       cancelled = true;
@@ -790,6 +778,7 @@ function Terminal({ paneId, focused, visible, onIntentCaptured, broadcastGroup, 
       dragSelect.dispose();
       unsubscribeTheme();
       unsubscribeScale();
+      unsubscribeFont();
       if (unsubOutput) unsubOutput();
       if (unlistenExit) unlistenExit();
       unregisterSniffer(paneId, sniffer);

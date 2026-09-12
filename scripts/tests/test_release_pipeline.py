@@ -1,7 +1,9 @@
+import copy
 import io
 import json
 import os
 import plistlib
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -114,6 +116,74 @@ class ReleaseIntegrityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "verified payload"):
                     artifacts.verify_updater(directory, self.version, "public fixture")
 
+    def test_smoke_runs_verified_extracted_updater_and_cleans_up_on_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "app.tar.gz"
+            self.archive(archive)
+            Path(str(archive) + ".sig").write_text("signature fixture")
+            script = Path("/fixture/smoke.sh")
+            environment = {"PATH": "/usr/bin"}
+            for fail in (False, True):
+                with self.subTest(fail=fail):
+                    events = []
+                    staged = []
+
+                    def signature(payload, signature, key):
+                        self.assertEqual((payload, signature, key),
+                                         (archive, "signature fixture", "public fixture"))
+                        events.append("signature")
+
+                    def macos(app, team):
+                        self.assertEqual(team, "TEAM")
+                        self.assertEqual((app / "Contents/MacOS/flock-desktop").read_bytes(),
+                                         b"application fixture")
+                        self.assertEqual((app / "Contents/MacOS/flock-mcp").read_bytes(),
+                                         b"sidecar fixture")
+                        staged.append(app)
+                        events.append("macos")
+
+                    def smoke(args, *, cwd, env):
+                        self.assertEqual(args, [script, staged[0]])
+                        self.assertEqual(cwd, staged[0].parent)
+                        self.assertNotEqual(cwd, archive.parent)
+                        self.assertIs(env, environment)
+                        events.append("smoke")
+                        if fail:
+                            raise subprocess.CalledProcessError(23, args)
+
+                    with patch.object(pipeline, "verify_signature", side_effect=signature), \
+                            patch.object(pipeline, "verify_macos", side_effect=macos), \
+                            patch.object(pipeline, "run", side_effect=smoke):
+                        if fail:
+                            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                                pipeline.smoke_updater(archive, self.version, "public fixture",
+                                                       "TEAM", script, environment)
+                            self.assertEqual(caught.exception.returncode, 23)
+                        else:
+                            pipeline.smoke_updater(archive, self.version, "public fixture",
+                                                   "TEAM", script, environment)
+                    self.assertEqual(events, ["signature", "macos", "smoke"])
+                    self.assertFalse(staged[0].parent.exists())
+
+    def test_smoke_rejects_bad_signature_or_unsafe_archive_before_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "app.tar.gz"
+            self.archive(archive)
+            Path(str(archive) + ".sig").write_text("signature fixture")
+            with patch.object(pipeline, "verify_signature", side_effect=ValueError("bad signature")), \
+                    patch.object(pipeline, "verify_macos") as macos, patch.object(pipeline, "run") as run:
+                with self.assertRaisesRegex(ValueError, "bad signature"):
+                    pipeline.smoke_updater(archive, self.version, "key", "TEAM", "smoke", {})
+                macos.assert_not_called()
+                run.assert_not_called()
+            self.archive(archive, extra=tarfile.TarInfo("flock.app/../../escape"))
+            with patch.object(pipeline, "verify_signature"), \
+                    patch.object(pipeline, "verify_macos") as macos, patch.object(pipeline, "run") as run:
+                with self.assertRaisesRegex(ValueError, "Unsafe updater archive path"):
+                    pipeline.smoke_updater(archive, self.version, "key", "TEAM", "smoke", {})
+                macos.assert_not_called()
+                run.assert_not_called()
+
     def test_signing_credentials_are_absent_during_compilation(self):
         environment = {"HOME": "/fixture", "PATH": "/usr/bin", "GH_TOKEN": "secret",
                        "TAURI_SIGNING_PRIVATE_KEY": "secret", "APPLE_PASSWORD": "secret",
@@ -123,6 +193,38 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.assertNotIn("secret", actual.values())
         self.assertEqual(actual["VITE_SUPABASE_URL"], "https://public.example")
         self.assertEqual(actual["SOURCE_DATE_EPOCH"], "123")
+
+    def test_macos_tools_accept_command_line_tools_and_reject_missing_tools(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "CommandLineTools"
+            sdk = root / "SDKs/MacOSX.sdk"
+            sdk.mkdir(parents=True)
+            paths = {}
+            for name in ("clang", "notarytool", "stapler"):
+                path = root / "usr/bin" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("#!/bin/sh\nexit 0\n")
+                path.chmod(0o700)
+                paths[name] = path
+
+            def resolve(args, **_kwargs):
+                if args == ["xcrun", "--sdk", "macosx", "--show-sdk-path"]:
+                    return str(sdk)
+                self.assertEqual(args[:2], ["xcrun", "--find"])
+                return str(paths[args[2]])
+
+            with patch.object(pipeline, "run", side_effect=resolve):
+                pipeline.verify_macos_tools()
+                paths["notarytool"].chmod(0o600)
+                with self.assertRaisesRegex(ValueError, "notarytool"):
+                    pipeline.verify_macos_tools()
+                paths["notarytool"].chmod(0o700)
+                paths["stapler"].unlink()
+                with self.assertRaisesRegex(ValueError, "stapler"):
+                    pipeline.verify_macos_tools()
+                sdk.rmdir()
+                with self.assertRaisesRegex(ValueError, "SDK"):
+                    pipeline.verify_macos_tools()
 
     @patch.object(pipeline, "protected_repository")
     def test_publication_requires_matching_remote_tag_and_latest_ci(self, _protected):
@@ -170,12 +272,13 @@ class ReleaseIntegrityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Link graph escapes"):
                     artifacts.inspect_archive(archive, self.version)
 
-    def test_publication_requires_live_reviews_and_immutable_tags(self):
+    def test_publication_requires_live_single_maintainer_pr_ci_and_immutable_tags(self):
         protection = {
             "enforce_admins": {"enabled": True},
             "required_status_checks": {"strict": True, "checks": [{"context": "CI required", "app_id": 15368}]},
-            "required_pull_request_reviews": {"required_approving_review_count": 1,
-                "require_code_owner_reviews": True, "dismiss_stale_reviews": True, "require_last_push_approval": True},
+            "required_pull_request_reviews": {"required_approving_review_count": 0,
+                "require_code_owner_reviews": False, "dismiss_stale_reviews": False, "require_last_push_approval": False},
+            "restrictions": {"users": [{"login": "remiminnebo"}], "teams": [], "apps": []},
             "allow_force_pushes": {"enabled": False}, "allow_deletions": {"enabled": False},
         }
         ruleset = {"target": "tag", "enforcement": "active", "bypass_actors": [],
@@ -184,9 +287,39 @@ class ReleaseIntegrityTests(unittest.TestCase):
         pipeline.validate_repository_controls(protection, [ruleset])
         with self.assertRaisesRegex(ValueError, "release-tag"):
             pipeline.validate_repository_controls(protection, [])
-        protection["required_pull_request_reviews"]["require_code_owner_reviews"] = False
-        with self.assertRaisesRegex(ValueError, "master review"):
-            pipeline.validate_repository_controls(protection, [ruleset])
+        unsafe_changes = [
+            ("enforce_admins", {"enabled": False}),
+            ("required_pull_request_reviews", None),
+            ("required_pull_request_reviews", {"required_approving_review_count": 0,
+                "bypass_pull_request_allowances": {"users": [{"login": "remiminnebo"}]}}),
+            ("required_status_checks", {"strict": False, "checks": [{"context": "CI required", "app_id": 15368}]}),
+            ("required_status_checks", {"strict": True, "checks": [{"context": "CI required", "app_id": 123}]}),
+            ("required_status_checks", {"strict": True, "checks": []}),
+            ("restrictions", None),
+            ("restrictions", {"users": [{"login": "another-maintainer"}], "teams": [], "apps": []}),
+            ("restrictions", {"users": [{"login": "remiminnebo"}, {"login": "another-maintainer"}]}),
+            ("restrictions", {"users": [{"login": "remiminnebo"}], "teams": [{"slug": "developers"}]}),
+            ("restrictions", {"users": [{"login": "remiminnebo"}], "apps": [{"slug": "release-bot"}]}),
+            ("allow_force_pushes", {"enabled": True}),
+            ("allow_deletions", {"enabled": True}),
+        ]
+        for key, value in unsafe_changes:
+            with self.subTest(key=key, value=value):
+                unsafe = copy.deepcopy(protection)
+                unsafe[key] = value
+                with self.assertRaisesRegex(ValueError, "master PR/CI"):
+                    pipeline.validate_repository_controls(unsafe, [ruleset])
+        for kind in ("teams", "apps"):
+            unsafe = copy.deepcopy(protection)
+            unsafe["required_pull_request_reviews"]["bypass_pull_request_allowances"] = {kind: [{"id": 1}]}
+            with self.subTest(bypass=kind), self.assertRaisesRegex(ValueError, "master PR/CI"):
+                pipeline.validate_repository_controls(unsafe, [ruleset])
+        for key, value in (("enforcement", "disabled"), ("bypass_actors", [{"actor_id": 1}]),
+                           ("rules", [{"type": "deletion"}])):
+            unsafe = copy.deepcopy(ruleset)
+            unsafe[key] = value
+            with self.subTest(tag=key), self.assertRaisesRegex(ValueError, "release-tag"):
+                pipeline.validate_repository_controls(protection, [unsafe])
 
 
 if __name__ == "__main__":

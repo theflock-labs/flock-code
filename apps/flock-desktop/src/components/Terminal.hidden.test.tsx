@@ -111,15 +111,9 @@ describe("hidden panes defer rendering", () => {
     window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
       cb(0); return 0;
     }) as typeof window.requestAnimationFrame;
-    // jsdom ships neither of these; the mount effect uses both.
+    // jsdom has no ResizeObserver; the mount effect uses it.
     vi.stubGlobal("ResizeObserver", class {
       observe() {} unobserve() {} disconnect() {}
-    });
-    // jsdom has no font loading API; the mount effect re-measures glyphs once
-    // the Hack webfont resolves.
-    Object.defineProperty(document, "fonts", {
-      configurable: true,
-      value: { load: () => Promise.resolve([]), ready: Promise.resolve() },
     });
   });
   afterEach(cleanup);
@@ -316,10 +310,6 @@ describe("visible panes coalesce writes", () => {
     }) as typeof window.requestAnimationFrame;
     vi.stubGlobal("ResizeObserver", class {
       observe() {} unobserve() {} disconnect() {}
-    });
-    Object.defineProperty(document, "fonts", {
-      configurable: true,
-      value: { load: () => Promise.resolve([]), ready: Promise.resolve() },
     });
   });
   afterEach(() => { vi.useRealTimers(); cleanup(); });

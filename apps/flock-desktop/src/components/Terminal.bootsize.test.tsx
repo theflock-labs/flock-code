@@ -103,10 +103,6 @@ describe("agent takeover settles the PTY size", () => {
     vi.stubGlobal("ResizeObserver", class {
       observe() {} unobserve() {} disconnect() {}
     });
-    Object.defineProperty(document, "fonts", {
-      configurable: true,
-      value: { load: () => Promise.resolve([]), ready: Promise.resolve() },
-    });
   });
   afterEach(cleanup);
 

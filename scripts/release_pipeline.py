@@ -8,17 +8,19 @@ import platform
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import tomllib
 import uuid
 from pathlib import Path
 from urllib.parse import quote
 
-from release_artifacts import (digest, payload_names, validate_version, verify_checksums,
+from release_artifacts import (digest, inspect_archive, payload_names, validate_version, verify_checksums,
                                verify_signature, verify_updater, write_checksums)
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "theflock-labs/flock-code"
+RELEASE_MAINTAINER = "remiminnebo"
 APP_REL = Path("apps/flock-desktop")
 SIGNING_KEYS = ("APPLE_SIGNING_IDENTITY", "APPLE_ID", "APPLE_PASSWORD", "APPLE_TEAM_ID",
                 "TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD")
@@ -38,18 +40,23 @@ def github(path):
 
 def validate_repository_controls(protection, rulesets):
     checks = protection.get("required_status_checks") or {}
-    reviews = protection.get("required_pull_request_reviews") or {}
+    reviews = protection.get("required_pull_request_reviews")
+    restrictions = protection.get("restrictions") or {}
+    bypasses = (reviews or {}).get("bypass_pull_request_allowances") or {}
+    # The sole maintainer reviews and merges the PR themselves. A separate
+    # approval is not required, but neither direct pushes nor another merger
+    # may bypass the PR and CI gates.
     if (not protection.get("enforce_admins", {}).get("enabled")
             or not checks.get("strict")
             or not any(check.get("context") == "CI required" and check.get("app_id") == 15368
                        for check in checks.get("checks", []))
-            or reviews.get("required_approving_review_count", 0) < 1
-            or not reviews.get("require_code_owner_reviews")
-            or not reviews.get("dismiss_stale_reviews")
-            or not reviews.get("require_last_push_approval")
+            or not isinstance(reviews, dict)
+            or [user.get("login") for user in restrictions.get("users", [])] != [RELEASE_MAINTAINER]
+            or restrictions.get("teams") or restrictions.get("apps")
+            or any(bypasses.get(kind) for kind in ("users", "teams", "apps"))
             or protection.get("allow_force_pushes", {}).get("enabled", True)
             or protection.get("allow_deletions", {}).get("enabled", True)):
-        raise ValueError("Required master review/CI protections are not fully active")
+        raise ValueError("Required master PR/CI and single-maintainer protections are not fully active")
     for ruleset in rulesets:
         refs = ruleset.get("conditions", {}).get("ref_name", {})
         if (ruleset.get("target") == "tag" and ruleset.get("enforcement") == "active"
@@ -108,6 +115,18 @@ def build_environment(commit):
     return result
 
 
+def verify_macos_tools():
+    # Desktop-only Tauri builds and notarization work with Command Line Tools.
+    # xcodebuild -version would incorrectly require the full Xcode application.
+    sdk = Path(run(["xcrun", "--sdk", "macosx", "--show-sdk-path"], capture=True))
+    if not sdk.is_dir():
+        raise ValueError("The active macOS SDK is missing")
+    for tool in ("clang", "notarytool", "stapler"):
+        executable = Path(run(["xcrun", "--find", tool], capture=True))
+        if not executable.is_file() or not os.access(executable, os.X_OK):
+            raise ValueError(f"Required macOS release tool missing: {tool}")
+
+
 def preflight(root, version):
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ValueError("Production currently targets Apple Silicon macOS only")
@@ -117,10 +136,10 @@ def preflight(root, version):
     identity = os.environ["APPLE_SIGNING_IDENTITY"]
     if not identity.startswith("Developer ID Application: ") or not identity.endswith(f"({os.environ['APPLE_TEAM_ID']})"):
         raise ValueError("Production requires the matching Developer ID Application identity")
-    for command in ("gh", "node", "npm", "cargo", "rustc", "minisign", "codesign", "xcrun", "hdiutil", "spctl", "xcodebuild", "docker"):
+    for command in ("gh", "node", "npm", "cargo", "rustc", "minisign", "codesign", "xcrun", "hdiutil", "spctl", "docker"):
         if not shutil.which(command):
             raise ValueError(f"Required release tool missing: {command}")
-    run(["xcodebuild", "-version"], capture=True)
+    verify_macos_tools()
     run(["docker", "info", "--format", "{{.ServerVersion}}"], capture=True)
     node = run(["node", "--version"], capture=True).removeprefix("v")
     rust = run(["rustc", "--version"], capture=True).split()[1]
@@ -149,6 +168,23 @@ def verify_macos(app, team_id):
     verify_identity(app, team_id)
     run(["xcrun", "stapler", "validate", app])
     run(["spctl", "--assess", "--type", "execute", "--verbose=2", app])
+
+
+def smoke_updater(archive, version, public_key, team_id, script, env):
+    """Exercise the distributed app independently of the build tree."""
+    archive = Path(archive)
+    verify_signature(archive, Path(str(archive) + ".sig").read_text(), public_key)
+    inspect_archive(archive, version)
+    # A fresh build can run without exposing accessible windows inside the
+    # Cargo output tree. Stage the verified updater as a separate installation;
+    # the packaged smoke assertions and failure handling remain mandatory.
+    with tempfile.TemporaryDirectory(prefix="flock-smoke-", dir="/tmp") as temporary:
+        directory = Path(temporary)
+        with tarfile.open(archive, "r:gz") as package:
+            package.extractall(directory, filter="data")
+        app = directory / "flock.app"
+        verify_macos(app, team_id)
+        run([script, app], cwd=directory, env=env)
 
 
 def verify_dmg(dmg, version, team_id, expected_binaries):
@@ -267,7 +303,9 @@ def build(args):
             if notary.get("status") != "Accepted":
                 raise ValueError("Apple rejected DMG notarization")
             run(["xcrun", "stapler", "staple", dmg], env=clean_env)
-            run([source / "scripts/smoke.sh", app], cwd=source, env=clean_env)
+            smoke_updater(Path(str(app) + ".tar.gz"), version,
+                          config["plugins"]["updater"]["pubkey"], os.environ["APPLE_TEAM_ID"],
+                          source / "scripts/smoke.sh", clean_env)
             output.mkdir(parents=True)
             shutil.copy2(dmg, output / dmg.name)
             shutil.copy2(str(app) + ".tar.gz", output / f"flock_{version}.app.tar.gz")
@@ -292,7 +330,8 @@ def build(args):
                 "tools": {name: run(command, cwd=source, env=clean_env, capture=True) for name, command in {
                     "rust": ["rustc", "--version"], "cargo": ["cargo", "--version"],
                     "node": ["node", "--version"], "npm": ["npm", "--version"], "minisign": ["minisign", "-v"],
-                    "tauri": [tauri, "--version"], "xcode": ["xcodebuild", "-version"],
+                    "tauri": [tauri, "--version"], "apple_clang": ["xcrun", "clang", "--version"],
+                    "macos_sdk": ["xcrun", "--sdk", "macosx", "--show-sdk-version"],
                     "macos": ["sw_vers", "-productVersion"]}.items()},
                 "locks": {path: digest(source / path) for path in ["Cargo.lock",
                     "apps/flock-desktop/package-lock.json", "services/presence-auth/package-lock.json"]},
