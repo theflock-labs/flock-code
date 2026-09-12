@@ -30,7 +30,7 @@ export default function WorkingBlocks({
   className?: string;
 }) {
   // Read once per mount so re-renders don't jump the phase.
-  const syncRef = useRef<number>();
+  const syncRef = useRef<number | undefined>(undefined);
   if (syncRef.current === undefined) {
     syncRef.current = performance.now() % WB_PERIOD_MS;
   }
