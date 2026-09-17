@@ -18,12 +18,14 @@ import { onRadioKey } from "../lib/a11y";
 import { getSecureByDefault, setSecureByDefault } from "../lib/secureSettings";
 import { agentCliStatus, containerStatus, egressPolicy, gitBranchOptions, worktreeSetupGet, worktreeSetupSet, type BranchOptions, type ContainerStatus } from "../lib/tauri";
 import { useFocusTrap } from "../lib/useFocusTrap";
-import type { AgentKind, BranchMode, BranchPlan, WindowLayout } from "../types";
+import { lineupLabel, MAX_PRESETS, readWorkspacePresets, resizeLineup, SESSION_COUNTS, STARTER_PRESETS, writeWorkspacePresets, type WorkspacePreset } from "../lib/workspacePresets";
+import type { AgentKind, BranchMode, BranchPlan, WorkspaceLaunch } from "../types";
 import "../styles/spawnDialog.css";
+import "../styles/newWorkspace.css";
 
 interface Props {
   cwd: string;
-  onConfirm: (name: string, kind: AgentKind, dir: string, layout: WindowLayout, plan: BranchPlan, secure: boolean) => void;
+  onConfirm: (launch: WorkspaceLaunch) => void;
   onCancel: () => void;
 }
 
@@ -33,14 +35,7 @@ const BRANCH_MODES: { mode: BranchMode; label: string }[] = [
   { mode: "current", label: "Current checkout" },
 ];
 
-const LAYOUTS: { kind: WindowLayout; label: string; rows: number; cols: number }[] = [
-  { kind: "single", label: "1",  rows: 1, cols: 1 },
-  { kind: "split",  label: "2",  rows: 1, cols: 2 },
-  { kind: "quad",   label: "4",  rows: 2, cols: 2 },
-  { kind: "six",    label: "6",  rows: 2, cols: 3 },
-  { kind: "eight",  label: "8",  rows: 2, cols: 4 },
-  { kind: "twelve", label: "12", rows: 3, cols: 4 },
-];
+const PICKER_AGENTS: AgentKind[] = ["claude", "codex", ...AGENT_KINDS.filter((agent) => agent !== "claude" && agent !== "codex")];
 
 const AGENT_INSTALL_GUIDES: Record<AgentKind, string> = {
   claude: "https://code.claude.com/docs/en/overview",
@@ -53,7 +48,13 @@ const AGENT_INSTALL_GUIDES: Record<AgentKind, string> = {
 export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) {
   const [name, setName] = useState("");
   const [kind, setKind] = useState<AgentKind>("claude");
-  const [layout, setLayout] = useState<WindowLayout>("single");
+  const [agents, setAgents] = useState<AgentKind[]>(["claude"]);
+  const [presets, setPresets] = useState(readWorkspacePresets);
+  const [activePreset, setActivePreset] = useState<string | null>(null);
+  const [editingPreset, setEditingPreset] = useState(false);
+  const [presetName, setPresetName] = useState("");
+  const [presetError, setPresetError] = useState("");
+  const presetNameRef = useRef<HTMLInputElement>(null);
   const [dir, setDir] = useState(cwd);
   // `dir` stays absolute (what the backend needs); the field shows the home
   // prefix as ~ so the path reads in shortform (~/git/…/desktop). Typing ~
@@ -122,15 +123,63 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
       setInstalled(result);
       if (!kindTouched.current) {
         const firstInstalled = AGENT_KINDS.find((agent) => result[agent] === true);
-        if (firstInstalled) setKind(firstInstalled);
+        if (firstInstalled) {
+          setKind(firstInstalled);
+          setAgents((current) => current.map(() => firstInstalled));
+        }
       }
     } catch (error) { setAgentError(String(error)); }
   };
   const selectAgent = (agent: AgentKind) => {
     kindTouched.current = true;
     setKind(agent);
+    setAgents((current) => current.map(() => agent));
+    setActivePreset(null);
     setAllowUncheckedAgent(false);
   };
+  const changeCount = (count: number) => {
+    setAgents((current) => resizeLineup(current, count, kind));
+    setActivePreset(null);
+    setAllowUncheckedAgent(false);
+  };
+  const changeSeat = (index: number, agent: AgentKind) => {
+    kindTouched.current = true;
+    setAgents((current) => current.map((value, seat) => seat === index ? agent : value));
+    setActivePreset(null);
+    setAllowUncheckedAgent(false);
+  };
+  const applyPreset = (preset: WorkspacePreset) => {
+    kindTouched.current = true;
+    setAgents([...preset.agents]);
+    setKind(preset.agents[0]);
+    setActivePreset(preset.id);
+    setAllowUncheckedAgent(false);
+  };
+  const savePreset = () => {
+    if (!presetName.trim() || presets.length >= MAX_PRESETS) return;
+    const preset = { id: crypto.randomUUID(), name: presetName.trim(), agents: [...agents] };
+    const next = [...presets, preset];
+    if (!writeWorkspacePresets(next)) {
+      setPresetError("Couldn’t save this preset. Your browser storage may be full or unavailable. Try again.");
+      return;
+    }
+    setPresets(next);
+    setActivePreset(preset.id);
+    setEditingPreset(false);
+    setPresetName("");
+    setPresetError("");
+  };
+  const deletePreset = (id: string) => {
+    const next = presets.filter((preset) => preset.id !== id);
+    if (!writeWorkspacePresets(next)) {
+      setPresetError("Couldn’t remove this preset. Try again when browser storage is available.");
+      return;
+    }
+    setPresets(next);
+    if (activePreset === id) setActivePreset(null);
+    setPresetError("");
+  };
+  useEffect(() => { if (editingPreset) presetNameRef.current?.focus(); }, [editingPreset]);
   useEffect(() => {
     dirInputRef.current?.focus();
     void checkDocker();
@@ -138,16 +187,16 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
     egressPolicy().then((p) => setEgressRestricted(p.restrict)).catch(() => {});
   }, []);
 
-  const activeLayout = LAYOUTS.find((l) => l.kind === layout);
-  const agentCount = activeLayout ? activeLayout.rows * activeLayout.cols : 1;
+  const agentCount = agents.length;
+  const uniformKind = agents.every((agent) => agent === agents[0]) ? agents[0] : null;
   const dockerReady = !!docker?.available && !!docker?.daemon_running;
   // What the workspace will actually do, which is not the same as what the
   // toggle says: without a running daemon there is nothing to jail into.
   const jailed = secure && dockerReady;
   const defaultName = dir.replace(/\/+$/, "").split("/").pop() || "workspace";
   const agentChecking = installed === null && !agentError;
-  const agentReady = installed?.[kind] === true;
-  const agentMissing = installed?.[kind] === false;
+  const uncheckedAgents = [...new Set(agents)].filter((agent) => installed?.[agent] !== true);
+  const agentReady = uncheckedAgents.length === 0;
 
   // Load the repo's refs whenever the directory settles. Debounced because
   // `dir` is a free-text field: every keystroke would otherwise shell out.
@@ -304,7 +353,7 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
     // than the user's. Storing `jailed` would let one workspace made while
     // Docker Desktop happened to be shut down turn the jail off permanently.
     setSecureByDefault(secure);
-    onConfirm(finalName, kind, dir, layout, plan, jailed);
+    onConfirm({ name: finalName, agents: [...agents], dir, plan, secure: jailed });
     setSaving(false);
   };
 
@@ -315,7 +364,7 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
       // Preserve Enter on buttons, checkboxes and comboboxes: retry/browse/
       // Customize must activate their own controls without launching agents.
       if (e.key === "Enter" && !e.isComposing && !e.defaultPrevented
-        && target?.matches('input:not([type="checkbox"])')) {
+        && target?.matches('input:not([type="checkbox"]):not(#nw-preset-name)')) {
         e.preventDefault();
         void confirmCreate();
       }
@@ -376,15 +425,16 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
 
   return (
     <div className="modal-overlay" onClick={cancel}>
-      <div className="modal sd" ref={modalRef} role="dialog" aria-modal="true" aria-label="New workspace" onClick={(e) => e.stopPropagation()}>
+      <div className="modal sd nw" ref={modalRef} role="dialog" aria-modal="true" aria-label="New workspace" onClick={(e) => e.stopPropagation()}>
         <ModalCloseButton onClose={cancel} />
 
         <div className="sd-head">
-          <div className="sd-eyebrow">New workspace</div>
-          <div className="sd-title">Launch your coding agent</div>
+          <h2 className="sd-title">New workspace</h2>
+          <p className="nw-intro">Choose your agents. Give them a place to work.</p>
         </div>
 
-        <fieldset className="sd-body sd-configuration" disabled={saving} aria-label="Workspace configuration"
+        <div className="sd-body">
+        <fieldset className="sd-configuration" disabled={saving} aria-label="Workspace configuration"
           onClickCapture={(event) => { if (saving) { event.preventDefault(); event.stopPropagation(); } }}
           onChangeCapture={(event) => { if (saving) event.stopPropagation(); }}
           onKeyDownCapture={(event) => {
@@ -417,53 +467,131 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
             <button className="sd-btn-ghost" onClick={() => setRepoCheck((value) => value + 1)}>Check folder again</button>
           </div>}
 
+          <section className="sd-field" aria-labelledby="nw-presets-label">
+            <div className="sd-label" id="nw-presets-label">Preset</div>
+            <div className="nw-presets">
+              {[...STARTER_PRESETS, ...presets].map((preset) => (
+                <div className="nw-preset-wrap" key={preset.id}>
+                  <button type="button" className={`nw-preset${activePreset === preset.id ? " selected" : ""}`}
+                    aria-pressed={activePreset === preset.id} onClick={() => applyPreset(preset)}>
+                    <span className="nw-preset-title"><WorkspaceIcon name="bookmark" /><span>{preset.name}</span><span className="nw-preset-count">{preset.agents.length}</span></span>
+                    <span className="nw-preset-description">{lineupLabel(preset.agents)}</span>
+                  </button>
+                  {presets.some((saved) => saved.id === preset.id) && (
+                    <button type="button" className="nw-preset-delete" aria-label={`Delete preset ${preset.name}`} onClick={() => deletePreset(preset.id)}>
+                      <WorkspaceIcon name="close" size={12} />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button type="button" className="nw-preset nw-new-preset" disabled={presets.length >= MAX_PRESETS}
+                aria-expanded={editingPreset} aria-controls="nw-preset-editor"
+                onClick={() => { setEditingPreset((current) => !current); setPresetError(""); }}>
+                <span className="nw-preset-title"><WorkspaceIcon name="plus" />New preset</span>
+                <span className="nw-preset-description">{presets.length >= MAX_PRESETS ? "Remove a saved preset to add another." : "Save this lineup for next time."}</span>
+              </button>
+            </div>
+            {editingPreset && <form id="nw-preset-editor" className="nw-preset-editor" onSubmit={(event) => { event.preventDefault(); savePreset(); }}
+              onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setEditingPreset(false); } }}>
+              <label className="sd-label" htmlFor="nw-preset-name">Preset name</label>
+              <div className="nw-preset-editor-fields">
+                <input ref={presetNameRef} id="nw-preset-name" className="sd-input" maxLength={40} value={presetName}
+                  placeholder="e.g. Daily team" autoComplete="off" onChange={(event) => setPresetName(event.target.value)} />
+                <button type="submit" className="sd-btn-primary" disabled={!presetName.trim() || presets.length >= MAX_PRESETS}>Save preset</button>
+                <button type="button" className="sd-btn-ghost" onClick={() => setEditingPreset(false)}>Cancel preset</button>
+              </div>
+              <span className="nw-help">Saves {lineupLabel(agents)}. Folder and isolation stay separate.</span>
+            </form>}
+            {presetError && <div className="sd-branch-error" role="alert">{presetError}</div>}
+          </section>
+
           <div className="sd-field">
-            <div className="sd-label" id="nw-agent-label">Coding agent</div>
-            <div className="sd-agents" role="radiogroup" aria-labelledby="nw-agent-label">
-              {AGENT_KINDS.map((agent, index) => {
+            <div className="nw-section-label"><span className="sd-label" id="nw-agent-label">Agent</span><span className="nw-help">{uniformKind ? "Choose for all sessions" : "Mixed lineup · choose to replace all"}</span></div>
+            <div className="nw-agents" role="radiogroup" aria-labelledby="nw-agent-label">
+              {PICKER_AGENTS.map((agent, index) => {
                 const ready = installed?.[agent] === true;
                 const missing = installed?.[agent] === false;
                 const status = agentChecking ? "Checking…" : ready ? "Ready" : missing ? "Missing" : "Couldn’t check";
-                return <div
+                return <button type="button"
                   key={agent}
                   role="radio"
-                  aria-checked={kind === agent}
-                  aria-disabled={saving}
+                  aria-checked={uniformKind === agent}
                   aria-label={`${AGENT_META[agent].label}, ${status}`}
-                  tabIndex={!saving && kind === agent ? 0 : -1}
-                  className={`sd-agent sd-agent-with-status${kind === agent ? " selected" : ""}${missing ? " missing" : ""}`}
+                  tabIndex={(uniformKind ?? kind) === agent ? 0 : -1}
+                  className={`nw-agent${uniformKind === agent ? " selected" : ""}`}
                   style={{ ["--kind-color" as never]: agentColor(agent) }}
                   onClick={() => selectAgent(agent)}
-                  onKeyDown={(event) => {
-                    if (event.key === " " || event.key === "Enter") { event.preventDefault(); selectAgent(agent); }
-                    else onRadioKey(event, index, AGENT_KINDS.length, (next) => selectAgent(AGENT_KINDS[next]));
-                  }}
+                  onKeyDown={(event) => onRadioKey(event, index, PICKER_AGENTS.length, (next) => selectAgent(PICKER_AGENTS[next]))}
                 >
-                  <span className="sd-agent-name"><AgentLogo kind={agent} size={16} className="sd-agent-logo" />{AGENT_META[agent].label}</span>
-                  <span className="sd-agent-status">{status}</span>
-                </div>;
+                  <AgentLogo kind={agent} size={18} className="sd-agent-logo" />
+                  <span className="nw-agent-name">{AGENT_META[agent].label}</span>
+                  {!ready && <span className="nw-agent-status">{status}</span>}
+                  {uniformKind === agent && <span className="nw-selected-mark"><WorkspaceIcon name="check" size={12} /></span>}
+                </button>;
               })}
             </div>
             {!agentChecking && !agentReady && <div className="sd-readiness" role="status">
-              <div>{agentMissing
-                ? `${AGENT_META[kind].label} is missing from your login shell’s PATH.`
-                : `Couldn’t check ${AGENT_META[kind].label}${agentError ? `: ${agentError}` : "."}`}
-                {" "}Install and sign in through its CLI, then check again, or choose a ready agent above.
-              </div>
-              <div className="sd-recovery-actions">
-                <button className="sd-btn-ghost" onClick={() => openUrl(AGENT_INSTALL_GUIDES[kind]).catch((error) => setActionError(String(error)))}>Installation guide</button>
-                <button className="sd-btn-ghost" onClick={() => void checkAgents()}>Check agents again</button>
-              </div>
+              {uncheckedAgents.map((agent) => <div key={agent}>
+                {installed?.[agent] === false ? `${AGENT_META[agent].label} is missing from your login shell’s PATH.` : `Couldn’t check ${AGENT_META[agent].label}${agentError ? `: ${agentError}` : "."}`}
+                {" "}<button type="button" className="nw-text-button" onClick={() => openUrl(AGENT_INSTALL_GUIDES[agent]).catch((error) => setActionError(String(error)))}>Installation guide for {AGENT_META[agent].label}</button>
+              </div>)}
+              <div>Install and sign in through the CLI, or change the affected sessions below.</div>
+              <button type="button" className="sd-btn-ghost nw-recheck" onClick={() => void checkAgents()}>Check agents again</button>
               <label className="sd-override">
                 <input type="checkbox" checked={allowUncheckedAgent} onChange={(event) => setAllowUncheckedAgent(event.target.checked)} />
-                I use a custom wrapper or know this agent works. Launch anyway.
+                I use a custom wrapper or know these agents work. Launch anyway.
               </label>
             </div>}
           </div>
 
-          <section className="sd-summary" aria-label="Launch summary" aria-live="polite">
-            <div className="sd-label">What will launch</div>
-            <strong>{agentCount} {AGENT_META[kind].label} {agentCount === 1 ? "agent" : "agents"} in “{name.trim() || defaultName}”</strong>
+          <div className="sd-field">
+            <div className="sd-label" id="nw-count-label">How many</div>
+            <div className="nw-count-row">
+              <div className="nw-counts" role="radiogroup" aria-labelledby="nw-count-label">
+                {SESSION_COUNTS.map((count, index) => <button type="button" key={count} role="radio"
+                  className={`nw-count${agentCount === count ? " selected" : ""}`} aria-checked={agentCount === count}
+                  aria-label={`${count} ${count === 1 ? "agent" : "agents"}`} tabIndex={agentCount === count ? 0 : -1}
+                  onClick={() => changeCount(count)} onKeyDown={(event) => onRadioKey(event, index, SESSION_COUNTS.length, (next) => changeCount(SESSION_COUNTS[next]))}>
+                  {count}
+                </button>)}
+              </div>
+              <span className="nw-help">parallel sessions</span>
+            </div>
+          </div>
+
+          <div className="sd-field">
+            <div className="sd-label" id="nw-isolation-label">Isolation</div>
+            <div className="nw-isolation" role="radiogroup" aria-labelledby="nw-isolation-label">
+              <button type="button" role="radio" aria-checked={effectiveMode === "current"}
+                className={`nw-isolation-choice${effectiveMode === "current" ? " selected" : ""}`}
+                tabIndex={effectiveMode === "current" ? 0 : -1} onClick={() => setBranchMode("current")}
+                onKeyDown={(event) => { if (isRepo) onRadioKey(event, 0, 2, (next) => setBranchMode(next ? "new" : "current")); }}>
+                <WorkspaceIcon name="folder" />Shared checkout
+              </button>
+              <button type="button" role="radio" aria-checked={effectiveMode !== "current"} disabled={!isRepo || refsLoading || !!refsError}
+                className={`nw-isolation-choice${effectiveMode !== "current" ? " selected" : ""}`}
+                tabIndex={effectiveMode !== "current" ? 0 : -1} onClick={() => setBranchMode((current) => current === "existing" ? current : "new")}
+                onKeyDown={(event) => onRadioKey(event, 1, 2, (next) => setBranchMode(next ? "new" : "current"))}>
+                <WorkspaceIcon name="branch" />{effectiveMode === "existing" && agentCount === 1 ? "Existing branch in a worktree" : "New worktree per agent"}
+              </button>
+            </div>
+            <span className="nw-help">{refsLoading ? "Checking repository…" : refsError ? "Check the folder to choose isolation." : !isRepo ? "Not a Git repository. Sessions will share this folder." : effectiveMode === "current" ? `Agents share the files on ${refs?.current || "the current branch"}.` : effectiveMode === "existing" && agentCount === 1 && sharesWorktree ? `Joins the existing checkout of ${existingBranch}. Changes are shared.` : "Each agent gets its own working copy and branch."}</span>
+          </div>
+
+          <section className="nw-launch" aria-label="Launch summary">
+            <div className="nw-section-label"><span className="sd-label">Will launch</span><span className="nw-help">Change any session</span></div>
+            <ol className="nw-lineup">
+              {agents.map((agent, index) => <li key={index} className="nw-seat" style={{ ["--kind-color" as never]: agentColor(agent) }}>
+                <span className="nw-seat-number" aria-hidden="true">{index + 1}</span>
+                <AgentLogo kind={agent} size={16} className="sd-agent-logo" />
+                <select aria-label={`Session ${index + 1} agent`} value={agent} onChange={(event) => changeSeat(index, event.target.value as AgentKind)}>
+                  {AGENT_KINDS.map((choice) => <option key={choice} value={choice}>{AGENT_META[choice].label}{installed?.[choice] === false ? " — Missing" : ""}</option>)}
+                </select>
+                <WorkspaceIcon name="chevron" size={12} />
+              </li>)}
+            </ol>
+            <div className="nw-launch-details" aria-live="polite">
+            <strong>{agentCount} {uniformKind ? `${AGENT_META[uniformKind].label} ` : ""}{agentCount === 1 ? "agent" : "agents"} in “{name.trim() || defaultName}”</strong>
             <div>{refsLoading ? "Checking repository…" : refsError ? "Choose a folder we can check before launching." : branchMissing ? "Choose an existing branch in Customize." : effectiveMode === "current"
               ? isRepo ? `Works in your current checkout on ${refs?.current || "the current branch"}. Agents share these files.` : "Works directly in this folder. It is not a Git repository."
               : effectiveMode === "existing" && agentCount === 1
@@ -476,11 +604,12 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
               {(effectiveMode === "new" || agentCount > 1) && <> {fetchBase ? "Fetches the base ref first." : "Uses the local base ref without fetching."}</>}
             </div>}
             <div>{probing ? "Checking execution mode…" : jailed ? `Runs in a Docker container.${docker?.image_ready ? "" : " The first launch builds its image."}` : "Runs directly on your Mac with permission prompts turned off."}</div>
+            </div>
           </section>
           {stemError && !customize && <div className="sd-branch-error" role="alert">{stemError} Open Customize to fix the branch name.</div>}
 
           <button className="sd-customize-toggle" aria-expanded={customize} aria-controls="nw-customize" onClick={() => setCustomize((value) => !value)}>
-            {customize ? "Hide customization" : "Customize"}<span>Name, branches, setup, and more agents</span>
+            <span className="nw-customize-title"><WorkspaceIcon name="chevron" size={14} />{customize ? "Hide customization" : "Customize"}</span><span>Name, branch and setup</span>
           </button>
           {customize && <div id="nw-customize" className="sd-customize">
           {/* Name */}
@@ -499,14 +628,14 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
             />
           </div>
           {/* Branch */}
-          <div className="sd-field">
+          {effectiveMode !== "current" && <div className="sd-field">
             <div className="sd-label" id="nw-branch-label">
               Branch
               {!isRepo && !refsLoading && <span className="sd-label-hint">not a git repository</span>}
             </div>
             {isRepo && (
               <div className="sd-modes" role="radiogroup" aria-labelledby="nw-branch-label">
-                {BRANCH_MODES.map((m, i) => (
+                {BRANCH_MODES.filter((mode) => mode.mode !== "current").map((m, i) => (
                   <div
                     key={m.mode}
                     role="radio"
@@ -515,7 +644,7 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
                     tabIndex={!saving && branchMode === m.mode ? 0 : -1}
                     className={`sd-mode${branchMode === m.mode ? " selected" : ""}`}
                     onClick={() => setBranchMode(m.mode)}
-                    onKeyDown={(e) => onRadioKey(e, i, BRANCH_MODES.length, (ni) => setBranchMode(BRANCH_MODES[ni].mode))}
+                    onKeyDown={(e) => onRadioKey(e, i, 2, (ni) => setBranchMode(BRANCH_MODES[ni].mode))}
                   >
                     {m.label}
                   </div>
@@ -558,7 +687,7 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
               />
             )}
 
-          </div>
+          </div>}
 
           {/* Setup — only meaningful for a fresh worktree; the current
               checkout is already installed. */}
@@ -588,31 +717,6 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
               )}
             </div>
           )}
-
-          {/* Layout */}
-          <div className="sd-field">
-            <div className="sd-label" id="nw-layout-label">
-              Agents <span className="sd-label-hint">panes to open</span>
-            </div>
-            <div className="sd-layouts" role="radiogroup" aria-labelledby="nw-layout-label">
-              {LAYOUTS.map((l, i) => (
-                <div
-                  key={l.kind}
-                  role="radio"
-                  aria-checked={layout === l.kind}
-                  aria-disabled={saving}
-                  aria-label={`${l.label} ${l.label === "1" ? "agent" : "agents"}`}
-                  tabIndex={!saving && layout === l.kind ? 0 : -1}
-                  className={`sd-layout${layout === l.kind ? " selected" : ""}`}
-                  onClick={() => setLayout(l.kind)}
-                  onKeyDown={(e) => onRadioKey(e, i, LAYOUTS.length, (ni) => setLayout(LAYOUTS[ni].kind))}
-                >
-                  <LayoutThumb rows={l.rows} cols={l.cols} />
-                  <span className="sd-layout-n">{l.label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
 
             {effectiveMode === "new" && (
               <label className="sd-toggle">
@@ -658,6 +762,7 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
           </div>
           {actionError && <div className="sd-branch-error" role="alert">{actionError}</div>}
         </fieldset>
+        </div>
 
         <div className="sd-foot">
           <div className="sd-foot-keys">
@@ -675,16 +780,15 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
   );
 }
 
-function LayoutThumb({ rows, cols }: { rows: number; cols: number }) {
-  const cells = Array.from({ length: rows * cols });
-  return (
-    <div
-      className="sd-thumb"
-      style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, gridTemplateRows: `repeat(${rows}, 1fr)` }}
-    >
-      {cells.map((_, i) => (
-        <div key={i} className="sd-thumb-cell" />
-      ))}
-    </div>
-  );
+function WorkspaceIcon({ name, size = 16 }: { name: "bookmark" | "plus" | "close" | "check" | "folder" | "branch" | "chevron"; size?: number }) {
+  const paths = {
+    bookmark: "M6 3h12v18l-6-4-6 4V3Z",
+    plus: "M12 5v14M5 12h14",
+    close: "m6 6 12 12M18 6 6 18",
+    check: "m5 12 4 4L19 6",
+    folder: "M3 7V5h6l2 2h10v13H3V7Zm0 3h18",
+    branch: "M6 6v12M6 12c7 0 12-1 12-6M4 3h4v4H4zM4 17h4v4H4zM16 3h4v4h-4z",
+    chevron: "m6 9 6 6 6-6",
+  };
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
 }

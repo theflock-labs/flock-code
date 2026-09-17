@@ -159,6 +159,7 @@ vi.mock("./components/RemoteTerminal", () => ({ default: () => <div data-testid=
 import App from "./App";
 import { OPEN_FEATURE_TOUR_EVENT } from "./lib/onboarding";
 import { OPEN_GRAPH_EXPLORER_EVENT } from "./lib/graphSettings";
+import { agentCliStatus, createWorkspace, gitBranchOptions, spawnPane, worktreeSetupGet } from "./lib/tauri";
 
 // Node exposes its own half-implemented localStorage global that shadows
 // jsdom's, so supply a real one rather than depending on which wins.
@@ -207,6 +208,29 @@ async function mount() {
 }
 
 describe("App smoke", () => {
+  it("launches the exact mixed lineup with each CLI's own command and session flags", async () => {
+    vi.mocked(agentCliStatus).mockResolvedValueOnce({ claude: true, codex: true, pi: true, grok: true, opencode: true });
+    vi.mocked(gitBranchOptions).mockResolvedValueOnce({ is_repo: true, current: "main", default_ref: "main", local: [{ name: "main", worktree_path: null }], remote: [] });
+    vi.mocked(worktreeSetupGet).mockResolvedValue({ unset: false, command: "", suggestion: "" });
+    vi.mocked(createWorkspace).mockResolvedValueOnce({ ...WORKSPACE, id: "ws-mixed", name: "repo" });
+    await mount();
+    fireEvent.keyDown(window, { key: "n", metaKey: true });
+    await screen.findByRole("dialog", { name: "New workspace" });
+    fireEvent.click(screen.getByRole("radio", { name: "3 agents" }));
+    fireEvent.change(screen.getByLabelText("Session 2 agent"), { target: { value: "codex" } });
+    fireEvent.change(screen.getByLabelText("Session 3 agent"), { target: { value: "pi" } });
+    fireEvent.click(screen.getByRole("radio", { name: "Shared checkout" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: /^Launch 3 agents/ }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: /^Launch 3 agents/ }));
+    await waitFor(() => expect(vi.mocked(spawnPane).mock.calls.filter(([input]) => input.workspaceId === "ws-mixed")).toHaveLength(3));
+    const launches = vi.mocked(spawnPane).mock.calls.map(([input]) => input).filter((input) => input.workspaceId === "ws-mixed");
+    expect(launches.map((input) => input.cmd)).toEqual(["claude", "codex", "pi"]);
+    expect(launches[0].args).toContain("--session-id");
+    expect(launches[1].args).not.toContain("--session-id");
+    expect(launches[2].args).not.toContain("--session-id");
+    expect(launches.every((input) => input.cwd === "/tmp/repo" && !input.secure)).toBe(true);
+  });
+
   it("mounts and paints the cockpit shell", async () => {
     const { container } = await mount();
     expect(container.querySelector(".app-shell")).toBeTruthy();
