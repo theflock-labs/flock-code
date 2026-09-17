@@ -202,6 +202,15 @@ export interface BranchPlan {
   fetch: boolean;
 }
 
+/** An ordered lineup: each entry opens exactly one agent session. */
+export interface WorkspaceLaunch {
+  name: string;
+  dir: string;
+  agents: AgentKind[];
+  plan: BranchPlan;
+  secure: boolean;
+}
+
 export interface CopilotInfo {
   sessionId: string;
   partnerLogin: string;

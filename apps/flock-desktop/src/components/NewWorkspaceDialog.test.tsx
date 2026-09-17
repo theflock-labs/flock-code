@@ -5,6 +5,7 @@ import NewWorkspaceDialog from "./NewWorkspaceDialog";
 import { agentCliStatus, containerStatus, gitBranchOptions, worktreeSetupGet, worktreeSetupSet } from "../lib/tauri";
 import { setDefaultBranchMode, setFetchBaseDefault } from "../lib/worktreeSettings";
 import { getSecureByDefault } from "../lib/secureSettings";
+import { readWorkspacePresets } from "../lib/workspacePresets";
 
 vi.mock("../lib/tauri", () => ({
   agentCliStatus: vi.fn(), containerStatus: vi.fn(), egressPolicy: vi.fn(async () => ({ restrict: false })),
@@ -45,11 +46,89 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("first-agent setup", () => {
+  it("previews and launches an ordered mixed lineup without adding empty sessions", async () => {
+    const confirm = await setup();
+    fireEvent.click(screen.getByRole("radio", { name: "3 agents" }));
+    fireEvent.change(screen.getByLabelText("Session 2 agent"), { target: { value: "codex" } });
+    fireEvent.change(screen.getByLabelText("Session 3 agent"), { target: { value: "pi" } });
+    expect(within(screen.getByRole("region", { name: "Launch summary" })).getAllByRole("combobox")).toHaveLength(3);
+    fireEvent.click(screen.getByRole("radio", { name: "Shared checkout" }));
+    fireEvent.click(launchButton());
+    await settle();
+    expect(confirm.mock.calls[0][0]).toMatchObject({ agents: ["claude", "codex", "pi"], plan: { mode: "current" } });
+  });
+
+  it("keeps existing seats when resizing and replaces the whole lineup from the agent picker", async () => {
+    await setup();
+    fireEvent.click(screen.getByRole("button", { name: /Mixed team/ }));
+    expect(screen.getAllByRole("combobox", { name: /^Session/ })).toHaveLength(6);
+    fireEvent.click(screen.getByRole("radio", { name: "5 agents" }));
+    expect((screen.getByLabelText("Session 5 agent") as HTMLSelectElement).value).toBe("codex");
+    fireEvent.click(screen.getByRole("radio", { name: "Codex, Ready" }));
+    expect(screen.getAllByRole("combobox", { name: /^Session/ }).every((element) => (element as HTMLSelectElement).value === "codex")).toBe(true);
+  });
+
+  it("validates every agent in a preset and clears overrides when the lineup changes", async () => {
+    vi.mocked(agentCliStatus).mockResolvedValue({ ...readyAgents, codex: false });
+    await setup();
+    fireEvent.click(screen.getByRole("button", { name: /Mixed team/ }));
+    expect(launchButton().disabled).toBe(true);
+    expect(screen.getByText(/Codex is missing/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: /custom wrapper/ }));
+    expect(launchButton().disabled).toBe(false);
+    fireEvent.change(screen.getByLabelText("Session 1 agent"), { target: { value: "pi" } });
+    expect(launchButton().disabled).toBe(true);
+    fireEvent.click(screen.getByRole("radio", { name: "Claude Code, Ready" }));
+    expect(launchButton().disabled).toBe(false);
+  });
+
+  it("saves and restores a mixed preset without launching from its name input", async () => {
+    const confirm = await setup();
+    fireEvent.click(screen.getByRole("radio", { name: "3 agents" }));
+    fireEvent.change(screen.getByLabelText("Session 2 agent"), { target: { value: "codex" } });
+    fireEvent.click(screen.getByRole("button", { name: /New preset/ }));
+    fireEvent.change(screen.getByLabelText("Preset name"), { target: { value: "My team" } });
+    fireEvent.keyDown(screen.getByLabelText("Preset name"), { key: "Enter" });
+    expect(confirm).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save preset" }));
+    expect(readWorkspacePresets()).toEqual([expect.objectContaining({ name: "My team", agents: ["claude", "codex", "claude"] })]);
+    cleanup();
+    await setup();
+    fireEvent.click(screen.getByRole("button", { name: /^My team/ }));
+    expect((screen.getByLabelText("Session 2 agent") as HTMLSelectElement).value).toBe("codex");
+    fireEvent.click(screen.getByRole("button", { name: "Delete preset My team" }));
+    expect(readWorkspacePresets()).toEqual([]);
+    expect(screen.getAllByRole("combobox", { name: /^Session/ })).toHaveLength(3);
+  });
+
+  it("reports preset persistence failures without losing the current lineup", async () => {
+    await setup();
+    fireEvent.click(screen.getByRole("button", { name: /New preset/ }));
+    fireEvent.change(screen.getByLabelText("Preset name"), { target: { value: "My team" } });
+    vi.spyOn(localStorage, "setItem").mockImplementation(() => { throw new Error("quota"); });
+    fireEvent.click(screen.getByRole("button", { name: "Save preset" }));
+    expect(screen.getByRole("alert").textContent).toContain("Couldn’t save this preset");
+    expect(screen.queryByRole("button", { name: /^My team/ })).toBeNull();
+    expect(launchButton().disabled).toBe(false);
+  });
+
+  it("keeps non-repositories on shared checkout and disables worktree isolation", async () => {
+    vi.mocked(gitBranchOptions).mockResolvedValue({ ...repo, is_repo: false, local: [], remote: [], current: "", default_ref: "" });
+    const confirm = await setup();
+    expect((screen.getByRole("radio", { name: "New worktree per agent" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("radio", { name: "Shared checkout" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: /Mixed team/ }));
+    fireEvent.click(launchButton());
+    await settle();
+    expect(confirm.mock.calls[0][0].plan.mode).toBe("current");
+  });
+
   it("launches one installed agent with visible effective defaults and hidden customization", async () => {
     vi.mocked(agentCliStatus).mockResolvedValue({ ...readyAgents, claude: false, grok: false, opencode: false });
     const confirm = await setup();
     expect(screen.queryByLabelText(/^Name/)).toBeNull();
-    expect(screen.queryByRole("radiogroup", { name: /Agents/ })).toBeNull();
+    expect(screen.getByRole("radiogroup", { name: "How many" })).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: "Isolation" })).toBeTruthy();
     expect(screen.getByLabelText("Repository folder")).toBeTruthy();
     const summary = within(screen.getByRole("region", { name: "Launch summary" }));
     expect(summary.getByText(/1 Codex agent/)).toBeTruthy();
@@ -59,7 +138,7 @@ describe("first-agent setup", () => {
     expect(screen.getByRole("checkbox", { name: /Secure mode/ })).toBeTruthy();
     fireEvent.click(launchButton());
     await settle();
-    expect(confirm).toHaveBeenCalledWith("repo", "codex", "/Users/test/repo", "single", expect.objectContaining({ mode: "new", stem: "repo", baseRef: "origin/main", fetch: true }), true);
+    expect(confirm).toHaveBeenCalledWith({ name: "repo", agents: ["codex"], dir: "/Users/test/repo", plan: expect.objectContaining({ mode: "new", stem: "repo", baseRef: "origin/main", fetch: true }), secure: true });
   });
 
   it("preserves saved current-checkout and fetch defaults", async () => {
@@ -69,7 +148,7 @@ describe("first-agent setup", () => {
     expect(screen.getByText(/Works in your current checkout on main/)).toBeTruthy();
     fireEvent.click(launchButton());
     await settle();
-    expect(confirm.mock.calls[0][4]).toMatchObject({ mode: "current", fetch: false });
+    expect(confirm.mock.calls[0][0].plan).toMatchObject({ mode: "current", fetch: false });
   });
 
   it("keeps custom names and larger layouts in the summary after Customize closes", async () => {
@@ -81,7 +160,7 @@ describe("first-agent setup", () => {
     expect(screen.getByText(/4 Claude Code agents in “Fix authentication”/)).toBeTruthy();
     fireEvent.click(launchButton());
     await settle();
-    expect(confirm.mock.calls[0].slice(0, 4)).toEqual(["Fix authentication", "claude", "/Users/test/repo", "quad"]);
+    expect(confirm.mock.calls[0][0]).toMatchObject({ name: "Fix authentication", agents: ["claude", "claude", "claude", "claude"], dir: "/Users/test/repo" });
   });
 
   it("requires an explicit override for a missing CLI and clears it on selection changes", async () => {
@@ -124,7 +203,7 @@ describe("first-agent setup", () => {
     expect(screen.queryByText("Agents will run directly on your Mac")).toBeNull();
     fireEvent.click(launchButton());
     await settle();
-    expect(confirm.mock.calls[0][5]).toBe(true);
+    expect(confirm.mock.calls[0][0].secure).toBe(true);
     expect(getSecureByDefault()).toBe(true);
   });
 
@@ -183,7 +262,7 @@ describe("first-agent setup", () => {
     expect(screen.getByRole("region", { name: "Launch summary" }).textContent).toBe(summary);
     expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(false);
     await act(async () => { finishSave(); });
-    expect(confirm).toHaveBeenCalledWith("repo", "claude", "/Users/test/repo", "single", expect.objectContaining({ mode: "new" }), true);
+    expect(confirm).toHaveBeenCalledWith({ name: "repo", agents: ["claude"], dir: "/Users/test/repo", plan: expect.objectContaining({ mode: "new" }), secure: true });
   });
 
   it("reopens required branch customization when the saved mode is existing", async () => {

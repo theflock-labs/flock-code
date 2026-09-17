@@ -145,7 +145,7 @@ import {
   worktreesFromSavedState,
   type SavedPane,
 } from "./lib/workspaceState";
-import type { AgentKind, AgentStatusStr, BranchPlan, Friend, LayoutNode, Pane, PanePhase, PullRequest, RaceContender, RaceState, SplitDir, WindowLayout, Workspace, WorkspaceTab } from "./types";
+import type { AgentKind, AgentStatusStr, BranchPlan, Friend, LayoutNode, Pane, PanePhase, PullRequest, RaceContender, RaceState, SplitDir, WindowLayout, Workspace, WorkspaceLaunch, WorkspaceTab } from "./types";
 import { lazyModal, preloadWhenIdle } from "./lib/lazyModal";
 import { useEventCallback } from "./lib/useEventCallback";
 
@@ -1404,6 +1404,8 @@ export default function App() {
   // id so the box can be rendered (as a `spawning:true` placeholder) before the
   // backend pane exists.
   type PaneDescriptor = { paneId: string; cwd: string; worktree?: { path: string; branch: string }; agentName: string; sessionId?: string;
+    /** Mixed workspace lineups override the batch's default agent per pane. */
+    agentKind?: AgentKind;
     /** Repo whose setup command should run in this pane, set only when its
      * worktree was created just now (see resolveNewPaneCwd's `fresh`). */
     setupRepo?: string };
@@ -1439,18 +1441,20 @@ export default function App() {
      * 1.1s one after another. */
     prepare?: (d: PaneDescriptor) => Promise<void>,
   ): Promise<number> => {
-    // One graph brief per workspace, not per pane: it's keyed by workspace id,
-    // so N panes were paying the same (up to 1.2s) wait N times over. Started
-    // here so it overlaps with everything `prepare` does.
-    const extraArgs = graphSpawnArgs(kind, workspaceId, secure);
+    // Share graph preparation per agent kind: each CLI needs its own flags,
+    // but several sessions of the same kind should not repeat the request.
+    const extraArgs = new Map([...new Set(descriptors.map((d) => d.agentKind ?? kind))]
+      .map((agent) => [agent, graphSpawnArgs(agent, workspaceId, secure)]));
     const spawnOne = async (d: PaneDescriptor): Promise<boolean> => {
+      const agent = d.agentKind ?? kind;
+      const command = d.agentKind ? agentCommand(agent) : { cmd, args: baseArgs };
       try {
         if (prepare) await prepare(d);
         await spawnPane({
           paneId: d.paneId,
           workspaceId,
-          cmd,
-          args: [...withClaudeSession(baseArgs, d.sessionId, "new"), ...(await extraArgs)],
+          cmd: command.cmd,
+          args: [...withClaudeSession(command.args, d.sessionId, "new"), ...(await extraArgs.get(agent)!)],
           cwd: d.cwd,
           rows: ptyRows,
           cols: ptyCols,
@@ -1471,7 +1475,7 @@ export default function App() {
         );
         return true;
       } catch (e) {
-        pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't spawn ${cmd}: ${e instanceof Error ? e.message : e}` });
+        pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't spawn ${command.cmd}: ${e instanceof Error ? e.message : e}` });
         // Remove the failed placeholder from both the pane list and the layout
         // so no dead box is left behind.
         setWorkspaces((prev) =>
@@ -1501,7 +1505,8 @@ export default function App() {
     return (await spawnBatch(descriptors, secure, spawnOne)).filter(Boolean).length;
   };
 
-  const onNewWorkspaceConfirmed = async (name: string, kind: AgentKind, dir: string, layout: WindowLayout, rawPlan: BranchPlan, secure: boolean) => {
+  const onNewWorkspaceConfirmed = async ({ name, agents, dir, plan: rawPlan, secure }: WorkspaceLaunch) => {
+    if (agents.length === 0) return;
     setDialog({ kind: "none" });
     const finalName = name.trim() || dir.split("/").pop() || "workspace";
     // Store the repo's actual current branch, not a hardcoded "main".
@@ -1516,9 +1521,10 @@ export default function App() {
     }
 
     const accent = workspaceColor(workspaces.length);
+    const kind = agents[0];
     const { cmd, args } = agentCommand(kind);
-    const { rows, cols } = layoutGrid(layout);
-    const count = rows * cols;
+    const count = agents.length;
+    const { rows, cols } = gridDimsFor(count);
     const { ptyCols, ptyRows } = estimatePtyDims(rows, cols);
 
     // Resolve the plan against the agent count: a pick of "check out branch X"
@@ -1561,7 +1567,8 @@ export default function App() {
         paneId: crypto.randomUUID(),
         cwd: dir,
         agentName: randomAgentName(descriptors.map((d) => d.agentName)),
-        sessionId: newClaudeSessionId(kind),
+        agentKind: agents[i],
+        sessionId: newClaudeSessionId(agents[i]),
       });
     }
 
@@ -1607,7 +1614,7 @@ export default function App() {
       panes: descriptors.map((d) => ({
         id: d.paneId,
         workspaceId: ws.id,
-        kind: cmd,
+        kind: agentCommand(d.agentKind ?? kind).cmd,
         status: "idle" as AgentStatusStr,
         statusChangedAt: Date.now(),
         attention: false,
@@ -1625,6 +1632,9 @@ export default function App() {
       tabs: [{ ...tab, layoutTree, focusedPaneId: paneIds[0] }],
       focusedTabId: tab.id,
     };
+    // This workspace already owns its freshly prepared panes. Focusing it
+    // must not restore a saved blob over the lineup we are launching.
+    restoredWsIds.current.add(ws.id);
     hydratedWsIds.current.add(ws.id);
     setWorkspaces((prev) => [...prev, wsState]);
     setFocusedWsId(ws.id);

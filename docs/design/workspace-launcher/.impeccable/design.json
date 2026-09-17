@@ -1,0 +1,238 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-16T06:54:59.807575Z",
+  "title": "Design System: Flock workspace launcher",
+  "extensions": {
+    "colorMeta": {
+      "action": {
+        "role": "primary",
+        "displayName": "Action",
+        "tonalRamp": [
+          "oklch(15.00% 0.17859 264.64)",
+          "oklch(26.43% 0.17859 264.64)",
+          "oklch(37.86% 0.17859 264.64)",
+          "oklch(49.29% 0.17859 264.64)",
+          "oklch(60.71% 0.17859 264.64)",
+          "oklch(72.14% 0.17859 264.64)",
+          "oklch(83.57% 0.17859 264.64)",
+          "oklch(95.00% 0.17859 264.64)"
+        ]
+      },
+      "bg-window": {
+        "role": "neutral",
+        "displayName": "Window ground",
+        "tonalRamp": [
+          "oklch(15.00% 0.03395 258.28)",
+          "oklch(26.43% 0.03395 258.28)",
+          "oklch(37.86% 0.03395 258.28)",
+          "oklch(49.29% 0.03395 258.28)",
+          "oklch(60.71% 0.03395 258.28)",
+          "oklch(72.14% 0.03395 258.28)",
+          "oklch(83.57% 0.03395 258.28)",
+          "oklch(95.00% 0.03395 258.28)"
+        ]
+      },
+      "bg-card": {
+        "role": "neutral",
+        "displayName": "Dialog ground",
+        "tonalRamp": [
+          "oklch(15.00% 0.04119 259.27)",
+          "oklch(26.43% 0.04119 259.27)",
+          "oklch(37.86% 0.04119 259.27)",
+          "oklch(49.29% 0.04119 259.27)",
+          "oklch(60.71% 0.04119 259.27)",
+          "oklch(72.14% 0.04119 259.27)",
+          "oklch(83.57% 0.04119 259.27)",
+          "oklch(95.00% 0.04119 259.27)"
+        ]
+      },
+      "text-hi": {
+        "role": "neutral",
+        "displayName": "High text",
+        "tonalRamp": [
+          "oklch(15.00% 0.00991 87.47)",
+          "oklch(26.43% 0.00991 87.47)",
+          "oklch(37.86% 0.00991 87.47)",
+          "oklch(49.29% 0.00991 87.47)",
+          "oklch(60.71% 0.00991 87.47)",
+          "oklch(72.14% 0.00991 87.47)",
+          "oklch(83.57% 0.00991 87.47)",
+          "oklch(95.00% 0.00991 87.47)"
+        ]
+      },
+      "text-mid": {
+        "role": "neutral",
+        "displayName": "Middle text",
+        "tonalRamp": [
+          "oklch(15.00% 0.01750 267.77)",
+          "oklch(26.43% 0.01750 267.77)",
+          "oklch(37.86% 0.01750 267.77)",
+          "oklch(49.29% 0.01750 267.77)",
+          "oklch(60.71% 0.01750 267.77)",
+          "oklch(72.14% 0.01750 267.77)",
+          "oklch(83.57% 0.01750 267.77)",
+          "oklch(95.00% 0.01750 267.77)"
+        ]
+      },
+      "border-subtle": {
+        "role": "neutral",
+        "displayName": "Subtle edge",
+        "tonalRamp": [
+          "oklch(15.00% 0.00991 87.47)",
+          "oklch(26.43% 0.00991 87.47)",
+          "oklch(37.86% 0.00991 87.47)",
+          "oklch(49.29% 0.00991 87.47)",
+          "oklch(60.71% 0.00991 87.47)",
+          "oklch(72.14% 0.00991 87.47)",
+          "oklch(83.57% 0.00991 87.47)",
+          "oklch(95.00% 0.00991 87.47)"
+        ]
+      },
+      "bg-hover": {
+        "role": "neutral",
+        "displayName": "Hover wash",
+        "tonalRamp": [
+          "oklch(15.00% 0.00991 87.47)",
+          "oklch(26.43% 0.00991 87.47)",
+          "oklch(37.86% 0.00991 87.47)",
+          "oklch(49.29% 0.00991 87.47)",
+          "oklch(60.71% 0.00991 87.47)",
+          "oklch(72.14% 0.00991 87.47)",
+          "oklch(83.57% 0.00991 87.47)",
+          "oklch(95.00% 0.00991 87.47)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "body": {
+        "displayName": "Control text",
+        "purpose": "Control content through the inherited base size."
+      },
+      "label": {
+        "displayName": "Choice label",
+        "purpose": "Medium-weight repeated choice labels."
+      },
+      "helper": {
+        "displayName": "Helper",
+        "purpose": "Short explanatory text and launch consequences."
+      },
+      "metadata": {
+        "displayName": "Machine metadata",
+        "purpose": "Preset counts and numbered sessions."
+      }
+    },
+    "shadows": [
+      {
+        "name": "inherited-modal",
+        "value": "var(--lift-3)",
+        "purpose": "Existing modal frame; theme overrides remain authoritative."
+      }
+    ],
+    "motion": [
+      {
+        "name": "launcher-state",
+        "value": "150ms ease-out",
+        "purpose": "Background and border changes on preset, provider, count and isolation controls."
+      },
+      {
+        "name": "inherited-modal-state",
+        "value": "120ms ease-out",
+        "purpose": "Shared buttons and field state changes."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "two-columns",
+        "value": "600px"
+      },
+      {
+        "name": "inherited-modal-wrap",
+        "value": "480px"
+      },
+      {
+        "name": "one-column",
+        "value": "360px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Launch button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Inherited launch action, including hover, disabled and native keyboard focus.",
+      "html": "<button class=\"ds-launch\">Launch 3 agents</button>",
+      "css": ".ds-launch { display:inline-flex; align-items:center; gap:9px; font-family:var(--font-mono); font-size:var(--fs-sm); font-weight:var(--weight-medium); letter-spacing:var(--tracking-caps); color:var(--bg-window); background:var(--action-fill); border:none; border-radius:6px; padding:8px 16px; cursor:pointer; transition:opacity .12s ease-out; } .ds-launch:hover:not(:disabled) { opacity:.9; } .ds-launch:disabled { opacity:.4; cursor:default; } .ds-launch:focus-visible { outline:auto; }"
+    },
+    {
+      "name": "Ghost button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Inherited secondary modal action with native keyboard focus.",
+      "html": "<button class=\"ds-ghost\">Cancel</button>",
+      "css": ".ds-ghost { font-family:var(--font-mono); font-size:var(--fs-xs); letter-spacing:var(--tracking-wide); color:var(--text-mid); background:transparent; border:1px solid var(--border-subtle); border-radius:6px; padding:8px 14px; cursor:pointer; transition:border-color .12s ease-out,color .12s ease-out; } .ds-ghost:hover { border-color:var(--text-low); color:var(--text-hi); } .ds-ghost:focus-visible { outline:auto; }"
+    },
+    {
+      "name": "Repository field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Inherited text field for a machine-readable path; the displayed path is illustrative.",
+      "html": "<input class=\"ds-input\" aria-label=\"Repository folder\" value=\"~/projects/example\" spellcheck=\"false\">",
+      "css": ".ds-input { background:var(--bg-window); border:1px solid var(--border-subtle); border-radius:6px; color:var(--text-hi); font-family:var(--font-mono); font-size:var(--fs-base); padding:9px 11px; outline:none; transition:border-color .12s ease-out; width:100%; } .ds-input:focus,.ds-input:focus-visible { border-color:var(--action); } .ds-input::placeholder { color:var(--text-ghost); } .ds-input.ds-invalid { border-color:var(--red); }"
+    },
+    {
+      "name": "Preset card",
+      "kind": "card",
+      "refersTo": "preset",
+      "description": "Reusable lineup card; this example uses illustrative saved-preset content.",
+      "html": "<button class=\"ds-preset\" aria-pressed=\"false\"><span class=\"ds-preset-title\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M6 3h12v18l-6-4-6 4V3Z\"/></svg>Saved lineup<span class=\"ds-preset-count\">3</span></span><span class=\"ds-preset-description\">3 OpenCode</span></button>",
+      "css": ".ds-preset { display:flex; flex-direction:column; gap:8px; width:100%; min-height:82px; padding:13px; text-align:left; font-family:var(--font-sans); color:var(--text-hi); background:var(--bg-window); border:1px solid var(--border-subtle); border-radius:8px; cursor:pointer; transition:background 150ms ease-out,border-color 150ms ease-out; } .ds-preset-title { display:flex; align-items:center; gap:7px; font-size:var(--fs-base); font-weight:var(--weight-medium); } .ds-preset-title svg { flex-shrink:0; color:var(--text-mid); } .ds-preset-count { margin-left:auto; color:var(--text-mid); font:var(--fs-xs) var(--font-mono); } .ds-preset-description { color:var(--text-mid); font-size:var(--fs-sm); line-height:1.4; overflow-wrap:anywhere; } .ds-preset:hover:not(:disabled) { background:var(--bg-hover); border-color:var(--text-low); } .ds-preset[aria-pressed=\"true\"],.ds-preset[aria-pressed=\"true\"]:hover:not(:disabled) { border-color:var(--action); background:color-mix(in srgb,var(--action) 10%,var(--bg-window)); } .ds-preset:focus-visible { outline:2px solid var(--action); outline-offset:3px; } .ds-preset:disabled { color:var(--text-low); cursor:default; }"
+    },
+    {
+      "name": "Session count",
+      "kind": "button",
+      "refersTo": "choice-selected",
+      "description": "Tabular count with the common launcher selected state.",
+      "html": "<button class=\"ds-count\" role=\"radio\" aria-label=\"3 agents\" aria-checked=\"true\">3</button>",
+      "css": ".ds-count { display:grid; place-items:center; min-width:40px; height:40px; padding:0 10px; background:var(--bg-window); border:1px solid var(--border-subtle); border-radius:7px; font:var(--weight-medium) var(--fs-base) var(--font-sans); font-variant-numeric:tabular-nums; color:var(--text-hi); cursor:pointer; transition:border-color 150ms ease-out,background 150ms ease-out; } .ds-count:hover:not(:disabled) { background:var(--bg-hover); border-color:var(--text-low); } .ds-count[aria-checked=\"true\"],.ds-count[aria-checked=\"true\"]:hover:not(:disabled) { border-color:var(--action); background:color-mix(in srgb,var(--action) 10%,var(--bg-window)); } .ds-count:focus-visible { outline:2px solid var(--action); outline-offset:3px; } .ds-count:disabled { color:var(--text-low); cursor:default; }"
+    },
+    {
+      "name": "Numbered session",
+      "kind": "custom",
+      "refersTo": "session-seat",
+      "description": "Native provider select with a whole-seat focus treatment and the existing OpenCode SVG mark.",
+      "html": "<div class=\"ds-seat\"><span class=\"ds-seat-number\" aria-hidden=\"true\">1</span><svg class=\"ds-agent-logo\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"currentColor\" fill-rule=\"evenodd\" aria-hidden=\"true\"><path d=\"M16 6H8v12h8V6zm4 16H4V2h16v20z\"/></svg><select aria-label=\"Session 1 agent\"><option>OpenCode</option><option>Codex</option></select><svg class=\"ds-chevron\" width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m6 9 6 6 6-6\"/></svg></div>",
+      "css": ".ds-seat { display:flex; align-items:center; gap:8px; min-width:0; min-height:40px; padding:0 10px; background:var(--bg-window); border-radius:6px; } .ds-seat-number { color:var(--text-mid); font:var(--fs-xs) var(--font-mono); font-variant-numeric:tabular-nums; } .ds-agent-logo { color:var(--kind-color,var(--action)); flex-shrink:0; display:block; } .ds-seat select { width:100%; min-width:0; padding:11px 0; border:0; border-radius:0; background:transparent; color:var(--text-hi); font:var(--fs-base) var(--font-sans); appearance:none; cursor:pointer; } .ds-seat select option { color:var(--text-hi); background:var(--bg-window); } .ds-chevron { color:var(--text-mid); flex-shrink:0; pointer-events:none; } .ds-seat:focus-within { outline:2px solid var(--action); outline-offset:2px; } .ds-seat select:focus,.ds-seat select:focus-visible { outline:none; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Flock’s workspace lineup",
+    "overview": "This scoped record describes the finished New Workspace extension and the modal primitives it reuses. It inherits flock’s established desktop world: Outfit labels, IBM Plex Mono machine details, theme-aware selection outlines, restrained borders and official provider marks. It does not establish a new app-wide identity.\n\nThe authority is the shipped [launcher stylesheet](../../../apps/flock-desktop/src/styles/newWorkspace.css), [shared dialog stylesheet](../../../apps/flock-desktop/src/styles/spawnDialog.css) and [global theme](../../../apps/flock-desktop/src/styles/global.css), with behavior in [NewWorkspaceDialog.tsx](../../../apps/flock-desktop/src/components/NewWorkspaceDialog.tsx). [PRODUCT.md](PRODUCT.md) records the confirmed product scope; the [surface brief](../../../.impeccable/surfaces/lock-desktop-src-components-newworkspacedialog-tsx.md) owns the task sequence and reference. Frontmatter colors are the inherited Nightfall baseline, not a replacement theme. Runtime global tokens, theme overrides and UI scaling remain authoritative. The sidecar’s generated tonal ramps are panel previews, not additional runtime tokens.",
+    "keyCharacteristics": [
+      "Compact, readable controls within the incumbent modal frame.",
+      "Shared selection treatment across lineup choices.",
+      "Numbered sessions with visible individual editing."
+    ],
+    "rules": [
+      {
+        "name": "The Shared Selection Rule",
+        "body": "Presets, provider choices, counts and isolation choices use the active theme’s action border and a 10% action mix over the window ground. Provider identity stays in its official mark.",
+        "section": "colors"
+      },
+      {
+        "name": "The Reading Roles Rule",
+        "body": "Use sans for choices, including session-count buttons, and explanations; use mono for paths, refs, preset count metadata and session numbers. Inherit the app’s type scale and UI-size setting.",
+        "section": "typography"
+      }
+    ],
+    "dos": [
+      "Do bind color and type to the existing global tokens and theme overrides.",
+      "Do keep the shared selection treatment and visible keyboard focus across launcher choices.",
+      "Do preserve readable labels through wrapping grids and the independently scrolling body."
+    ],
+    "donts": [
+      "Don't promote this launcher’s composition into a global layout rule.",
+      "Don't introduce new palette values or substitute provider identity for the common selection accent."
+    ]
+  }
+}
