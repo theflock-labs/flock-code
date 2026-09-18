@@ -3510,7 +3510,7 @@ export default function App() {
   // separate window steals macOS keyboard focus every time it appears, which
   // is what repeatedly broke release detection (the keyup fired in the wrong
   // window). In-window, keyboard focus never leaves, so keyup is always seen.
-  const { voiceHud, voiceLevel, preview: previewVoiceHud, refresh: refreshVoice } = useVoicePushToTalk({
+  const { voiceHud, voiceLevel, preview: previewVoiceHud, refresh: refreshVoice, dismissError: dismissVoiceError } = useVoicePushToTalk({
     getTargetPaneId: () => {
       const ws = workspaces.find((w) => w.id === focusedWsId);
       return ws ? getFocusedTab(ws).focusedPaneId : null;
@@ -5193,7 +5193,7 @@ export default function App() {
         promptActions={promptActions}
       />
 
-      {voiceHud && <VoiceOverlay status={voiceHud.status} level={voiceLevel} locked={voiceHud.locked} />}
+      {voiceHud && <VoiceOverlay {...voiceHud} level={voiceLevel} onDismiss={dismissVoiceError} />}
 
       <SessionToasts
         toasts={sessionToasts}

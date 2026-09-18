@@ -10,6 +10,7 @@ import {
   voiceGetStats, type VoiceStats,
   voiceAvailableModels, voiceGetModel, voiceSetModel, type VoiceModelOption,
   voiceListInputDevices, voiceGetInputDevice, voiceSetInputDevice,
+  voiceGetInputSource, voiceSetInputSource, voiceDesktopAudioAvailable, type VoiceInputSource,
   voiceGetLanguage, voiceSetLanguage, voiceGetVocab, voiceSetVocab,
   voiceGetCleanup, voiceSetCleanup,
   installAgentHook, uninstallAgentHook, agentHookStatus, type HookAgent,
@@ -184,6 +185,9 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
   const [voiceModel, setVoiceModel] = useState<string>("base.en");
   const [inputDevices, setInputDevices] = useState<string[]>([]);
   const [inputDevice, setInputDevice] = useState<string | null>(null);
+  const [inputSource, setInputSource] = useState<VoiceInputSource>("microphone");
+  const [desktopAudioAvailable, setDesktopAudioAvailable] = useState(false);
+  const [savingInputSource, setSavingInputSource] = useState(false);
   const [voiceLanguage, setVoiceLanguageState] = useState("auto");
   const [voiceVocab, setVoiceVocabState] = useState("");
   const [voiceCleanup, setVoiceCleanupState] = useState(true);
@@ -258,6 +262,8 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
     voiceGetModel().then(setVoiceModel).catch(() => {});
     voiceListInputDevices().then(setInputDevices).catch(() => {});
     voiceGetInputDevice().then(setInputDevice).catch(() => {});
+    voiceGetInputSource().then((source) => setInputSource(source ?? "microphone")).catch(() => {});
+    voiceDesktopAudioAvailable().then(setDesktopAudioAvailable).catch(() => {});
     voiceGetLanguage().then(setVoiceLanguageState).catch(() => {});
     voiceGetVocab().then(setVoiceVocabState).catch(() => {});
     voiceGetCleanup().then(setVoiceCleanupState).catch(() => {});
@@ -713,8 +719,36 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
                 </div>
 
                 <div className="settings-row" style={{ marginTop: 10 }}>
-                  <span className="settings-label">Input source</span>
+                  <label className="settings-label" htmlFor="voice-input-source">Audio source</label>
                   <select
+                    id="voice-input-source"
+                    className="modal-input voice-source-select"
+                    value={inputSource}
+                    disabled={savingInputSource}
+                    aria-describedby="voice-source-help"
+                    onChange={async (event) => {
+                      const source = event.target.value as VoiceInputSource;
+                      setSavingInputSource(true);
+                      setVoiceError("");
+                      try { await voiceSetInputSource(source); setInputSource(source); }
+                      catch (error) { setVoiceError(String(error)); }
+                      finally { setSavingInputSource(false); }
+                    }}
+                  >
+                    <option value="microphone">Microphone</option>
+                    <option value="desktop" disabled={!desktopAudioAvailable}>Desktop audio{!desktopAudioAvailable ? " (macOS 13+)" : ""}</option>
+                  </select>
+                </div>
+                <p className="settings-hint" id="voice-source-help">
+                  {inputSource === "desktop"
+                    ? "Transcribe the other person in Teams or another call. Captures audio from other apps, including notifications; your microphone is not included. macOS asks for Screen & System Audio Recording access when you first start. No screen images are recorded."
+                    : "Transcribe your voice from the selected microphone. Choose Desktop audio to capture the other side of a call instead."}
+                </p>
+
+                {inputSource === "microphone" && <div className="settings-row" style={{ marginTop: 10 }}>
+                  <label className="settings-label" htmlFor="voice-microphone">Microphone</label>
+                  <select
+                    id="voice-microphone"
                     className="modal-input"
                     style={{ padding: "4px 8px", fontSize: 12, maxWidth: 180 }}
                     value={inputDevice ?? ""}
@@ -725,7 +759,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
                       <option key={d} value={d}>{d}</option>
                     ))}
                   </select>
-                </div>
+                </div>}
 
                 <div className="settings-row" style={{ marginTop: 10 }}>
                   <span className="settings-label">Language</span>
@@ -788,6 +822,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
                   Hold <span className="kbd">{getVoiceHotkeyOption(voiceHotkey).label}</span> while a pane is
                   focused to dictate — transcribed text is typed into that pane, same as typing it yourself.
                   Quick-tap it instead to dictate hands-free (tap again to finish).
+                  Review the inserted text, then press Enter to send it to the agent.
                   Words appear live in the bar while you speak.
                   Works only while flock is focused (not other apps).
                 </p>

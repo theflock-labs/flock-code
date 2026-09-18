@@ -1,6 +1,6 @@
-// Push-to-talk voice-to-text (MVP: in-app only — see plan). Local Whisper
-// inference via whisper-rs, mic capture via cpal. Transcribed text is typed
-// into the focused pane's PTY by the frontend, same path as normal input.
+// In-app voice dictation: local Whisper, microphone capture via cpal or
+// desktop audio via ScreenCaptureKit. The frontend inserts editable text into
+// the pane selected at capture start, using the normal terminal input path.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -42,7 +42,7 @@ const MAX_WINDOW_SECS: f64 = 20.0;
 /// `MAX_WINDOW_SECS` of samples; this ceiling is the backstop for the
 /// non-streaming path, where nothing is ever committed and the whole clip is
 /// decoded in one pass on release.
-const MAX_RECORDING_SECS: usize = 300;
+pub(crate) const MAX_RECORDING_SECS: usize = 300;
 
 /// Capture buffer pre-allocation. Growing a multi-megabyte `Vec` by doubling
 /// means repeatedly reallocating and memcpying the whole clip, which is both
@@ -151,6 +151,31 @@ fn stats_path() -> PathBuf {
 
 fn input_device_pref_path() -> PathBuf {
     data_dir().join("voice_input_device")
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceInputSource {
+    #[default]
+    Microphone,
+    Desktop,
+}
+
+pub fn get_input_source() -> VoiceInputSource {
+    match std::fs::read_to_string(data_dir().join("voice_input_source")).as_deref().map(str::trim) {
+        Ok("desktop") => VoiceInputSource::Desktop,
+        _ => VoiceInputSource::Microphone,
+    }
+}
+
+pub fn set_input_source(source: VoiceInputSource) -> Result<(), String> {
+    if source == VoiceInputSource::Desktop && !super::desktop_audio::available() {
+        return Err("Desktop audio requires macOS 13 or later. Microphone dictation is still available.".into());
+    }
+    std::fs::create_dir_all(data_dir()).map_err(|e| e.to_string())?;
+    std::fs::write(data_dir().join("voice_input_source"), match source {
+        VoiceInputSource::Microphone => "microphone", VoiceInputSource::Desktop => "desktop",
+    }).map_err(|e| e.to_string())
 }
 
 // ─── Input device (microphone) selection ───────────────────────────────────
@@ -459,6 +484,8 @@ struct StreamState {
 }
 
 struct RecordingHandle {
+    source: VoiceInputSource,
+    failure: Arc<StdMutex<Option<String>>>,
     stop_tx: std_mpsc::Sender<()>,
     buffer: Arc<StdMutex<Vec<f32>>>,
     join: JoinHandle<()>,
@@ -482,23 +509,29 @@ pub struct VoiceState {
     recording: AsyncMutex<Option<RecordingHandle>>,
 }
 
-pub async fn start_recording(state: &VoiceState, app: AppHandle) -> Result<(), String> {
+pub async fn start_recording(state: &VoiceState, app: AppHandle) -> Result<VoiceInputSource, String> {
     let mut guard = state.recording.lock().await;
     if guard.is_some() {
-        return Ok(()); // already recording — treat as idempotent
+        return Err("Voice is already recording in another window.".into());
     }
 
     let (stop_tx, stop_rx) = std_mpsc::channel::<()>();
     let (ready_tx, ready_rx) = std_mpsc::channel::<Result<(u32, u16), String>>();
     let buffer: Arc<StdMutex<Vec<f32>>> = Arc::new(StdMutex::new(Vec::new()));
     let buffer_thread = Arc::clone(&buffer);
+    let source = get_input_source();
+    let failure = Arc::new(StdMutex::new(None));
+    let capture_failure = Arc::clone(&failure);
 
     // cpal's Stream is !Send on macOS (CoreAudio), so it must be built,
     // played, and dropped entirely on one dedicated thread — never handed
     // across an await point or into shared state.
     let app_capture = app.clone();
     let join = std::thread::spawn(move || {
-        run_capture_thread(app_capture, buffer_thread, stop_rx, ready_tx);
+        match source {
+            VoiceInputSource::Microphone => run_capture_thread(app_capture, buffer_thread, stop_rx, ready_tx),
+            VoiceInputSource::Desktop => super::desktop_audio::run_capture(app_capture, buffer_thread, stop_rx, ready_tx, capture_failure),
+        }
     });
 
     let (sample_rate, channels) = tokio::task::spawn_blocking(move || ready_rx.recv())
@@ -537,6 +570,8 @@ pub async fn start_recording(state: &VoiceState, app: AppHandle) -> Result<(), S
     };
 
     *guard = Some(RecordingHandle {
+        source,
+        failure,
         stop_tx,
         buffer,
         join,
@@ -547,7 +582,7 @@ pub async fn start_recording(state: &VoiceState, app: AppHandle) -> Result<(), S
         stream,
         preview,
     });
-    Ok(())
+    Ok(source)
 }
 
 /// Streaming transcriber: every ~0.4s, decode only the audio *after* the last
@@ -725,7 +760,7 @@ fn stream_prompt(glossary: Option<&str>, committed: &str) -> Option<String> {
 
 /// Emits a throttled (~30fps) 0–1 audio level for the HUD's soundwave, akin
 /// to the original app's `AudioRecorder` RMS callback -> `state.audioLevel`.
-fn maybe_emit_level(app: &AppHandle, samples: &[f32], last_emit: &StdMutex<Instant>) {
+pub(crate) fn maybe_emit_level(app: &AppHandle, samples: &[f32], last_emit: &StdMutex<Instant>) {
     let mut last = last_emit.lock().unwrap();
     if last.elapsed().as_millis() < 33 {
         return;
@@ -925,6 +960,8 @@ pub async fn stop_recording(state: &VoiceState, app: &AppHandle) -> Result<Strin
         guard.take()
     };
     let Some(RecordingHandle {
+        source,
+        failure,
         stop_tx,
         buffer,
         join,
@@ -956,6 +993,9 @@ pub async fn stop_recording(state: &VoiceState, app: &AppHandle) -> Result<Strin
         .await
         .map_err(|e| e.to_string())?
         .map_err(|_| "recording thread panicked".to_string())?;
+    if let Some(error) = failure.lock().unwrap().take() {
+        return Err(error);
+    }
 
     let elapsed_secs = started_at.elapsed().as_secs_f64();
     // Take the audio and read the commit point under ONE `stream` lock. They
@@ -980,6 +1020,9 @@ pub async fn stop_recording(state: &VoiceState, app: &AppHandle) -> Result<Strin
     let total_frames = captured / channels.max(1) as usize;
     // Under ~0.1s of audio isn't a real utterance (e.g. an accidental tap).
     if total_frames < (sample_rate as usize) / 10 {
+        if source == VoiceInputSource::Desktop {
+            return Err("No desktop audio was received. Check that your call is playing audio and flock has Screen & System Audio Recording access.".into());
+        }
         return Ok(String::new());
     }
 
@@ -996,6 +1039,9 @@ pub async fn stop_recording(state: &VoiceState, app: &AppHandle) -> Result<Strin
     if committed_text.trim().is_empty() {
         let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         if peak < 0.001 {
+            if source == VoiceInputSource::Desktop {
+                return Err("No desktop audio was heard. Check that the other person is speaking and the call is not muted.".into());
+            }
             tracing::warn!(
                 "voice: captured {} samples but audio is silent (peak={peak:.6}) — \
                  microphone access is likely denied",

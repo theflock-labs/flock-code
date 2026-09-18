@@ -2146,6 +2146,17 @@ pub fn voice_set_input_device(name: Option<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn voice_get_input_source() -> voice::VoiceInputSource { voice::get_input_source() }
+
+#[tauri::command]
+pub fn voice_set_input_source(source: voice::VoiceInputSource) -> Result<(), String> {
+    voice::set_input_source(source)
+}
+
+#[tauri::command]
+pub fn voice_desktop_audio_available() -> bool { crate::desktop_audio::available() }
+
+#[tauri::command]
 pub fn voice_get_language() -> String {
     voice::get_language()
 }
@@ -2176,7 +2187,7 @@ pub fn voice_set_cleanup(enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn voice_start_recording(state: State<'_, AppState>, app: AppHandle) -> Result<(), String> {
+pub async fn voice_start_recording(state: State<'_, AppState>, app: AppHandle) -> Result<voice::VoiceInputSource, String> {
     voice::start_recording(&state.voice, app).await
 }
 

@@ -1777,6 +1777,7 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "bytes",
+ "cc",
  "chrono",
  "cpal",
  "flock-core",

@@ -4,5 +4,7 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>flock uses your microphone for push-to-talk voice dictation, transcribed fully on-device.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>flock transcribes audio from calls and other apps into an agent prompt when you choose Desktop audio and start dictation. Transcription runs on your Mac.</string>
 </dict>
 </plist>

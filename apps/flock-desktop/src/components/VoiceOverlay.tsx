@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import GooseMark from "./GooseMark";
 import Wordmark from "./Wordmark";
-import { onVoicePartial } from "../lib/tauri";
+import { onVoicePartial, type VoiceInputSource } from "../lib/tauri";
 
 // Voice status bar — a window-wide strip pinned to the bottom of the main
 // content area (right of the sidebar, at the same level as the sidebar's
@@ -12,11 +12,14 @@ import { onVoicePartial } from "../lib/tauri";
 // unmissable while dictating. Colors come from the active theme's CSS vars,
 // so every theme gets its own look automatically.
 
-type HudStatus = "recording" | "transcribing";
+type HudStatus = "starting" | "recording" | "transcribing" | "error";
 
 interface Props {
   status: HudStatus;
   level: number;
+  source?: VoiceInputSource;
+  error?: string;
+  onDismiss?: () => void;
   /** Hands-free mode (started by a quick tap) — changes the release hint. */
   locked?: boolean;
 }
@@ -26,15 +29,24 @@ const WAVEFORM_PROFILE = [0.35, 0.65, 1.0, 0.65, 0.35];
 const NOISE_CHARS = Array.from("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789·:+=");
 const NOISE_SLOTS = 28;
 
-export default function VoiceOverlay({ status, level, locked }: Props) {
+export default function VoiceOverlay({ status, level, locked, source = "microphone", error, onDismiss }: Props) {
   // Live draft transcript from the backend's preview loop. Mounts fresh per
   // dictation (App unmounts the overlay between them), so no reset needed.
   const [partial, setPartial] = useState("");
   useEffect(() => {
+    let disposed = false;
     let un: (() => void) | undefined;
-    onVoicePartial(setPartial).then((fn) => (un = fn));
-    return () => un?.();
-  }, []);
+    setPartial("");
+    onVoicePartial(setPartial).then((fn) => { if (disposed) fn(); else un = fn; }).catch(console.error);
+    return () => { disposed = true; un?.(); };
+  }, [status === "starting"]);
+
+  if (status === "error") return (
+    <div className="voice-bar voice-bar-error" role="alert">
+      <span className="voice-bar-error-message">{error || "Voice could not record. Try again."}</span>
+      <button className="voice-bar-dismiss" onClick={onDismiss} aria-label="Dismiss voice error">Dismiss</button>
+    </div>
+  );
 
   return (
     <div className={`voice-bar voice-bar-${status}`}>
@@ -45,7 +57,8 @@ export default function VoiceOverlay({ status, level, locked }: Props) {
       <Wordmark size={16} className="voice-bar-wordmark" />
       <div className="voice-bar-divider" />
       <span className="voice-bar-status">
-        {status === "recording" ? "LISTENING" : "TRANSCRIBING"}
+        {status === "starting" ? "STARTING" : status === "recording" ? "LISTENING" : "TRANSCRIBING"}
+        <span className="voice-bar-source">{source === "desktop" ? "Desktop audio" : "Microphone"}</span>
       </span>
       <div className="voice-bar-noise-wrap">
         {partial ? (
@@ -59,7 +72,7 @@ export default function VoiceOverlay({ status, level, locked }: Props) {
           ? locked
             ? "tap again to finish"
             : "release to insert"
-          : "one moment…"}
+          : status === "starting" ? "connecting audio…" : "one moment…"}
       </span>
     </div>
   );

@@ -21,6 +21,7 @@ mod pty_bridge;
 mod state;
 mod terminals;
 mod voice;
+mod desktop_audio;
 mod worktree;
 mod worktree_setup;
 
@@ -305,6 +306,9 @@ pub fn run() {
             commands::voice_list_input_devices,
             commands::voice_get_input_device,
             commands::voice_set_input_device,
+            commands::voice_get_input_source,
+            commands::voice_set_input_source,
+            commands::voice_desktop_audio_available,
             commands::voice_get_language,
             commands::voice_set_language,
             commands::voice_get_vocab,

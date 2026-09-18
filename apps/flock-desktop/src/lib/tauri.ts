@@ -771,7 +771,11 @@ export interface VoiceDownloadProgress {
 export const onVoiceDownloadProgress = (handler: (p: VoiceDownloadProgress) => void): Promise<UnlistenFn> =>
   listen<VoiceDownloadProgress>("voice://download-progress", (e) => handler(e.payload));
 
-export const voiceStartRecording = (): Promise<void> => invoke<void>("voice_start_recording");
+export type VoiceInputSource = "microphone" | "desktop";
+export const voiceGetInputSource = (): Promise<VoiceInputSource> => invoke("voice_get_input_source");
+export const voiceSetInputSource = (source: VoiceInputSource): Promise<void> => invoke("voice_set_input_source", { source });
+export const voiceDesktopAudioAvailable = (): Promise<boolean> => invoke("voice_desktop_audio_available");
+export const voiceStartRecording = (): Promise<VoiceInputSource> => invoke("voice_start_recording");
 
 /** Stops recording, runs local transcription, and returns the resulting text (empty if too short/silent). */
 export const voiceStopRecording = (): Promise<string> => invoke<string>("voice_stop_recording");

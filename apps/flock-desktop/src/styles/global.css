@@ -7149,6 +7149,8 @@ body.rail-resizing .right-rail { transition: none; }
    one the user triggered, so it is the one that gets the interaction colour. */
 .voice-bar-recording { background: var(--action-fill); }
 .voice-bar-transcribing { background: var(--blue); }
+.voice-bar-starting { background: var(--blue); }
+.voice-bar-error { background: var(--action-fill); }
 
 @keyframes voice-bar-in {
   from { transform: translateY(100%); }
@@ -7203,6 +7205,27 @@ body.rail-resizing .right-rail { transition: none; }
   color: var(--bg-window);
   flex-shrink: 0;
 }
+
+.voice-bar-source {
+  display: block;
+  font-size: var(--fs-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: normal;
+}
+.voice-bar-error { height: auto; min-height: 48px; padding-block: 10px; }
+.voice-bar-error-message { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.voice-bar-dismiss {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-control);
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.voice-bar-dismiss:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
+.voice-bar-dismiss:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.voice-source-select { width: 180px; max-width: 60%; padding: 4px 8px; font-size: var(--fs-sm); }
 
 .voice-bar-noise-wrap {
   flex: 1;

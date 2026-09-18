@@ -6,6 +6,7 @@ const RESULTS: Record<string, unknown> = {
   githubCheck: { connected: false, user: null, avatar_url: null },
   voiceGetEnabled: false, voiceModelStatus: { downloaded: false },
   voiceAvailableModels: [], voiceListInputDevices: [], voiceGetLanguage: "auto",
+  voiceGetModel: "base.en", voiceGetVocab: "", voiceGetCleanup: true,
   agentHookStatus: false,
   githubOauthStart: { user_code: "UXREVIEW", verification_uri: "https://github.com/login/device", device_code: "test-device", interval: 5 },
   containerStatus: { available: false, daemon_running: false, image_ready: false },
@@ -35,7 +36,7 @@ vi.mock("./GrokUsageChip", () => ({ GrokUsageSection: () => <div>Test usage</div
 vi.mock("./ProvenanceSection", () => ({ default: () => <button>Export CSV</button> }));
 
 import SettingsDialog from "./SettingsDialog";
-import { installAgentHook } from "../lib/tauri";
+import { installAgentHook, voiceGetEnabled, voiceGetInputSource, voiceSetInputSource, voiceDesktopAudioAvailable } from "../lib/tauri";
 
 const search = (query: string) => {
   const field = screen.getByRole("searchbox", { name: "Find a setting" });
@@ -61,6 +62,38 @@ describe("Settings search navigation", () => {
     vi.clearAllMocks();
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it("switches to desktop audio only after saving and preserves the microphone picker", async () => {
+    vi.mocked(voiceGetEnabled).mockResolvedValueOnce(true);
+    vi.mocked(voiceGetInputSource).mockResolvedValueOnce("microphone");
+    vi.mocked(voiceDesktopAudioAvailable).mockResolvedValueOnce(true);
+    await open();
+    fireEvent.click(screen.getByRole("tab", { name: "Voice" }));
+    expect(screen.getByRole("combobox", { name: "Microphone" })).toBeTruthy();
+    await act(async () => fireEvent.change(screen.getByRole("combobox", { name: "Audio source" }), { target: { value: "desktop" } }));
+    expect(voiceSetInputSource).toHaveBeenCalledWith("desktop");
+    expect(screen.queryByRole("combobox", { name: "Microphone" })).toBeNull();
+    expect(screen.getByText(/Transcribe the other person in Teams/)).toBeTruthy();
+    await act(async () => fireEvent.change(screen.getByRole("combobox", { name: "Audio source" }), { target: { value: "microphone" } }));
+    expect(screen.getByRole("combobox", { name: "Microphone" })).toBeTruthy();
+  });
+
+  it("retains the previous source and shows a failed save", async () => {
+    vi.mocked(voiceGetEnabled).mockResolvedValueOnce(true);
+    vi.mocked(voiceGetInputSource).mockResolvedValueOnce("microphone");
+    vi.mocked(voiceDesktopAudioAvailable).mockResolvedValueOnce(true);
+    vi.mocked(voiceSetInputSource).mockRejectedValueOnce("Could not save audio source.");
+    await open(); fireEvent.click(screen.getByRole("tab", { name: "Voice" }));
+    await act(async () => fireEvent.change(screen.getByRole("combobox", { name: "Audio source" }), { target: { value: "desktop" } }));
+    expect((screen.getByRole("combobox", { name: "Audio source" }) as HTMLSelectElement).value).toBe("microphone");
+    expect(screen.getByText("Could not save audio source.")).toBeTruthy();
+  });
+
+  it("makes desktop audio discoverable from a Teams search", async () => {
+    await open(); search("Teams");
+    fireEvent.click(screen.getByRole("button", { name: "Voice dictation and audio source Voice" }));
+    expect(screen.getByRole("tab", { name: "Voice" }).getAttribute("aria-selected")).toBe("true");
+  });
 
   it("takes agent-status searches directly to hook controls without installing anything", async () => {
     await open();
