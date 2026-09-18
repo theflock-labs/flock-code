@@ -45,7 +45,7 @@ export default function PoppedPaneWindow({ paneId, name, kind, accent, sessionId
 
   // Push-to-talk dictation travels with the popped-out agent — the text goes
   // into this window's pane.
-  const { voiceHud, voiceLevel } = useVoicePushToTalk({ getTargetPaneId: () => paneId });
+  const { voiceHud, voiceLevel, dismissError } = useVoicePushToTalk({ getTargetPaneId: () => paneId });
 
   // Files dropped anywhere on this window land in this pane's PTY.
   usePtyFileDrop();
@@ -110,7 +110,7 @@ export default function PoppedPaneWindow({ paneId, name, kind, accent, sessionId
             own. Left off so nothing reads it as the mechanism. */}
         <Terminal paneId={paneId} focused={true} visible={true} />
       </div>
-      {voiceHud && <VoiceOverlay status={voiceHud.status} level={voiceLevel} locked={voiceHud.locked} />}
+      {voiceHud && <VoiceOverlay {...voiceHud} level={voiceLevel} onDismiss={dismissError} />}
     </div>
   );
 }
