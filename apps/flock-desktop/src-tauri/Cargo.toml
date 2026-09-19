@@ -60,7 +60,7 @@ reqwest = { version = "0.13", features = ["json", "stream", "form"] }
 # enables Core ML/Metal GPU acceleration for inference on Apple Silicon.
 cpal = "0.18"
 whisper-rs = { version = "0.14", features = ["metal"] }
-base64 = "0.22.1"
+base64 = "0.23.1"
 
 # Native clipboard image read — Apple Notes (and other native apps) put copied
 # images only on NSPasteboard, never in the WebView paste event, so JS can't see
