@@ -30,7 +30,7 @@
     "react-dom": "^19.3.0",
     "react-is": "^19.3.0",
     "recharts": "^3.10.1",
-    "uuid": "^14.0.0"
+    "uuid": "^14.0.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
