@@ -65,7 +65,7 @@ pub fn warm() {
     let spawned = std::thread::Builder::new()
         .name("kg-embed-warm".into())
         .spawn(|| {
-            let opts = fastembed::InitOptions::new(fastembed::EmbeddingModel::BGESmallENV15)
+            let opts = fastembed::TextInitOptions::new(fastembed::EmbeddingModel::BGESmallENV15)
                 .with_cache_dir(cache_dir())
                 .with_show_download_progress(false);
             let next = match fastembed::TextEmbedding::try_new(opts) {
