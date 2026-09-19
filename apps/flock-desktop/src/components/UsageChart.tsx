@@ -8,7 +8,7 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-  type TooltipProps,
+  type TooltipContentProps,
 } from "recharts";
 import { getEffectiveTheme, onThemeChange } from "../lib/theme";
 import type { UsageDailyPoint } from "../lib/flockId";
@@ -126,7 +126,7 @@ function useTokens() {
   }, [theme]);
 }
 
-function UsageTooltip({ active, payload, metric }: TooltipProps<number, string> & { metric: Metric }) {
+function UsageTooltip({ active, payload, metric }: Pick<TooltipContentProps<number, string>, "active" | "payload"> & { metric: Metric }) {
   if (!active || !payload || payload.length === 0) return null;
   const row = payload[0].payload as DeltaRow;
   const value = metric === "tokens" ? fmtTokens(row.tokens) : fmtUsd(row.cost);
@@ -261,7 +261,7 @@ export default function UsageChart({ series, loading }: { series: UsageDailyPoin
               // A soft rect, not a line: the mark under the pointer is a bar, so
               // the cursor should be the bar's own footprint.
               cursor={{ fill: tokens.hover }}
-              content={<UsageTooltip metric={metric} />}
+              content={(props) => <UsageTooltip {...props} metric={metric} />}
             />
             <Bar dataKey={key} radius={[3, 3, 0, 0]} isAnimationActive={false}>
               {rows.map((r) => {
