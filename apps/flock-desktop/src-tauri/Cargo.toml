@@ -53,7 +53,7 @@ flock-pty = { workspace = true }
 flock-kg = { workspace = true }
 
 # HTTP client for GitHub API
-reqwest = { version = "0.13", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["json", "stream", "form"] }
 
 # Voice-to-text: mic capture + local Whisper inference.
 # App is macOS-only (see rest of this file / tauri.conf.json) — "metal"

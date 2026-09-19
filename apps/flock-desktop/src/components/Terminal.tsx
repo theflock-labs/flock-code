@@ -368,7 +368,7 @@ function Terminal({ paneId, focused, visible, onIntentCaptured, broadcastGroup, 
       // across many long-running agent sessions.
       scrollback: 500,
       // Disable the overview ruler minimap canvas (extra memory per terminal).
-      overviewRulerWidth: 0,
+      overviewRuler: { width: 0 },
       // flock's palette mapped onto xterm.js's theme (per active app theme —
       // xterm can't read CSS variables, so this is kept in sync by hand).
       theme: getXtermTheme(getEffectiveTheme()),
@@ -567,6 +567,17 @@ function Terminal({ paneId, focused, visible, onIntentCaptured, broadcastGroup, 
     };
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
+      // xterm 6 removed the macOS Option-arrow word-navigation mapping.
+      // Keep it on the normal input path so broadcast and activity tracking
+      // see the same bytes as any other typed key.
+      if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey && navigator.platform.startsWith("Mac")) {
+        const word = e.key === "ArrowLeft" ? "\x1bb" : e.key === "ArrowRight" ? "\x1bf" : null;
+        if (word) {
+          e.preventDefault();
+          term.input(word, true);
+          return false;
+        }
+      }
       if (!e.metaKey || e.altKey || e.ctrlKey) return true;
       const byte = CMD_LINE_KEYS[e.key];
       if (byte === undefined) return true;
