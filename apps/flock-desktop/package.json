@@ -17,7 +17,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2.5.5",
     "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-shell": "^2.2.0",
+    "@tauri-apps/plugin-shell": "^2.3.6",
     "@tauri-apps/plugin-updater": "^2.11.0",
     "@types/uuid": "^10.0.0",
     "@xterm/addon-fit": "^0.11.0",
