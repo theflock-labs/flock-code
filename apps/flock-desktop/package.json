@@ -33,7 +33,7 @@
     "uuid": "^14.0.2"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.4",
+    "@tauri-apps/cli": "^2.11.5",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^26.6.1",
