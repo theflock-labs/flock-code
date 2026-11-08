@@ -157,18 +157,15 @@ describe("Settings search navigation", () => {
     await open();
     fireEvent.keyDown(search("theme"), { key: "Enter" });
     expect(document.activeElement).toBe(screen.getByRole("group", { name: /Theme follows system/ }));
-    expect((screen.getByRole("button", { name: "Nightfall" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Dark" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("keeps OAuth recovery available through search and prevents the tour from cancelling sign-in", async () => {
+  it("keeps OAuth recovery available through search", async () => {
     const onClose = await open();
     fireEvent.click(screen.getByRole("tab", { name: "GitHub" }));
     fireEvent.click(screen.getByRole("button", { name: "Connect with GitHub" }));
     await act(async () => { await Promise.resolve(); });
-    fireEvent.keyDown(search("feature tour"), { key: "Enter" });
-    const tour = screen.getByRole("button", { name: "Open feature tour" });
-    expect((tour as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(tour);
+    fireEvent.keyDown(search("text size"), { key: "Enter" });
     expect(onClose).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Return to GitHub" }));
     expect(screen.getByText("UXREVIEW")).toBeTruthy();

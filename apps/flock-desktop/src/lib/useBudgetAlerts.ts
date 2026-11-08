@@ -13,7 +13,7 @@
 // "something needs your attention" the badge already exists for.
 
 import { useEffect, useRef } from "react";
-import type { Notification } from "../components/NotificationsBadge";
+import type { Notification } from "./useNotifications";
 import {
   alertText,
   dueAlerts,

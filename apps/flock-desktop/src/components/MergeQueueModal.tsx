@@ -83,7 +83,7 @@ export default function MergeQueueView({
     return (
       <div className="mq-view">
         <div className="mq-empty">
-          {loadError ? `couldn't inspect the queue — ${loadError}` : "inspecting queue…"}
+          {loadError ? `Couldn't check the queue: ${loadError}` : "Checking the queue…"}
         </div>
       </div>
     );
@@ -91,25 +91,25 @@ export default function MergeQueueView({
   if (details.length === 0) {
     return (
       <div className="mq-view">
-        <div className="mq-empty">queue a merge from the Pull Requests tab</div>
+        <div className="mq-empty">Nothing is queued. Pull requests you add from Open merge here, in order, once approved and green.</div>
       </div>
     );
   }
   return (
     <div className="mq-view">
       <div className="pr-action-context">
-        {ghUser ? <>GitHub actions run as <strong>@{ghUser}</strong>.</> : "GitHub account unavailable — check your connection in Settings."}
-        {" "}Queued PRs merge automatically in order after approval and completed checks without failures. GitHub branch rules still apply.
+        Merges in order, each once it is approved and its checks pass.
+        {ghUser ? <> Acts on GitHub as @{ghUser}.</> : " GitHub isn't connected; see Settings."}
       </div>
       <div className="mq-toolbar-slim">
-        {loadError && <div className="pr-manager-error mq-load-error">couldn't refresh — {loadError}</div>}
+        {loadError && <div className="pr-manager-error mq-load-error">Couldn't refresh: {loadError}</div>}
         <button
           className="mq-refresh"
           disabled={refreshing}
           title="Re-inspect every queued PR"
           onClick={() => void inspect()}
         >
-          {refreshing ? "refreshing…" : <><RefreshIcon size={11} /> refresh</>}
+          {refreshing ? "Refreshing…" : <><RefreshIcon size={11} /> Refresh</>}
         </button>
       </div>
       <div className="mq-cards">

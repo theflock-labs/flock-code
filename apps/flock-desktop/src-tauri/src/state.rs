@@ -48,6 +48,11 @@ pub struct PaneEntry {
     /// row could not be opened; a pane must still run when its audit trail
     /// cannot be written.
     pub provenance: Option<crate::provenance::Recorder>,
+    /// Set once the agent has painted (or the grace ran out, or it exited):
+    /// the boot card's source of truth, kept here so a terminal mounting late
+    /// (v2 mounts only the panes on screen) can ask instead of re-deriving it
+    /// from a replay ring that may no longer hold the marker.
+    pub started: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A pane's output fan-out. Holds the replay ring (recent bytes, so a freshly
@@ -85,10 +90,13 @@ pub struct OutputRing {
     pub total_pushed: u64,
 }
 
-/// ~2 full-screen TUI repaints of a large terminal with colors. Enough for
-/// a mounting terminal to reconstruct the visible screen; deliberately not
-/// full scrollback (xterm caps its own scrollback anyway).
-pub const OUTPUT_RING_CAP: usize = 128 * 1024;
+/// Several full-screen TUI repaints of a large terminal with colours. v2 mounts
+/// a terminal only while its thread is on screen and rebuilds it from this ring
+/// when you come back, so this is what an inline agent (one that writes to the
+/// main screen rather than taking the alternate one) keeps as history across a
+/// switch. Full-screen agents repaint themselves on the SIGWINCH the remount
+/// sends, so for them only the last frame matters.
+pub const OUTPUT_RING_CAP: usize = 256 * 1024;
 
 impl OutputRing {
     pub fn new() -> Self {

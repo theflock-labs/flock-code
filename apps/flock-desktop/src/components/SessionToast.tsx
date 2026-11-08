@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { CopilotIcon, EyeIcon, SendIcon } from "./friendIcons";
 import { Avatar } from "./Avatar";
 import { suppressToast } from "../lib/toastSuppression";
+import "../styles/collab.css";
 
 /** One newly-opened PR inside a pr_opened toast. All PRs that arrive while
  * the toast is up share it as tabs — a burst of agent-created PRs must not

@@ -23,7 +23,7 @@ export const SETTINGS_SEARCH_ENTRIES: SettingSearchEntry[] = [
   { id: "pane-text", tab: "appearance", section: "Appearance", label: "Agent pane text size", description: "Make terminal output larger or smaller.", keywords: "terminal font zoom readability size" },
   { id: "terminal-font", tab: "appearance", section: "Appearance", label: "Terminal font", description: "Choose the font for terminal output.", keywords: "typeface family monospace custom system default hack menlo codex claude" },
   { id: "app-text", tab: "appearance", section: "Appearance", label: "App text size", description: "Resize sidebar, dialog and toolbar text.", keywords: "interface ui scale font zoom readability size" },
-  { id: "quick-actions", tab: "appearance", section: "Appearance", label: "Quick actions", description: "Show or hide the sidebar setup checklist.", keywords: "checklist onboarding setup sidebar tips" },
+  { id: "ai-titles", tab: "appearance", section: "Appearance", label: "Name new threads with AI", description: "One short Claude call names a new thread; off, its first task does.", keywords: "title label name thread summary intent claude" },
   { id: "voice", tab: "voice", section: "Voice", label: "Voice dictation and audio source", description: "Transcribe your microphone or desktop audio from a call.", keywords: "speech whisper microphone mic desktop system audio Teams call hotkey language vocabulary filler words cleanup model recording" },
   { id: "github-enabled", tab: "github", section: "GitHub", label: "GitHub integration", description: "Show pull request checks and notifications.", keywords: "pull request pr checks ci notifications integration" },
   { id: "github-account", tab: "github", section: "GitHub", label: "GitHub account connection", description: "Connect or disconnect the GitHub CLI account.", keywords: "login sign in oauth authentication github cli" },
@@ -39,7 +39,6 @@ export const SETTINGS_SEARCH_ENTRIES: SettingSearchEntry[] = [
   { id: "worktree-directory", tab: "worktrees", section: "Branches", label: "Worktree directory", description: "Choose the parent folder for new worktrees.", keywords: "folder directory path worktree location" },
   { id: "carry-files", tab: "worktrees", section: "Branches", label: "Carry over local files", description: "Copy selected local configuration into new worktrees.", keywords: "env environment files copy patterns gitignored configuration" },
   { id: "shortcuts", tab: "about", section: "About", label: "Keyboard shortcuts", description: "Find shortcuts for panes, workspaces and the command bar.", keywords: "keyboard shortcuts hotkeys keybindings command palette cmdk" },
-  { id: "feature-tour", tab: "about", section: "About", label: "Feature tour", description: "Explore workspaces, agents, reviews and shared memory.", keywords: "onboarding tutorial tour help getting started welcome" },
 ];
 
 function words(text: string): string[] {

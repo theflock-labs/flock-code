@@ -265,7 +265,7 @@ export default function GraphCanvas({ nodes, edges, selectedId, onSelect, onDese
     const show = !dim && (sel || near || hoverRef.current === n.id || countRef.current <= 28 || scale > 1.6);
     if (show) {
       const fs = 11 / scale;
-      ctx.font = `${fs}px ${MONO}`;
+      ctx.font = `${fs}px ${SANS}`;
       ctx.textBaseline = "middle";
       const label = n.label.length > 28 ? n.label.slice(0, 27) + "…" : n.label;
       ctx.fillStyle = isLight.current ? "rgba(40,54,76,0.9)" : "rgba(200,214,236,0.9)";
@@ -318,7 +318,7 @@ export default function GraphCanvas({ nodes, edges, selectedId, onSelect, onDese
     };
 
     const graph = new ForceGraph<GNode, GLink>(el)
-      .backgroundColor(isLight.current ? "#ffffff" : "#000000")
+      .backgroundColor(panelGround(isLight.current))
       .autoPauseRedraw(false) // keep painting after cooldown — the ambient breathing/twinkle needs frames
       .onRenderFramePre(drawBackdrop)
       .nodeRelSize(NODE_R)
@@ -371,7 +371,7 @@ export default function GraphCanvas({ nodes, edges, selectedId, onSelect, onDese
     const offTheme = onThemeChange(() => {
       varCache.current.clear();
       isLight.current = getEffectiveTheme() === "light";
-      graph.backgroundColor(isLight.current ? "#ffffff" : "#000000");
+      graph.backgroundColor(panelGround(isLight.current));
       graph.nodeCanvasObject(drawNode).linkColor(linkColorOf); // nudge a redraw
     });
 
@@ -427,4 +427,11 @@ export default function GraphCanvas({ nodes, edges, selectedId, onSelect, onDese
   );
 }
 
-const MONO = getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim() || "ui-monospace, monospace";
+const SANS = getComputedStyle(document.documentElement).getPropertyValue("--font-sans").trim() || "-apple-system, system-ui, sans-serif";
+
+/** The map sits on the page's own ground (v2's --paper), so it reads as part
+ *  of the panel rather than a black hole cut into it. */
+function panelGround(light: boolean): string {
+  const paper = getComputedStyle(document.documentElement).getPropertyValue("--paper").trim();
+  return paper || (light ? "#ffffff" : "#16181d");
+}

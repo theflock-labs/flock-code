@@ -35,7 +35,9 @@ import { getGraphUrl } from "../lib/graphSettings";
  * direction. Attributed spend lives in Settings → Usage, where it is computed
  * per session id.
  */
-export default function InsightsPanel({ onClose }: { onClose: () => void }) {
+/** `inline`: as the Graph page's Insights view, without the overlay, its own
+ *  heading or its own Escape — the page has all three. */
+export default function InsightsPanel({ onClose, inline = false }: { onClose: () => void; inline?: boolean }) {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<InsightsSummary | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -57,10 +59,11 @@ export default function InsightsPanel({ onClose }: { onClose: () => void }) {
   }, [days]);
 
   useEffect(() => {
+    if (inline) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, inline]);
 
   const r = data?.recall;
   // Coverage is only defined against something recorded, and the empty share
@@ -88,12 +91,12 @@ export default function InsightsPanel({ onClose }: { onClose: () => void }) {
       (r.facts_injected === 0 && data.reads === 0 && data.writes === 0));
 
   return (
-    <div className="flock-ins-overlay" onClick={onClose}>
+    <div className={inline ? "flock-ins-inline" : "flock-ins-overlay"} onClick={inline ? undefined : onClose}>
       <style>{STYLES}</style>
       <div className="flock-ins-panel" onClick={(e) => e.stopPropagation()}>
         <header className="flock-ins-head">
           <div>
-            <div className="flock-ins-eyebrow">flock · Graph Insights</div>
+            {!inline && <div className="flock-ins-eyebrow">flock · Graph Insights</div>}
             <h2 className="flock-ins-title">What the graph is being read for</h2>
           </div>
           <div className="flock-ins-windows">

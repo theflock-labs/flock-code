@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ModalCloseButton from "./ModalCloseButton";
 import { Avatar } from "./Avatar";
 import { useFocusTrap } from "../lib/useFocusTrap";
+import "../styles/collab.css";
 
 interface Props {
   toLogin: string;

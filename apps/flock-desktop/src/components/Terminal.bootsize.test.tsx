@@ -2,30 +2,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, cleanup, act } from "@testing-library/react";
 
-// The "agent TUI stuck at 24x80 until the window is resized" bug.
+// The "agent TUI stuck at 24x80 until the window is resized" bug, and the
+// terminal's other jobs now that it is mounted only while its thread is shown.
 //
-// A pane's PTY spawns at 24x80 and the first fit corrects it within ~100ms.
-// The agent execs immediately, so those corrections raise SIGWINCH during its
-// runtime bootstrap, before anything is listening, and a signal delivered then is
-// simply gone. Claude Code lays its splash/login/trust screens out for the
-// size it read once, and its differential renderer never revisits them, so
-// the TUI sits in the top-left corner of a correctly-sized PTY until some
-// later resize raises a SIGWINCH it can hear. Measured live: PTY at 34x121,
-// splash drawn for 80 cols, and one +1/-1 row flap redrew it full-width.
-//
-// So Terminal fires forceAgentRepaint once more at the moment the BootScanner
-// says the agent is painting, the earliest instant a SIGWINCH is guaranteed
-// to have a listener. These tests pin that second, post-takeover flap; the
-// subscribe-time flap fires before the agent exists and cannot cover this.
+// A pane's PTY spawns at 24x80 and the first fit corrects it within ~100ms,
+// while the agent's runtime is still starting, so that SIGWINCH is lost and
+// Claude Code lays its first screens out for 80 columns. The boot card drops
+// the moment the backend sees the agent paint (src-tauri/src/boot.rs), and
+// that is when the terminal hands it one +1/-1 row flap it cannot miss.
 
 let emit: ((data: Uint8Array) => void) | null = null;
 const resizeCalls: [string, number, number][] = [];
+const writes: string[] = [];
+const subscribe = vi.fn((_id: string, cb: (d: Uint8Array) => void, _replay: boolean) => {
+  emit = cb;
+  return Promise.resolve(() => {});
+});
 
 vi.mock("../lib/tauri", () => ({
-  subscribePaneOutput: vi.fn((_id: string, cb: (d: Uint8Array) => void) => {
-    emit = cb;
-    return Promise.resolve(() => {});
-  }),
+  subscribePaneOutput: (id: string, cb: (d: Uint8Array) => void, replay: boolean) => subscribe(id, cb, replay),
   onPtyExit: vi.fn(() => Promise.resolve(() => {})),
   resizePty: vi.fn((id: string, rows: number, cols: number) => {
     resizeCalls.push([id, rows, cols]);
@@ -40,7 +35,11 @@ vi.mock("@xterm/xterm", () => {
     rows = 24;
     options: Record<string, unknown> = {};
     buffer = { active: { viewportY: 0, baseY: 0, cursorY: 0 } };
-    write(_data: Uint8Array | string, cb?: () => void) { cb?.(); }
+    modes = { mouseTrackingMode: "none" };
+    write(data: Uint8Array | string, cb?: () => void) {
+      writes.push(typeof data === "string" ? data : new TextDecoder().decode(data));
+      cb?.();
+    }
     loadAddon() {}
     open() {}
     focus() {}
@@ -58,11 +57,9 @@ vi.mock("@xterm/xterm", () => {
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
+vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class { onContextLoss() {} dispose() {} } }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 vi.mock("../lib/terminalLinks", () => ({ registerTerminalLinks: () => ({ dispose() {} }) }));
-vi.mock("../lib/streamPublisher", () => ({
-  publishBytes: vi.fn(), publishDims: vi.fn(), recordDims: vi.fn(),
-}));
 vi.mock("../lib/restoreHistory", () => ({ getRestoreHistory: () => null }));
 vi.mock("../lib/theme", () => ({
   getEffectiveTheme: () => "dark",
@@ -75,28 +72,24 @@ vi.mock("../lib/uiScale", () => ({
 }));
 
 import Terminal from "./Terminal";
-import { AGENT_START_MARKER } from "../lib/agentBoot";
 
 const enc = new TextEncoder();
-/** The agent taking the terminal over, the way Claude Code does: the alternate
- *  screen, then a first frame. */
-const TAKEOVER = enc.encode("\x1b[?1049h" + "Welcome to Claude Code");
 
 async function settle() {
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 }
 
-/** True when some adjacent pair of resize calls is the +1-row flap: the one
- *  signature of forceAgentRepaint, and the only resize an agent cannot read as
- *  "nothing changed". */
+/** True when some adjacent pair of resize calls is the +1-row flap. */
 function flapped(calls: [string, number, number][]): boolean {
   return calls.some(([, rows], i) => i > 0 && calls[i - 1][1] === rows + 1);
 }
 
-describe("agent takeover settles the PTY size", () => {
+describe("a terminal mounted for the thread on screen", () => {
   beforeEach(() => {
     emit = null;
     resizeCalls.length = 0;
+    writes.length = 0;
+    subscribe.mockClear();
     window.requestAnimationFrame = ((cb: FrameRequestCallback) => {
       cb(0); return 0;
     }) as typeof window.requestAnimationFrame;
@@ -106,17 +99,19 @@ describe("agent takeover settles the PTY size", () => {
   });
   afterEach(cleanup);
 
-  it("flaps the size once the agent paints its first frame", async () => {
-    render(<Terminal paneId="p1" focused visible />);
+  it("asks for the output ring, then for a repaint, when it mounts", async () => {
+    render(<Terminal paneId="p1" focused />);
     await settle();
-    // Everything so far (the subscribe-time repaint) predates the agent and is
-    // exactly what cannot fix this bug. Only what follows the takeover counts.
+    expect(subscribe).toHaveBeenCalledWith("p1", expect.any(Function), true);
+    expect(flapped(resizeCalls.filter(([id]) => id === "p1"))).toBe(true);
+  });
+
+  it("flaps the size once the boot card drops", async () => {
+    const view = render(<Terminal paneId="p1" focused booting />);
+    await settle();
     resizeCalls.length = 0;
 
-    act(() => {
-      emit!(enc.encode(AGENT_START_MARKER));
-      emit!(TAKEOVER);
-    });
+    await act(async () => { view.rerender(<Terminal paneId="p1" focused booting={false} />); });
     await settle();
 
     const calls = resizeCalls.filter(([id]) => id === "p1");
@@ -126,12 +121,9 @@ describe("agent takeover settles the PTY size", () => {
   });
 
   it("does not flap again for later output", async () => {
-    render(<Terminal paneId="p1" focused visible />);
+    const view = render(<Terminal paneId="p1" focused booting />);
     await settle();
-    act(() => {
-      emit!(enc.encode(AGENT_START_MARKER));
-      emit!(TAKEOVER);
-    });
+    await act(async () => { view.rerender(<Terminal paneId="p1" focused booting={false} />); });
     await settle();
     resizeCalls.length = 0;
 
@@ -140,21 +132,22 @@ describe("agent takeover settles the PTY size", () => {
     expect(resizeCalls.filter(([id]) => id === "p1")).toEqual([]);
   });
 
-  it("banks the repaint for reveal when the takeover happens hidden", async () => {
-    const view = render(<Terminal paneId="p1" focused visible={false} />);
-    await settle();
-    act(() => {
-      emit!(enc.encode(AGENT_START_MARKER));
-      emit!(TAKEOVER);
-    });
-    // A hidden mount must not drive the PTY, even for the takeover flap.
-    expect(resizeCalls.filter(([id]) => id === "p1")).toEqual([]);
-
-    await act(async () => { view.rerender(<Terminal paneId="p1" focused visible />); });
-    await act(async () => {
-      await new Promise<void>((r) => requestAnimationFrame(() => r()));
-      await Promise.resolve();
-    });
-    expect(flapped(resizeCalls.filter(([id]) => id === "p1"))).toBe(true);
+  it("writes a quiet pane's output at once and batches a stream", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<Terminal paneId="p1" focused />);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+      act(() => emit!(enc.encode("first")));
+      expect(writes).toContain("first");
+      act(() => {
+        emit!(enc.encode("a"));
+        emit!(enc.encode("b"));
+      });
+      expect(writes).not.toContain("ab");
+      act(() => { vi.advanceTimersByTime(40); });
+      expect(writes).toContain("ab");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

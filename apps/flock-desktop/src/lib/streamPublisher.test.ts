@@ -5,10 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // observation point.
 const resizePty = vi.fn(async () => {});
 const sendInput = vi.fn(async () => {});
+// The pane's own output, from the backend: v2 mounts terminals only for the
+// thread on screen, so a stream subscribes to it itself.
+let paneOutput: ((bytes: Uint8Array) => void) | null = null;
+const unsubscribeOutput = vi.fn();
 let authorized = true;
 vi.mock("./tauri", () => ({
   resizePty: (...a: unknown[]) => resizePty(...(a as [])),
   sendInput: (...a: unknown[]) => sendInput(...(a as [])),
+  subscribePaneOutput: async (_paneId: string, onData: (bytes: Uint8Array) => void) => {
+    paneOutput = onData;
+    return unsubscribeOutput;
+  },
 }));
 vi.mock("./terminalRegistry", () => ({ noteInjectedInput: vi.fn() }));
 
@@ -40,7 +48,7 @@ function options(channel: ReturnType<typeof fakeChannel>, allowInput = false) {
   return { controlChannel: channel as never, inputChannel: allowInput ? channel as never : undefined,
     streamId: "stream-1", grantId: "grant-1", allowedInputFrom: "partner", allowInput };
 }
-beforeEach(() => { resizePty.mockClear(); sendInput.mockClear(); authorized = true; });
+beforeEach(() => { resizePty.mockClear(); sendInput.mockClear(); unsubscribeOutput.mockClear(); paneOutput = null; authorized = true; });
 afterEach(() => { stopStream("pane-1"); });
 
 describe("the SIGWINCH bump a joining viewer triggers", () => {
@@ -124,5 +132,29 @@ describe("stream authorization", () => {
     const channel = fakeChannel();
     startStream("pane-1", channel as never, options(channel));
     expect(channel.handlers.has("input")).toBe(false);
+  });
+});
+
+describe("a shared pane whose thread is not on screen", () => {
+  it("still streams its output, read from the backend, and lets go of it on stop", async () => {
+    recordDims("pane-1", 80, 24);
+    const channel = fakeChannel();
+    startStream("pane-1", channel as never, options(channel));
+    await settle(10);
+    expect(paneOutput).toBeTypeOf("function");
+    channel.publish.mockClear();
+    paneOutput!(new TextEncoder().encode("hello"));
+    await settle(90);
+    expect(channel.publish).toHaveBeenCalledWith("data", expect.any(Uint8Array));
+    stopStream("pane-1");
+    expect(unsubscribeOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes its starting size from the app when no terminal has reported one", async () => {
+    const channel = fakeChannel();
+    startStream("pane-2", channel as never, { ...options(channel), dims: { cols: 100, rows: 30 } });
+    await settle(20);
+    expect(channel.publish).toHaveBeenCalledWith("dims", { cols: 100, rows: 30 });
+    stopStream("pane-2");
   });
 });

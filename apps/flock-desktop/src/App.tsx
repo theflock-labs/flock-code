@@ -1,32 +1,24 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from "react";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
-import Sidebar from "./components/Sidebar";
-import PaneArea from "./components/PaneArea";
-import { RailResizer, loadRailWidth, saveRailWidth, SIDEBAR_W, RIGHT_RAIL_W } from "./components/RailResizer";
-import Splash from "./components/Splash";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import CommandBar, { type Command } from "./components/CommandBar";
-import { OPEN_GRAPH_SETUP_EVENT, OPEN_GRAPH_EXPLORER_EVENT, getGraphEnabled, getGraphUrl, onGraphEnabledChange, type GraphExplorerOpenDetail } from "./lib/graphSettings";
+import GitPanel from "./components/GitPanel";
+import ErrorBoundary from "./components/ErrorBoundary";
+import { OPEN_GRAPH_SETUP_EVENT, OPEN_GRAPH_EXPLORER_EVENT, getGraphEnabled, getGraphUrl, onGraphEnabledChange, type GraphExplorerOpenDetail, type GraphExplorerView } from "./lib/graphSettings";
 import { usePtyFileDrop } from "./lib/usePtyFileDrop";
-import { recordUsage } from "./lib/usageStats";
-import { isToastSuppressed } from "./lib/toastSuppression";
 import { onPaletteSummon } from "./lib/paletteBridge";
-import { addBorrowed, appendLeaf, borrowedOwner, remapBorrowed, removeBorrowed, type BorrowedRef } from "./lib/borrowedPanes";
 import { emptyPopoutBook, markPoppedOut as markPoppedOutBook, releasePoppedOut, releasePoppedOutMany, type PopoutOrigin } from "./lib/poppedOut";
-import type { BorrowedPane } from "./components/PaneArea";
-import { useNotifications } from "./lib/useNotifications";
+import type { NotificationInput } from "./lib/useNotifications";
 import { useBudgetAlerts } from "./lib/useBudgetAlerts";
 import type { Budget } from "./lib/budgets";
 import { isWindowActive, onWindowActiveChange } from "./lib/windowActive";
-import { useFlockId } from "./lib/useFlockId";
+import { useFlockIdentity } from "./lib/useFlockId";
 import { useGithubPrs } from "./lib/useGithubPrs";
-import NotificationsBadge, { AttentionPanel, overallCheckStatus } from "./components/NotificationsBadge";
-import { collectAttentionAgents } from "./lib/agentMonitoring";
-import StatusBar from "./components/StatusBar";
+import { overallCheckStatus } from "./lib/checks";
 import ContextMenu, { MenuItem } from "./components/ContextMenu";
-import SessionToasts, { type ToastItem } from "./components/SessionToast";
 import SignInGate from "./components/SignInGate";
 import UpdateBanner from "./components/UpdateBanner";
-import { getEffectiveTheme, THEMES, applyTheme } from "./lib/theme";
+import { getEffectiveTheme, THEMES, applyTheme, onThemeChange } from "./lib/theme";
 import {
   createWorkspace,
   currentBranch,
@@ -36,7 +28,6 @@ import {
   graphMcpConfig,
   getCwd,
   listWorkspaces,
-  reorderWorkspaces as reorderWorkspacesCmd,
   spawnPane,
   debugLog,
   closePane as closePaneCmd,
@@ -81,11 +72,14 @@ import {
   type RepoMap,
   type WorktreeStatus,
   onHookEvent,
+  onAnyAgentStatus,
+  onAnyAgentStarted,
+  hasAgentStarted,
+  latestAgentStatus,
   queueAdd,
   queueList,
   queueLaunch,
-  queueUpdateText,
-  queueDelete,
+  containerStatus,
   type QueueItem,
 } from "./lib/tauri";
 import { copyText } from "./lib/clipboard";
@@ -95,38 +89,22 @@ import { flashPanePill } from "./lib/panePill";
 import { useVoicePushToTalk } from "./lib/useVoicePushToTalk";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
-import {
-  connectPresence,
-  disconnectPresence,
-  updateAgentCount,
-  updateFriends,
-  resyncFriendPresence,
-  type PresenceStatus,
-} from "./lib/presence";
 import { signOut, supabase } from "./lib/flockId";
+import { recordUsage } from "./lib/usageStats";
+import { acceptCopilot, acceptObserve, acceptTask, declineObserve, declineTask, endCopilot, endObserve, initSessions, inviteCopilot, requestObserve, sendTask, shareCopilotPane, syncCopilotLayout, type CopilotPane, type SessionMsg } from "./lib/session";
+import { stopStream } from "./lib/streamPublisher";
+import { isToastSuppressed } from "./lib/toastSuppression";
+import SessionToasts, { type ToastItem } from "./components/SessionToast";
+import TaskDialog from "./components/TaskDialog";
+import { connectPresence, disconnectPresence, resyncFriendPresence, updateAgentCount, updateFriends, type PresenceStatus } from "./lib/presence";
 import { onActiveTeamChange, syncActiveTeamMirror } from "./lib/teamSettings";
-import {
-  initSessions,
-  requestObserve,
-  acceptObserve,
-  declineObserve,
-  endObserve,
-  sendTask,
-  acceptTask,
-  declineTask,
-  inviteCopilot,
-  acceptCopilot,
-  endCopilot,
-  type SessionMsg,
-  type CopilotPane,
-} from "./lib/session";
 import { workspaceColor } from "./lib/palette";
-import { getCarryPatterns, getDeleteBranchWithWorktree, getWorktreesBaseDir, setLastBaseRef } from "./lib/worktreeSettings";
+import { getCarryPatterns, getDeleteBranchWithWorktree, getComposerBranchMode, getFetchBaseDefault, getWorktreesBaseDir, setLastBaseRef } from "./lib/worktreeSettings";
+import { getSecureByDefault } from "./lib/secureSettings";
 import { branchForAgent, normalizePlan, previewBranches, slugify } from "./lib/branchPlan";
 import { cleanupPlan, raceStem, raceTabName } from "./lib/race";
 import { fetchBase } from "./lib/baseFetch";
 import { randomAgentName } from "./lib/agentNames";
-import { hasSeenOnboarding, markOnboardingSeen, markFirstAgentLaunched, OPEN_FEATURE_TOUR_EVENT } from "./lib/onboarding";
 import { split, remove, firstPaneId, buildGridLayout, remapLayoutTree, pruneLayoutTree, allPaneIds, setRatioAtPath, balanceLayoutTree, swapPanes, type SplitPath } from "./lib/layout";
 import { setRestoreHistory } from "./lib/restoreHistory";
 import { stepPaneFontSize, stepUiScale } from "./lib/uiScale";
@@ -135,6 +113,7 @@ import { makeTab, getFocusedTab, findTabForPane } from "./lib/tabs";
 import { AGENT_KINDS, agentLabel } from "./lib/agents";
 import { graphSpawnArgs as graphSpawnArgsFor } from "./lib/graphSpawn";
 import { deliverPromptWhenReady as deliverPrompt } from "./lib/promptDelivery";
+import { broadcastKey, isBroadcasting, toggleBroadcast, useBroadcast, clearBroadcast } from "./lib/broadcastInput";
 import {
   agentCommand,
   buildWorkspaceStateBlob,
@@ -148,35 +127,51 @@ import {
 import type { AgentKind, AgentStatusStr, BranchPlan, Friend, LayoutNode, Pane, PanePhase, PullRequest, RaceContender, RaceState, SplitDir, WindowLayout, Workspace, WorkspaceLaunch, WorkspaceTab } from "./types";
 import { lazyModal, preloadWhenIdle } from "./lib/lazyModal";
 import { useEventCallback } from "./lib/useEventCallback";
+import Sidebar from "./v2/Sidebar";
+import ThreadView from "./v2/ThreadView";
+import ThreadHeader from "./v2/ThreadHeader";
+import Composer, { type StartRequest } from "./v2/Composer";
+import { Toasts, useToasts } from "./v2/Toasts";
+import { PanelLeftIcon, XIcon } from "./v2/icons";
+import type { MenuEntry } from "./v2/Menu";
+import { buildProjects, parseDormant, waitingThreads, type Dormant, type Thread } from "./v2/threads";
+import { getAiTitles, looksLikeTask, titleFromPrompt } from "./v2/titles";
+import { launchArgs, promptArgs, type LaunchOptions } from "./v2/launch";
 
 // Dialogs are code-split: see lib/lazyModal.tsx for why each one carries its
-// own Suspense boundary rather than sharing one near the root. Call sites are
-// unchanged — these are still ordinary components.
+// own Suspense boundary rather than sharing one near the root.
 const BranchFateDialog = lazyModal(() => import("./components/BranchFateDialog"));
 const ConfirmDialog = lazyModal(() => import("./components/ConfirmDialog"));
-const FriendStatsModal = lazyModal(() => import("./components/FriendStatsModal"));
 const GraphExplorer = lazyModal(() => import("./components/GraphExplorer"));
 const GraphOnboardingDialog = lazyModal(() => import("./components/GraphOnboardingDialog"));
-const MyInfoModal = lazyModal(() => import("./components/MyInfoModal"));
 const NewWorkspaceDialog = lazyModal(() => import("./components/NewWorkspaceDialog"));
-const OnboardingDialog = lazyModal(() => import("./components/OnboardingDialog"));
 const PrManagerModal = lazyModal(() => import("./components/PrManagerModal"));
 const QueueCaptureOverlay = lazyModal(() => import("./components/QueueCaptureOverlay"));
 const RaceCompareModal = lazyModal(() => import("./components/RaceCompareModal"));
 const RaceDialog = lazyModal(() => import("./components/RaceDialog"));
 const RenameDialog = lazyModal(() => import("./components/RenameDialog"));
 const SettingsDialog = lazyModal(() => import("./components/SettingsDialog"));
+const MyInfoModal = lazyModal(() => import("./components/MyInfoModal"));
+const FriendStatsModal = lazyModal(() => import("./components/FriendStatsModal"));
 const SpawnLayoutDialog = lazyModal(() => import("./components/SpawnLayoutDialog"));
-const TaskDialog = lazyModal(() => import("./components/TaskDialog"));
 const VoiceOverlay = lazyModal(() => import("./components/VoiceOverlay"));
+
+/** Dialogs that are pages of the main panel: the shell around them stays live
+ *  (shortcuts, the sidebar), and opening one closes whichever page was up. */
+function isPageDialog(kind: string): boolean {
+  return kind === "settings" || kind === "pr-hub" || kind === "my-info" || kind === "friend-stats";
+}
 
 type DialogState =
   | { kind: "none" }
   | { kind: "new-workspace" }
   | { kind: "settings"; tab?: string }
   | { kind: "rename-workspace"; workspaceId: string; current: string }
-  | { kind: "confirm-close"; workspaceId: string; name: string; mode: "close" | "copilot" | "observe" }
+  | { kind: "confirm-close"; workspaceId: string; name: string; mode?: "close" | "copilot" | "observe" }
   | { kind: "confirm-signout" }
+  // Pages of the main panel: your stats and achievements, a friend's.
+  | { kind: "my-info" }
+  | { kind: "friend-stats"; friendId: string }
   // The shared GitHub cockpit — PULL REQUESTS and MERGE QUEUE are tabs of one
   // modal; `view` picks which tab opens first.
   | { kind: "pr-hub"; view: "prs" | "queue"; initialPr?: number }
@@ -191,10 +186,6 @@ type DialogState =
   | { kind: "close-pane-branch"; paneId: string; agentName?: string; branch: string; unmerged: number }
   // Prune of an orphaned worktree paused the same way.
   | { kind: "prune-worktree"; workspaceId: string; wt: WorktreeStatus; unmerged: number }
-  // Friend's usage stats, opened from the friends pane.
-  | { kind: "friend-stats"; friend: Friend }
-  // Your own stats + graph metrics, opened from the profile footer.
-  | { kind: "my-info" }
   // Personal prompt-queue capture overlay (⌘⇧P).
   | { kind: "queue-capture" }
   // Closing a tab that still has agents laid out in it — confirm first.
@@ -214,37 +205,40 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [focusedWsId, setFocusedWsId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>({ kind: "none" });
-  // ⌘K. Deliberately not a member of DialogState: the palette is allowed to be
-  // open over an idle workspace and every other dialog is exclusive, so folding
-  // it into that union would make "no dialog" the wrong precondition for half
-  // the shortcut handler.
+  // ⌘K. Not a member of DialogState: the palette may open over anything.
   const [cmdBarOpen, setCmdBarOpen] = useState(false);
-  // A race merge is in flight. Lives here rather than in the compare modal
-  // because the merge outlives the modal's own state on a re-render, and a
-  // second click while `git merge` is running would try to merge a branch that
-  // is halfway into the checkout.
+  // A race merge is in flight (outlives the compare modal's own state).
   const [mergingRace, setMergingRace] = useState(false);
   const [contextMenu, setContextMenu] = useState<CtxMenuState | null>(null);
-  // Personal prompt queue (queued captures + launched history), loaded once and
-  // spliced in place on each mutation. Persisted server-side in SQLite.
+  // Personal prompt queue (⌘⇧P), sent from ⌘K. Persisted in SQLite.
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
-  // Live mirror so ref-based handlers (openPaneMenu) can read the current queue
-  // without closing over render-scope state — see the memo(PaneArea) invariant.
   const queueItemsRef = useRef<QueueItem[]>([]);
   queueItemsRef.current = queueItems;
-  // Live git snapshot per workspace id (worktrees + branches + who holds
-  // what), refreshed on the same poll as workspace branches. UI-only.
+  // Live git snapshot for the project on screen (worktrees + branches).
   const [repoMaps, setRepoMaps] = useState<Record<string, RepoMap>>({});
   const [cwd, setCwd] = useState<string>("");
-  // Whether the left sidebar is collapsed, so agents can take the full
-  // window width. Persisted across launches like other layout prefs.
+
+  // ─── v2 shell state ────────────────────────────────────────────────
+  // The main panel shows one thing: the thread on screen, the new-agent
+  // composer, or (dialog.kind === "settings") Settings.
+  const [composing, setComposing] = useState<{ projectId: string | null } | null>(null);
+  // Threads of projects not restored yet this launch, read from their saved
+  // state so the sidebar can list them before their agents are started.
+  const [dormant, setDormant] = useState<Record<string, Dormant>>({});
+  // A dormant thread that was clicked: restore lands on this tab.
+  const pendingTabRef = useRef(new Map<string, string>());
+  // The changes panel beside the thread (git status, worktrees, commits).
+  const [changesOpen, setChangesOpen] = useState<boolean>(() => localStorage.getItem("flock:v2-changes") === "1");
+  const toggleChanges = () =>
+    setChangesOpen((prev) => {
+      try { localStorage.setItem("flock:v2-changes", prev ? "0" : "1"); } catch { /* a preference */ }
+      return !prev;
+    });
+
+  // Whether the sidebar is hidden, so agents can take the whole window.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
     () => localStorage.getItem("flock:sidebar-collapsed") === "1",
   );
-  // Which sidebar tab is showing. Lifted out of Sidebar so starting a co-pilot
-  // session can snap back to Home and surface the new shared workspace instead
-  // of stranding the user on Friends.
-  const [sidebarTab, setSidebarTab] = useState<"workspaces" | "friends">("workspaces");
   const toggleSidebarCollapsed = () => {
     setSidebarCollapsed((prev) => {
       const next = !prev;
@@ -252,72 +246,41 @@ export default function App() {
       return next;
     });
   };
-  // Right-rail collapse — mirror of the sidebar, lifted here (rather than owned
-  // inside Sidebar) so the pane-header can render the toggle and this component
-  // can flag the <aside> below. `rightRailHasContent` is reported up by Sidebar
-  // when sections are docked right; the toggle only shows when there's content.
-  const [rightRailCollapsed, setRightRailCollapsed] = useState<boolean>(
-    () => localStorage.getItem("flock:right-rail-collapsed") === "1",
-  );
-  const toggleRightRailCollapsed = () => {
-    setRightRailCollapsed((prev) => {
-      const next = !prev;
-      localStorage.setItem("flock:right-rail-collapsed", next ? "1" : "0");
-      return next;
-    });
-  };
-  const [rightRailHasContent, setRightRailHasContent] = useState(false);
-  // Rail widths, dragged at the seams (RailResizer) and persisted per rail.
-  // Only the committed value lives here — a drag in progress writes the CSS
-  // variable directly, so moving one edge doesn't re-render the whole app.
-  const [sidebarWidth, setSidebarWidth] = useState(() => loadRailWidth(SIDEBAR_W));
-  const [rightRailWidth, setRightRailWidth] = useState(() => loadRailWidth(RIGHT_RAIL_W));
-  const commitSidebarWidth = useCallback((w: number) => {
-    setSidebarWidth(w);
-    saveRailWidth(SIDEBAR_W, w);
-  }, []);
-  const commitRightRailWidth = useCallback((w: number) => {
-    setRightRailWidth(w);
-    saveRailWidth(RIGHT_RAIL_W, w);
-  }, []);
-  // The sidebar's toggle lives in the pane-header, which only exists once a
-  // workspace does — so a collapsed sidebar plus an empty Splash would have no
-  // way back. Treat the sidebar as expanded whenever there's nothing to reclaim
-  // space for; the stored preference still applies once work is open.
+  // With nothing open there is nothing to make room for.
   const effectiveSidebarCollapsed = sidebarCollapsed && workspaces.length > 0;
-  // The four dialogs that answer a reflex rather than a decision: ⌘K, a rename,
-  // a confirm, and push-to-talk. Code-splitting them is still right — they are
-  // dead weight at launch — but a chunk fetch inside the keystroke that opens
-  // them is the exact stutter this split exists to remove, so they are warmed
-  // in the first idle window instead. Everything else loads on open, where a
-  // few milliseconds behind a deliberate click is invisible.
+
+  // Reflex dialogs are warmed in the first idle window rather than fetched in
+  // the keystroke that opens them.
   useEffect(() => {
-    preloadWhenIdle([RenameDialog, ConfirmDialog, VoiceOverlay, TaskDialog]);
+    preloadWhenIdle([RenameDialog, ConfirmDialog, VoiceOverlay]);
   }, []);
 
-  // Drive --sidebar-w directly (rather than a fixed width on .collapsed)
-  // so every other element positioned off it — the voice bar, popout
-  // offsets — stays aligned without each needing its own collapsed variant.
-  useEffect(() => {
-    document.documentElement.style.setProperty(
-      "--sidebar-w",
-      effectiveSidebarCollapsed ? "0px" : `${Math.round(sidebarWidth)}px`,
-    );
-  }, [effectiveSidebarCollapsed, sidebarWidth]);
-  useEffect(() => {
-    document.documentElement.style.setProperty("--right-rail-w", `${Math.round(rightRailWidth)}px`);
-  }, [rightRailWidth]);
-  // Notification log + the pusher every domain watcher below feeds into.
-  const { notifications, pushNotification } = useNotifications();
-  /** One-liner for "this user action failed" — handed to child components that
-   * have no business knowing the notification shape. */
+  // Events worth interrupting for become toasts; everything else (an agent
+  // started, finished, was prompted) is already on screen as its row's dot.
+  const { toasts, push: pushToast, dismiss: dismissToast } = useToasts();
+  const focusPaneRefForToasts = useRef<(wsId: string, paneId: string) => void>(() => {});
+  const pushNotification = useCallback((n: NotificationInput) => {
+    if (!n.priority && n.status !== "failure" && n.status !== "success") return;
+    if (n.status === "success" && !n.priority && n.category === "agent") return;
+    const action = n.workspaceId && n.paneId
+      ? { label: "Open", run: () => focusPaneRefForToasts.current(n.workspaceId!, n.paneId!) }
+      : n.url
+        ? { label: "Open", run: () => { openUrl(n.url!).catch(console.error); } }
+        : undefined;
+    pushToast({
+      kind: n.status === "failure" ? "failure" : n.status === "success" ? "success" : "info",
+      text: n.text,
+      detail: n.detail,
+      action,
+      key: n.paneId ? `pane:${n.paneId}` : undefined,
+    });
+  }, [pushToast]);
+  /** One-liner for "this user action failed". */
   const notifyFailure = useCallback((text: string) => {
     pushNotification({ status: "failure", category: "agent", priority: true, text });
   }, [pushNotification]);
 
-  /** Open a directory in the user's terminal emulator (the same preference the
-   * header button uses). Failures are loud — nothing visible happens on
-   * success except a window appearing somewhere else. */
+  /** Open a directory in the user's terminal emulator. */
   const openTerminalHere = useCallback(async (dir: string) => {
     try {
       const app = await openExternalTerminal(dir);
@@ -326,198 +289,77 @@ export default function App() {
       notifyFailure(`Couldn't open a terminal: ${e instanceof Error ? e.message : e}`);
     }
   }, [notifyFailure]);
-  // flock ID session: profile, friend graph, and the social-stats sync.
-  const {
-    idProfile, idChecked, friends, setFriends,
-    refreshIdFriends, addIdFriend, acceptIdFriend, removeIdFriend,
-  } = useFlockId(pushNotification);
-  // Number of the PR currently being checked out + reviewed, if any — drives
-  // the loading spinner on its "review" button while checkout/spawn/prompt
-  // are in flight.
+
+  // flock ID: the signed-in profile (the app gates on it).
+  const { idProfile, idChecked, refreshIdentity, friends, setFriends, addFriend, acceptFriend, removeFriend } = useFlockIdentity(pushNotification);
+
+  // Number of the PR being checked out + reviewed, if any.
   const [reviewingPr, setReviewingPr] = useState<number | null>(null);
-  // Live mirror of reviewingPr so the auto-review FIFO drain (async, spans
-  // renders) can wait for the in-flight review to settle without closing over
-  // a stale render's state.
   const reviewingPrRef = useRef<number | null>(null);
   reviewingPrRef.current = reviewingPr;
   // ─── PR watch / auto-review / merge queue ──────────────────────────
-  // Open PRs across the *watched* repos (Settings → GitHub → Pull Requests),
-  // merged into the modal's list alongside the focused workspace's PRs.
   const [watchedPrs, setWatchedPrs] = useState<PullRequest[]>([]);
-  // Stored agent-review summaries, keyed "repo#number" — loaded once at
-  // startup and refreshed each time a review pane finishes summarizing.
   const [prSummaries, setPrSummaries] = useState<Record<string, PrReviewSummary>>({});
-  // The merge queue, refreshed when the PR modal opens and re-evaluated
-  // (mergeQueueTick) on the watch-poll cadence while non-empty.
   const [mergeQueue, setMergeQueue] = useState<MergeQueueItem[]>([]);
   const mergeQueueRef = useRef<MergeQueueItem[]>([]);
-  // Last-loaded watch config; re-read on every poll so a settings change
-  // applies without any wiring between the dialog and this component.
   const prWatchConfigRef = useRef<PrWatchConfig | null>(null);
-  // FIFO of freshly-detected PRs awaiting an auto-review, drained one at a
-  // time through reviewPr (which only ever runs one review at once).
   const autoReviewQueueRef = useRef<PullRequest[]>([]);
   const autoReviewDrainingRef = useRef(false);
-  // Panes spawned by reviewPr → the PR they're reviewing, so a finished
-  // review agent's terminal output can be summarized against the right PR.
   const reviewPanesRef = useRef<Map<string, { repo: string; number: number }>>(new Map());
-  // Per-review-pane status tracking for the summarize trigger: last seen
-  // status (to detect the working → idle/awaiting_input edge) and which panes
-  // have already summarized this working-streak (re-armed on "working").
   const reviewPaneStatusRef = useRef<Map<string, AgentStatusStr>>(new Map());
   const summarizedPanesRef = useRef<Set<string>>(new Set());
-  // repo_path → "owner/repo" slug (null = no GitHub origin), so the
-  // auto-review drain can match open workspaces to a watched PR's repo
-  // without re-running `git remote` on every poll.
   const repoSlugCacheRef = useRef<Map<string, string | null>>(new Map());
-  // Health of our own Ably presence connection, shown as a light on the profile.
-  const [presenceStatus, setPresenceStatus] = useState<PresenceStatus>("connecting");
-  // Last-seen presence per friend handle + a "primed" flag, so we can toast
-  // real online/offline *transitions* without spamming: presence backfill and
-  // the 20s friend-list resync both re-emit "online" for already-online
-  // friends, and the initial connect emits a burst for everyone already on.
-  const presencePrevRef = useRef<Map<string, "online" | "offline">>(new Map());
-  const presencePrimedRef = useRef(false);
-  const [sessionToasts, setSessionToasts] = useState<ToastItem[]>([]);
-  // Always points at the latest handleSessionMsg. initSessions subscribes to
-  // Ably once (at presence connect), so without this the handler would keep a
-  // stale closure over the first render's empty friends/workspaces — making
-  // an incoming observe/task/copilot "Accept" a silent no-op.
-  const handleSessionMsgRef = useRef<(m: SessionMsg) => void>(() => {});
-  const [showOnboarding, setShowOnboarding] = useState(() => !hasSeenOnboarding());
-  const [onboardingMode, setOnboardingMode] = useState<"intro" | "tour">("intro");
-  useEffect(() => {
-    const open = () => { setDialog({ kind: "none" }); setOnboardingMode("tour"); setShowOnboarding(true); };
-    window.addEventListener(OPEN_FEATURE_TOUR_EVENT, open);
-    return () => window.removeEventListener(OPEN_FEATURE_TOUR_EVENT, open);
-  }, []);
-  const [attentionPinned, setAttentionPinned] = useState(() => {
-    try { return localStorage.getItem("flock:attention-pinned") === "1"; } catch { return false; }
-  });
-  const toggleAttentionPin = () => setAttentionPinned((previous) => {
-    try { localStorage.setItem("flock:attention-pinned", previous ? "0" : "1"); } catch { /* optional UI preference */ }
-    return !previous;
-  });
+
   const [showGraphSetup, setShowGraphSetup] = useState(false);
-  const [taskDialog, setTaskDialog] = useState<{ login: string; windowId: string; avatar?: string } | null>(null);
-
-  // The flock Graph wizard opens from Settings and from the onboarding
-  // tutorial — both dispatch this event rather than prop-drilling a setter
-  // through the (busy) SettingsDialog surface.
-  useEffect(() => {
-    const open = () => setShowGraphSetup(true);
-    window.addEventListener(OPEN_GRAPH_SETUP_EVENT, open);
-    return () => window.removeEventListener(OPEN_GRAPH_SETUP_EVENT, open);
-  }, []);
-
-  // Full-area Graph Explorer, opened from the sidebar Graph card.
+  // Whether the shared graph is set up, for the sidebar's Graph row.
+  const [graphOn, setGraphOn] = useState(getGraphEnabled);
+  useEffect(() => onGraphEnabledChange(setGraphOn), []);
+  // The graph page (sidebar, ⌘K, Settings), on the view it was asked for.
   const [showGraphExplorer, setShowGraphExplorer] = useState(false);
   const [graphExplorerWorkspaceId, setGraphExplorerWorkspaceId] = useState<string | null>(null);
+  const [graphExplorerView, setGraphExplorerView] = useState<GraphExplorerView | undefined>(undefined);
+  // Pages replace each other: Settings, Pull requests, Graph and its setup
+  // share the main panel, so opening one closes whichever was up.
+  const closePages = useCallback(() => {
+    setDialog((d) => (isPageDialog(d.kind) ? { kind: "none" } : d));
+    setShowGraphExplorer(false);
+    setShowGraphSetup(false);
+  }, []);
   useEffect(() => {
-    const open = (event: Event) => {
-      const detail = (event as CustomEvent<GraphExplorerOpenDetail>).detail;
-      setGraphExplorerWorkspaceId(detail && typeof detail === "object" && "workspaceId" in detail ? detail.workspaceId : focusedWsIdRef.current);
+    const openSetup = () => {
+      closePages();
+      setShowGraphSetup(true);
+    };
+    const openExplorer = (event: Event) => {
+      const detail = (event as CustomEvent<GraphExplorerOpenDetail | null>).detail;
+      closePages();
+      setGraphExplorerWorkspaceId(detail && typeof detail === "object" && "workspaceId" in detail ? detail.workspaceId ?? null : focusedWsIdRef.current);
+      setGraphExplorerView(detail && typeof detail === "object" ? detail.view : undefined);
       setShowGraphExplorer(true);
     };
-    window.addEventListener(OPEN_GRAPH_EXPLORER_EVENT, open);
-    return () => window.removeEventListener(OPEN_GRAPH_EXPLORER_EVENT, open);
-  }, []);
-  // Tracks which workspace IDs have already had their panes restored so we
-  // don't re-spawn on every focus change.
+    window.addEventListener(OPEN_GRAPH_SETUP_EVENT, openSetup);
+    window.addEventListener(OPEN_GRAPH_EXPLORER_EVENT, openExplorer);
+    return () => {
+      window.removeEventListener(OPEN_GRAPH_SETUP_EVENT, openSetup);
+      window.removeEventListener(OPEN_GRAPH_EXPLORER_EVENT, openExplorer);
+    };
+  }, [closePages]);
+  // Which workspace IDs have had their panes restored this launch.
   const restoredWsIds = useRef(new Set<string>());
-  // A workspace is hydrated once restore has written its live panes, or as
-  // soon as it is created this session. saveWorkspace no-ops on anything
-  // else: unrestored shells are empty, and writing one would wipe the blob.
+  // Hydrated once restore has written its live panes, or created this session.
+  // saveWorkspace no-ops on anything else: an unrestored shell is empty, and
+  // writing it would wipe the saved state.
   const hydratedWsIds = useRef(new Set<string>());
-  // Restore finished with zero live panes. The blob stays the source of
-  // truth until a later spawn succeeds; saveWorkspace then hydrates.
+  // Restore finished with zero live panes; the blob stays the truth until a
+  // later spawn succeeds.
   const emptyRestoreIds = useRef(new Set<string>());
-  // Budget set this session, including on a workspace restore has not finished.
-  // Restore must not write parsed.budget over it.
+  // Budget set this session, possibly before restore finished.
   const budgetTouchedIds = useRef(new Set<string>());
-  /** Every saved pane id seen this launch, mapped to the id it was respawned
-   * with, across ALL workspaces. The per-workspace map inside a restore can
-   * only resolve that workspace's own panes, and a borrowed leaf's id belongs
-   * to a different one whose restore is lazy and may not have run. */
-  const restoredIdsRef = useRef(new Map<string, string>());
-  /** saveWorkspace is declared below restoreWorkspaceById, and the loan
-   * re-attach sweep at the end of a restore has to persist what it resolved.
-   * Same deferred-ref shape as reviewPrRef. */
-  const saveWorkspaceRef = useRef<(ws: Workspace) => void>(() => {});
-  // Ref mirroring workspaces — used by callbacks that need the latest array
-  // without re-binding on every workspace change.
   const workspacesRef = useRef<Workspace[]>([]);
-
-  /** For each workspace, the panes its tabs display but do not own, resolved
-   *  against their real owners.
-   *
-   *  Derived from the `borrowed` ref lists rather than by scanning every tab's
-   *  leaves for unknown ids: an id with no pane behind it is a ghost leaf that
-   *  restore has not healed yet, and treating one as a loan would give it a
-   *  tile that never resolves. A ref whose owner or pane is gone simply drops
-   *  out here, which is what makes deleting the lending workspace leave the
-   *  borrowing tab intact instead of taking it down.
-   *
-   *  Memoised on `workspaces` alone, so a status change in the LENDING
-   *  workspace produces a new map and reaches the borrowing tile through
-   *  PaneArea's comparator. Almost always empty. */
-  const borrowedByWorkspace = useMemo(() => {
-    const byId = new Map(workspaces.map((w) => [w.id, w]));
-    const out = new Map<string, Map<string, BorrowedPane>>();
-    for (const ws of workspaces) {
-      let mine: Map<string, BorrowedPane> | undefined;
-      for (const tab of ws.tabs) {
-        for (const ref of tab.borrowed ?? []) {
-          const owner = byId.get(ref.workspaceId);
-          const pane = owner?.panes.find((p) => p.id === ref.paneId);
-          if (!owner || !pane) continue;
-          (mine ??= new Map()).set(ref.paneId, {
-            pane,
-            workspaceId: owner.id,
-            workspaceName: owner.name,
-            accentColor: owner.accentColor,
-            secure: !!owner.secure,
-          });
-        }
-      }
-      if (mine) out.set(ws.id, mine);
-    }
-    return out;
-  }, [workspaces]);
-  // Cached graph MCP sidecar path, so spawns can auto-register it without a
-  // per-spawn round trip. Refreshed on mount and whenever the graph toggle or
-  // URL changes. The URL itself is read live via getGraphUrl() at spawn — a
-  // cache filled once on mount left new agents writing to the previous
-  // database after Settings pointed at the team graph.
+  // Cached graph MCP sidecar path, so spawns can register it without a round trip.
   const mcpConfigRef = useRef<{ mcp_path: string | null; kg_url: string } | null>(null);
-  // Same for the focused workspace: session-toast accept handlers must
-  // resolve their target when the user clicks, not when the toast arrived.
   const focusedWsIdRef = useRef<string | null>(null);
   focusedWsIdRef.current = focusedWsId;
-
-  // Owner-side ledger of live observe shares: session_id → the pane being
-  // streamed. Without it, an observer closing their side would leave this
-  // side publishing PTY bytes to Ably forever.
-  const observeSharesRef = useRef(new Map<string, string>());
-
-  /** The pane a friend's observe/task should land on, resolved at
-   * accept time: the focused local (non-remote) pane of the focused
-   * workspace, else its first local pane, else the first local pane
-   * anywhere. Null means no agent is running at all. */
-  const resolveShareTarget = useCallback((): { ws: Workspace; pane: Workspace["panes"][number] } | null => {
-    const all = workspacesRef.current;
-    const ordered = [
-      ...all.filter((w) => w.id === focusedWsIdRef.current),
-      ...all.filter((w) => w.id !== focusedWsIdRef.current),
-    ];
-    for (const ws of ordered) {
-      const local = ws.panes.filter((p) => !p.streamId);
-      if (local.length === 0) continue;
-      const focused = local.find((p) => p.id === getFocusedTab(ws).focusedPaneId);
-      return { ws, pane: focused ?? local[0] };
-    }
-    return null;
-  }, []);
 
   // ─── Restore a single workspace's panes on demand ──────────────────
 
@@ -532,6 +374,12 @@ export default function App() {
       if (!raw) {
         // No blob: nothing to clobber. Mark hydrated so later activity can persist.
         hydratedWsIds.current.add(workspaceId);
+        setDormant((prev) => {
+          if (!(workspaceId in prev)) return prev;
+          const next = { ...prev };
+          delete next[workspaceId];
+          return next;
+        });
         return;
       }
       parsed = JSON.parse(raw);
@@ -570,7 +418,7 @@ export default function App() {
 
     // Saved state predating tabs has a single top-level layoutTree instead
     // of parsed.tabs — wrap it into one tab so old saves still restore.
-    type SavedTab = { id: string; name: string; renamed?: boolean; layoutTree: LayoutNode | null; focusedPaneId: string | null; zoomedPaneId: string | null; race?: RaceState; borrowed?: BorrowedRef[] };
+    type SavedTab = { id: string; name: string; renamed?: boolean; layoutTree: LayoutNode | null; focusedPaneId: string | null; zoomedPaneId: string | null; race?: RaceState };
     const savedTabs: SavedTab[] = parsed.tabs ?? (
       parsed.layoutTree !== undefined
         ? [{ id: "tab-legacy", name: "1", layoutTree: parsed.layoutTree ?? null, focusedPaneId: parsed.focusedPaneId ?? null, zoomedPaneId: parsed.zoomedPaneId ?? null }]
@@ -583,6 +431,12 @@ export default function App() {
         const nextBudget = budgetTouchedIds.current.has(workspaceId) ? ws.budget : budget;
         return { ...ws, agentKind, useWorktrees, branchPlan, secure, budget: nextBudget, ...flags };
       }));
+      setDormant((prev) => {
+        if (!(workspaceId in prev)) return prev;
+        const next = { ...prev };
+        delete next[workspaceId];
+        return next;
+      });
       hydratedWsIds.current.add(workspaceId);
       return;
     }
@@ -673,11 +527,10 @@ export default function App() {
         // path uses is unverified — a restored codex pane keeps the argv that
         // is known to resume correctly rather than gaining tools it might not
         // start with.
-        if (sp.cmd === "claude") args = [...args, ...(await graphArgs)];
+        if (sp.cmd === "claude") args = [...args, ...launchArgs("claude", sp.launch), ...(await graphArgs)];
 
         const agentName = agentNames[i];
         const pane = await spawnPane({ workspaceId, cmd: sp.cmd, args, cwd: sp.cwd, rows: 24, cols: 80, agentName, secure, graphEnabled: getGraphEnabled() });
-        markFirstAgentLaunched();
 
         // Scrollback (feature A): hand the freshly spawned terminal its
         // pre-restart history to paint before going live, keyed by the new
@@ -705,13 +558,11 @@ export default function App() {
             intentRaw: sp.intentRaw,
             promptHistory: sp.promptHistory,
             model: sp.model,
-            // A restored pane boots exactly like a fresh one — same login
-            // shell, same echoed `eval "$FLOCK_LAUNCH"`, same wait for the
-            // agent to paint — so it needs the same card over it. Without this
-            // the one path every user hits on every launch was the one path
-            // that showed the plumbing, on top of the restored scrollback
-            // painted beneath it.
-            booting: true,
+            launch: sp.launch,
+            // A restored pane boots exactly like a fresh one, so it gets the
+            // same card — unless the backend already saw its agent paint (the
+            // event can beat the whole batch into state).
+            booting: !hasAgentStarted(pane.id),
           },
         };
       } catch (e) { console.error("restore pane failed", e); return null; }
@@ -725,12 +576,6 @@ export default function App() {
     for (const r of restored) {
       if (!r) continue;
       idMap.set(r.savedId, r.pane.id);
-      // The same mapping, accumulated across every workspace's restore. A
-      // borrowed leaf's old id was minted by ANOTHER workspace, so the local
-      // map can never resolve it; restore is lazy, so that workspace may not
-      // even have woken up yet. This is what lets a loan be resolved later
-      // instead of being pruned as a ghost and lost for good.
-      restoredIdsRef.current.set(r.savedId, r.pane.id);
       livePanes.push(r.pane);
     }
 
@@ -744,29 +589,13 @@ export default function App() {
     const liveIds = new Set(livePanes.map((p) => p.id));
     const tabs: WorkspaceTab[] = savedTabs.length > 0
       ? savedTabs.map((st) => {
-          // Remapped through the union of every restore so far, not just this
-          // workspace's own idMap: a borrowed leaf's saved id was minted by
-          // its LENDER, so when the lender restored first, only the global map
-          // can rename that leaf to the pane's new id. Remapping with the
-          // local map alone left the leaf on its old id while the prune's
-          // `visible` set held the new one — the resolved loan was pruned as a
-          // ghost, and the borrowed tile silently vanished on every launch
-          // where the lender came up before the borrower. Local entries are in
-          // both maps, so the union changes nothing for the tab's own panes.
-          const ids = new Map([...restoredIdsRef.current, ...idMap]);
-          const remapped = st.layoutTree && ids.size > 0 ? remapLayoutTree(st.layoutTree, ids) : null;
+          const remapped = st.layoutTree && idMap.size > 0 ? remapLayoutTree(st.layoutTree, idMap) : null;
           // Prune ghost leaves — saved layouts written while a stale-tree
-          // race was live can reference panes with no record behind them.
-          // remapLayoutTree keeps unknown IDs verbatim, so without this the
-          // ghosts render as blank uncloseable panes forever.
-          // Loans, resolved against every workspace restored so far. What
-          // resolves is spared from the prune below; what does not is carried
-          // forward untouched and re-attached by the sweep after its lender
-          // comes up. Neither half may be dropped here.
-          const { resolved, pending } = remapBorrowed(st.borrowed, restoredIdsRef.current);
-          const visible = new Set(liveIds);
-          for (const r of resolved) visible.add(r.paneId);
-          const layoutTree = remapped ? pruneLayoutTree(remapped, visible) : null;
+          // race was live can reference panes with no record behind them, and
+          // a layout that borrowed another workspace's pane (v1) names a pane
+          // this workspace never had. remapLayoutTree keeps unknown ids
+          // verbatim, so without this they would render as blank tiles.
+          const layoutTree = remapped ? pruneLayoutTree(remapped, liveIds) : null;
           // Fall back to the tab's own first pane whenever the saved focus
           // is missing or its pane failed to restore — leaving focusedPaneId
           // null here (even though the tab has a live pane) is what makes
@@ -785,7 +614,6 @@ export default function App() {
             layoutTree,
             focusedPaneId: layoutTree ? (mappedFocus ?? firstPaneId(layoutTree)) : null,
             zoomedPaneId: st.zoomedPaneId ? (idMap.get(st.zoomedPaneId) ?? null) : null,
-            borrowed: [...resolved, ...pending],
           };
         })
       : [makeTab("1")];
@@ -806,15 +634,37 @@ export default function App() {
       t.focusedPaneId = t.focusedPaneId ?? pane.id;
     }
 
-    const focusedTabId: string = parsed.focusedTabId && tabs.some((t) => t.id === parsed.focusedTabId)
-      ? parsed.focusedTabId
-      : tabs[0].id;
+    // A thread clicked in the sidebar before its project woke up wins over the
+    // tab that was in front when the state was saved.
+    const wanted = pendingTabRef.current.get(workspaceId);
+    pendingTabRef.current.delete(workspaceId);
+    const focusedTabId: string = wanted && tabs.some((t) => t.id === wanted)
+      ? wanted
+      : parsed.focusedTabId && tabs.some((t) => t.id === parsed.focusedTabId)
+        ? parsed.focusedTabId
+        : tabs[0].id;
 
     setWorkspaces((prev) => prev.map((ws) => {
       if (ws.id !== workspaceId) return ws;
       const nextBudget = budgetTouchedIds.current.has(workspaceId) ? ws.budget : budget;
-      return { ...ws, agentKind, useWorktrees, branchPlan, secure, budget: nextBudget, ...flags, panes: livePanes, tabs, focusedTabId };
+      // Booting and status are settled here, as the panes enter state, not when
+      // each was spawned: the backend's events for the first panes routinely
+      // arrive while the rest of the batch is still spawning, before any of
+      // them is in state to receive it.
+      const panes = livePanes.map((p) => ({
+        ...p,
+        booting: p.booting && !hasAgentStarted(p.id),
+        status: latestAgentStatus(p.id) ?? p.status,
+      }));
+      return { ...ws, agentKind, useWorktrees, branchPlan, secure, budget: nextBudget, ...flags, panes, tabs, focusedTabId };
     }));
+    // Awake now: the sidebar lists its live threads instead of the saved ones.
+    setDormant((prev) => {
+      if (!(workspaceId in prev)) return prev;
+      const next = { ...prev };
+      delete next[workspaceId];
+      return next;
+    });
     // Only after live panes are in state. A failed spawnBatch leaves the
     // blob alone so a later save cannot write the empty shell over it — and,
     // like an unreadable blob above, says so rather than going quiet: a
@@ -831,37 +681,6 @@ export default function App() {
         text: `None of the ${savedPanes.length} saved agents in ${workspacesRef.current.find((w) => w.id === workspaceId)?.name ?? "a workspace"} could be started. Its saved layout is left untouched — changes won't be saved until one starts.`,
       });
     }
-
-    // This workspace's panes now have ids, so a loan some OTHER workspace was
-    // still waiting on can finally be resolved. Restore is lazy and ordered by
-    // whatever the user focuses, so the lender routinely comes up after the
-    // borrower and this is the only pass that can close that gap.
-    //
-    // The leaf is appended rather than restored to its saved position: its
-    // place in the tree was pruned when the loan could not be resolved, and
-    // reserving a hole for a pane that might never arrive would leave a dead
-    // rectangle in the grid on every launch where the lender was deleted.
-    setWorkspaces((prev) => {
-      let touched = false;
-      const next = prev.map((ws) => {
-        if (ws.id === workspaceId) return ws;
-        if (!ws.tabs.some((t) => (t.borrowed ?? []).length > 0)) return ws;
-        let wsTouched = false;
-        const tabs = ws.tabs.map((t) => {
-          const { resolved, pending } = remapBorrowed(t.borrowed, restoredIdsRef.current);
-          if (resolved.length === 0) return t;
-          let tree = t.layoutTree;
-          for (const r of resolved) tree = appendLeaf(tree, r.paneId);
-          wsTouched = true;
-          return { ...t, layoutTree: tree, borrowed: [...resolved, ...pending] };
-        });
-        if (!wsTouched) return ws;
-        touched = true;
-        return { ...ws, tabs };
-      });
-      if (touched) for (const ws of next) if (ws.tabs.some((t) => (t.borrowed ?? []).length > 0)) saveWorkspaceRef.current(ws);
-      return touched ? next : prev;
-    });
   }, []);
 
   // Restore when the focused workspace changes (lazy, on-demand).
@@ -877,40 +696,20 @@ export default function App() {
   workspacesRef.current = workspaces;
 
   const focusedWs = workspaces.find((w) => w.id === focusedWsId);
-  const focusedRepoPath = focusedWs && !focusedWs.copilot && !focusedWs.observe ? focusedWs.repo_path : null;
+  const focusedRepoPath = focusedWs ? focusedWs.repo_path : null;
 
-  // Every ordered rendering of the workspace list (the sidebar switcher is
-  // the only one — the PaneArea stack and status bar are order-independent)
-  // goes through this derived view: PR-review workspaces pinned on top,
-  // everything else in stored order. The state array itself is never
-  // re-sorted, so persistence order stays stable.
+  // The sidebar's order: PR-review workspaces pinned on top, everything else
+  // in stored order. The state array itself is never re-sorted, so
+  // persistence order stays stable.
   const displayWorkspaces = useMemo(() => orderForDisplay(workspaces), [workspaces]);
 
   // GitHub connection + open PRs + CI checks for the focused repo (all
   // polling and the integration toggle live in the hook).
   const { ghStatus, pullRequests, prError, wsChecks, refreshGh } = useGithubPrs(focusedRepoPath);
 
-  // Agents currently blocked on the user (live status, not logged events) —
-  // the notification pill reflects this over a stale "is working" event, since
-  // "needs input" is what the user actually has to act on right now.
-  const attentionAgents = useMemo(() => collectAttentionAgents(workspaces), [workspaces]);
-
-  // Live tally behind the notification pill's fallback headline, so it states
-  // what is true now rather than replaying the last thing that happened.
-  const agentTally = workspaces.reduce(
-    (acc, w) => {
-      for (const p of w.panes) {
-        acc.total += 1;
-        if (p.status === "working") acc.working += 1;
-      }
-      return acc;
-    },
-    { working: 0, total: 0 },
-  );
-
   // ─── Notification watchers ───────────────────────────────────────────
-  // The log itself lives in useNotifications; these effects decide when a
-  // domain event (PR checks, new PRs, agent hooks) becomes a notification.
+  // These decide when a domain event (PR checks, new PRs, an agent asking for
+  // you) is worth a toast.
 
   // Log a notification whenever the focused PR's overall check status
   // actually changes (not on every poll — only on transitions).
@@ -960,42 +759,16 @@ export default function App() {
     const newPrs = pullRequests.filter((p) => !seenPrs.current.nums!.has(p.number));
     seenPrs.current.nums = current;
     if (newPrs.length === 0) return;
-    for (const pr of newPrs) {
-      pushNotification({
-        status: "info",
-        category: "pr",
-        priority: true,
-        text: `PR #${pr.number} opened — ${pr.title}`,
-        url: `https://github.com/${pr.repo}/pull/${pr.number}`,
+    for (const pr of newPrs.slice(0, 3)) {
+      pushToast({
+        kind: "info",
+        text: `PR #${pr.number} opened`,
+        detail: pr.title,
+        action: { label: "Review with an agent", run: () => void reviewPrRef.current(pr) },
+        key: `pr:${pr.repo}#${pr.number}`,
       });
     }
-    const tabs = newPrs.map((pr) => ({
-      label: `#${pr.number}`,
-      title: pr.title,
-      author: pr.author,
-      onAccept: () => reviewPrRef.current(pr),
-    }));
-    // Notifications for each new PR were pushed above and are unaffected; this
-    // only decides whether one also interrupts.
-    if (isToastSuppressed("pr_opened")) return;
-    setSessionToasts((prev) => {
-      const existing = prev.find((t) => t.kind === "pr_opened");
-      if (existing) {
-        const have = new Set((existing.tabs ?? []).map((t) => t.label));
-        const merged = [...(existing.tabs ?? []), ...tabs.filter((t) => !have.has(t.label))];
-        return prev.map((t) => (t === existing ? { ...t, tabs: merged } : t));
-      }
-      return [...prev, {
-        id: `pr-opened-${Date.now()}`,
-        kind: "pr_opened" as const,
-        fromLogin: newPrs[0].author,
-        sessionId: "",
-        tabs,
-        onAccept: () => {},
-        onDecline: () => {},
-      }];
-    });
-  }, [pullRequests, focusedRepoPath, pushNotification]);
+  }, [pullRequests, focusedRepoPath, pushToast]);
 
   // Log a notification for each agent-hook event (Claude Code / Codex —
   // see Settings → Integrations). No URL since these aren't web resources —
@@ -1021,25 +794,18 @@ export default function App() {
       const on = pane.intent?.trim();
       const intentDetail = on ? (on.length > 80 ? `${on.slice(0, 79)}…` : on) : undefined;
       const place = [ws.name, hookAgentLabel].filter(Boolean).join(" · ");
+      // An agent in the thread on screen is already in front of you.
+      const onScreen = ws.id === focusedWsIdRef.current && !!findTabForPane(ws, pane.id)
+        && findTabForPane(ws, pane.id)?.id === ws.focusedTabId && document.hasFocus();
+      if (onScreen) return;
       switch (e.event) {
-        case "SessionStart":
-          pushNotification({ status: "info", category: "agent", priority: false, text: `${name} started`, detail: place, ...paneRef });
-          break;
-        case "UserPromptSubmit":
-          pushNotification({ status: "running", category: "agent", priority: false, text: `${name} is working`, detail: intentDetail ?? place, ...paneRef });
-          // One prompt submitted to an agent — the headline social stat.
-          recordUsage({ prompts: 1 });
-          break;
-        case "Stop":
-          pushNotification({ status: "success", category: "agent", priority: false, text: intentDetail ? `${name} finished` : `${name} finished responding`, detail: intentDetail ?? place, ...paneRef });
-          break;
         case "Notification":
           // Two very different events share this hook. "Claude is waiting for
           // your input" is a nudge fired a minute after an agent goes quiet —
           // not news, and the Stop above already logged that it finished, so
           // it gets no row and no dot. Anything else is a real ask.
           if (e.message?.includes("waiting for your input")) break;
-          pushNotification({ status: "info", category: "agent", priority: true, text: `${name} needs your attention`, detail: place || undefined, ...paneRef });
+          pushNotification({ status: "info", category: "agent", priority: true, text: `${name} needs you`, detail: intentDetail ?? place, ...paneRef });
           break;
       }
     }).then((fn) => (unlisten = fn));
@@ -1065,25 +831,32 @@ export default function App() {
           agentKind: "claude" as AgentKind,
         };
       }));
-      if (list.length > 0) setFocusedWsId(list[0].id);
-      // GitHub status, open PRs and friends are owned by useGithubPrs /
-      // useFlockId — nothing else to bootstrap here.
-      queueList().then(setQueueItems).catch(console.error);
-      // Peek each saved blob for the prReview flag (a cheap read — the real
-      // pane restore stays lazy) so PR-review workspaces are pinned on top
-      // and violet from launch, not only once they're first focused.
-      Promise.all(list.map(async (w) => {
-        const prReview = await restoreWorkspace(w.id)
-          .then((raw) => (raw ? !!JSON.parse(raw).prReview : false))
-          .catch(() => false);
-        return { id: w.id, prReview };
-      })).then((flags) => {
-        const flagged = new Set(flags.filter((f) => f.prReview).map((f) => f.id));
-        if (flagged.size === 0) return;
+      // Read every saved state once (a cheap read — restoring stays lazy) so
+      // the sidebar can list each project's threads before its agents run,
+      // and PR-review workspaces are pinned from launch.
+      const peeks = await Promise.all(list.map(async (w) => {
+        const raw = await restoreWorkspace(w.id).catch(() => null);
+        let prReview = false;
+        try { prReview = raw ? !!JSON.parse(raw).prReview : false; } catch { /* restore reports it */ }
+        return { id: w.id, prReview, dormant: parseDormant(raw) };
+      }));
+      const asleep: Record<string, Dormant> = {};
+      for (const p of peeks) {
+        // The project restore has already started on (the one focused at
+        // launch) lists its live threads, not its saved ones.
+        if (p.dormant && !restoredWsIds.current.has(p.id)) asleep[p.id] = p.dormant;
+      }
+      setDormant(asleep);
+      const flagged = new Set(peeks.filter((f) => f.prReview).map((f) => f.id));
+      if (flagged.size > 0) {
         setWorkspaces((prev) => prev.map((w) =>
           flagged.has(w.id) ? { ...w, prReview: true, accentColor: "var(--violet)" } : w,
         ));
-      }).catch(() => {});
+      }
+      // Open where you left off: the first project, on its saved front tab.
+      if (list.length > 0) setFocusedWsId(list[0].id);
+      else setComposing({ projectId: null });
+      queueList().then(setQueueItems).catch(console.error);
     })();
   }, []);
 
@@ -1119,7 +892,7 @@ export default function App() {
       // would ignore the prompt that's sitting there.
       noteInjectedInput(paneId, typed);
       setQueueItems((prev) => prev.map((i) => (i.id === row.id ? row : i)));
-      pushNotification({ status: "info", category: "agent", priority: false, text: `Launched into ${row.target_label ?? "pane"}` });
+      pushNotification({ status: "success", category: "agent", priority: true, text: `Sent to ${row.target_label ?? "the agent"}` });
     } catch (e) {
       pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't launch prompt: ${e instanceof Error ? e.message : e}` });
     }
@@ -1145,46 +918,10 @@ export default function App() {
       const shot = images.length > 1 ? `${images.length} images` : "1 image";
       const detail = images.length === 0 ? queuePreview(text)
         : text ? `${queuePreview(text)} · ${shot}` : shot;
-      pushNotification({ status: "info", category: "agent", priority: false, text: "Saved to prompt queue", detail });
+      pushNotification({ status: "success", category: "agent", priority: true, text: "Saved for later (⌘K to send it)", detail });
     } catch (e) {
       pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't queue prompt: ${e instanceof Error ? e.message : e}` });
     }
-  };
-
-  // Reuse the generic context-menu popover as the launch-target picker — a flat
-  // cross-workspace list of live panes, computed at open time.
-  const openQueueLaunchPicker = (item: QueueItem, e: React.MouseEvent) => {
-    const targets = workspaces.flatMap((w) =>
-      w.panes.map((p) => ({ paneId: p.id, label: `${w.name} · ${p.displayName ?? p.kind}` })),
-    );
-    if (targets.length === 0) {
-      pushNotification({ status: "failure", category: "agent", priority: true, text: "No running panes to launch into — open a workspace first." });
-      return;
-    }
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      items: targets.map((t) => ({ label: t.label, onClick: () => void launchQueueItem(item.id, t.paneId) })),
-    });
-  };
-
-  // Optimistic edit/delete: apply locally, then persist. The backend rejects
-  // edits to already-launched rows on its own; on any failure we re-read to
-  // reconcile rather than leaving the UI out of sync.
-  const editQueueItem = (id: string, text: string) => {
-    setQueueItems((prev) => prev.map((i) => (i.id === id ? { ...i, text } : i)));
-    queueUpdateText(id, text).catch((err) => {
-      console.error(err);
-      queueList().then(setQueueItems).catch(console.error);
-    });
-  };
-
-  const deleteQueueItem = (id: string) => {
-    setQueueItems((prev) => prev.filter((i) => i.id !== id));
-    queueDelete(id).catch((err) => {
-      console.error(err);
-      queueList().then(setQueueItems).catch(console.error);
-    });
   };
 
   // Claude and grok each get a stable per-pane session id (via `--session-id`)
@@ -1217,7 +954,6 @@ export default function App() {
     }
     saveWorkspaceStateCmd(ws.id, JSON.stringify(buildWorkspaceStateBlob(ws))).catch(console.error);
   }, []);
-  saveWorkspaceRef.current = saveWorkspace;
 
   const saveAllWorkspaces = useCallback(() => {
     for (const ws of workspaces) {
@@ -1270,7 +1006,9 @@ export default function App() {
   // already skips any pane whose ring hasn't advanced (PaneOutput's
   // persisted_pushed), so an idle background app writes nothing anyway.
   useEffect(() => {
-    const id = setInterval(() => { persistPaneBuffers().catch(() => {}); }, 15000);
+    // 30s: only panes whose ring moved are written, but with twenty busy agents
+    // that is still a few megabytes a tick, and this is a restore cache.
+    const id = setInterval(() => { persistPaneBuffers().catch(() => {}); }, 30000);
     return () => clearInterval(id);
   }, []);
 
@@ -1281,8 +1019,11 @@ export default function App() {
   // agent running `git checkout` inside its own worktree self-heals here
   // instead of leaving a stale label. Polled; also called directly after
   // checkouts from the branch picker.
+  // Only the project on screen is polled: each map is several git processes
+  // (status per worktree included), and v1 ran them for every open project
+  // every ten seconds. Others refresh the moment they are opened.
   const refreshBranches = useCallback(async () => {
-    const reals = workspacesRef.current.filter((w) => !w.copilot && !w.observe && w.repo_path);
+    const reals = workspacesRef.current.filter((w) => w.id === focusedWsIdRef.current && w.repo_path);
     const resolved = await Promise.all(
       reals.map(async (w) => ({ id: w.id, map: await gitRepoMap(w.repo_path).catch(() => null) })),
     );
@@ -1325,12 +1066,11 @@ export default function App() {
 
   useEffect(() => {
     refreshBranches();
-    // Pause the git subprocess scans while the app is hidden; refresh once the
-    // moment it's visible again so branch labels are never stale on return.
-    const id = setInterval(() => { if (isWindowActive()) refreshBranches(); }, 10000);
+    // Paused while the app is hidden; refreshed the moment it is visible again.
+    const id = setInterval(() => { if (isWindowActive()) refreshBranches(); }, 15000);
     const unsub = onWindowActiveChange((active) => { if (active) refreshBranches(); });
     return () => { clearInterval(id); unsub(); };
-  }, [refreshBranches, workspaces.length]);
+  }, [refreshBranches, focusedWsId]);
 
   // Locate the graph MCP sidecar so spawns can auto-register it without a
   // per-spawn round trip. Cheap (no docker probe); usage stays gated on the
@@ -1350,7 +1090,14 @@ export default function App() {
       refreshMcp();
       graphGroundHook(enabled, getGraphUrl() || undefined).catch(() => {});
     };
-    sync(getGraphEnabled());
+    // At launch, only ever install. The hooks live in the user's global agent
+    // config (~/.claude/settings.json and friends), shared by every flock on
+    // the machine, and a fresh instance — a dev build, a second copy — has the
+    // graph off simply because it has never been switched on; syncing "off"
+    // from there stripped the grounding hooks the installed app's agents were
+    // using. Removal happens when someone turns the graph off (the listener).
+    refreshMcp();
+    if (getGraphEnabled()) graphGroundHook(true, getGraphUrl() || undefined).catch(() => {});
     return onGraphEnabledChange(sync);
   }, []);
 
@@ -1363,7 +1110,6 @@ export default function App() {
   const paneSeenRef = useRef<Map<string, number>>(new Map());
   const captureSessions = useCallback(async () => {
     const live = workspacesRef.current
-      .filter((w) => !w.copilot && !w.observe)
       .flatMap((w) => w.panes.map((p) => ({ p, wsId: w.id })));
     const claimed = new Set(live.map((x) => x.p.sessionId).filter(Boolean) as string[]);
     for (const { p, wsId } of live) {
@@ -1408,7 +1154,11 @@ export default function App() {
     agentKind?: AgentKind;
     /** Repo whose setup command should run in this pane, set only when its
      * worktree was created just now (see resolveNewPaneCwd's `fresh`). */
-    setupRepo?: string };
+    setupRepo?: string;
+    /** First task, on the command line where the agent takes one. */
+    prompt?: string;
+    /** Model and effort to start with. */
+    launch?: LaunchOptions };
 
   // Spawn a batch of already-rendered placeholder panes IN PARALLEL, flipping
   // each `spawning:false` (so its terminal mounts) the moment its PTY is live,
@@ -1454,7 +1204,13 @@ export default function App() {
           paneId: d.paneId,
           workspaceId,
           cmd: command.cmd,
-          args: [...withClaudeSession(command.args, d.sessionId, "new"), ...(await extraArgs.get(agent)!)],
+          args: [
+            ...withClaudeSession(command.args, d.sessionId, "new"),
+            ...launchArgs(agent, d.launch),
+            ...(await extraArgs.get(agent)!),
+            // Last: `--` ends the options.
+            ...(promptArgs(agent, d.prompt) ?? []),
+          ],
           cwd: d.cwd,
           rows: ptyRows,
           cols: ptyCols,
@@ -1463,7 +1219,6 @@ export default function App() {
           graphEnabled: getGraphEnabled(),
           setupRepo: d.setupRepo,
         });
-        markFirstAgentLaunched();
         // The PTY is live, so the terminal can mount and take over sizing it.
         // Still `booting` though: what it shows until the agent announces
         // itself is flock's own plumbing, and the card stays over it.
@@ -1471,8 +1226,9 @@ export default function App() {
           prev.map((w) =>
             w.id !== workspaceId
               ? w
-              : { ...w, panes: w.panes.map((p) => (p.id === d.paneId ? { ...p, spawning: false, booting: true } : p)) }),
+              : { ...w, panes: w.panes.map((p) => (p.id === d.paneId ? { ...p, spawning: false, booting: !hasAgentStarted(d.paneId) } : p)) }),
         );
+        recordUsage({ agents: 1, prompts: d.prompt?.trim() ? 1 : 0 });
         return true;
       } catch (e) {
         pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't spawn ${command.cmd}: ${e instanceof Error ? e.message : e}` });
@@ -1505,7 +1261,7 @@ export default function App() {
     return (await spawnBatch(descriptors, secure, spawnOne)).filter(Boolean).length;
   };
 
-  const onNewWorkspaceConfirmed = async ({ name, agents, dir, plan: rawPlan, secure }: WorkspaceLaunch) => {
+  const onNewWorkspaceConfirmed = async ({ name, agents, dir, plan: rawPlan, secure }: WorkspaceLaunch, prompt?: string, launch?: LaunchOptions) => {
     if (agents.length === 0) return;
     setDialog({ kind: "none" });
     const finalName = name.trim() || dir.split("/").pop() || "workspace";
@@ -1515,6 +1271,7 @@ export default function App() {
     let ws: Awaited<ReturnType<typeof createWorkspace>>;
     try {
       ws = await createWorkspace(finalName, dir, liveBranch || undefined);
+      recordUsage({ workspaces: 1 });
     } catch (e) {
       pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't create workspace "${finalName}": ${e instanceof Error ? e.message : e}` });
       return;
@@ -1569,6 +1326,7 @@ export default function App() {
         agentName: randomAgentName(descriptors.map((d) => d.agentName)),
         agentKind: agents[i],
         sessionId: newClaudeSessionId(agents[i]),
+        ...(i === 0 ? { prompt, launch } : {}),
       });
     }
 
@@ -1623,6 +1381,10 @@ export default function App() {
         worktree: d.worktree,
         sessionId: d.sessionId,
         spawning: true,
+        launch: d.launch,
+        ...(prompt && d === descriptors[0]
+          ? { intent: titleFromPrompt(prompt), intentRaw: prompt, promptHistory: [prompt] }
+          : {}),
         phase: willFetch
           ? ({ kind: "fetching", ref: plan.baseRef } as PanePhase)
           : useWorktrees
@@ -1657,7 +1419,12 @@ export default function App() {
       if (settled) { const s = settled; queueMicrotask(() => saveWorkspace(s)); }
       return prev;
     });
-    recordUsage({ workspaces: 1, agents: okCount });
+    if (prompt) {
+      const first = descriptors[0];
+      nameThreadWithAi(first.paneId, prompt);
+      // Typed in only for an agent that cannot take it on the command line.
+      if (promptArgs(first.agentKind ?? kind, prompt) === null) void deliverPromptWhenReady(first.paneId, prompt);
+    }
   };
 
   /** The branch plan `additional` more agents in this workspace should follow.
@@ -1681,6 +1448,9 @@ export default function App() {
     /** Spawn into this exact directory (e.g. adopting an existing orphaned
      * worktree from the Git panel) instead of resolving a fresh one. */
     cwdOverride?: { cwd: string; worktree?: { path: string; branch: string } },
+    /** The thread's title, known before the agent is (a composer prompt), and
+     * the model and effort to start with. */
+    seed?: { intent?: string; intentRaw?: string; launch?: LaunchOptions },
   ) => {
     const ws = wsHint ?? workspacesRef.current.find((w) => w.id === workspaceId);
     if (!ws) {
@@ -1689,7 +1459,7 @@ export default function App() {
     }
     const kind = kindOverride ?? ws.agentKind;
     const { cmd, args } = agentCommand(kind);
-    const newCount = ws.panes.filter((p) => !p.streamId).length + 1;
+    const newCount = ws.panes.length + 1;
     const { ptyCols, ptyRows } = estimatePtyDims(1, newCount);
     // The agent's name comes first: under a branch plan it's what the branch
     // is named after.
@@ -1710,7 +1480,7 @@ export default function App() {
 
     // Optimistic render: insert the pane into the layout *now* so the box
     // appears instantly, then spawn the PTY in the background. `spawning: true`
-    // makes PaneArea show a placeholder until the process is live (mounting the
+    // makes ThreadView show a placeholder until the process is live (mounting the
     // terminal before its backend pane exists would fail the output subscribe).
     // This is what turns the old ~1-2s "nothing happens" wait into an immediate
     // response — the terminal fills in a beat later as the agent boots.
@@ -1751,6 +1521,10 @@ export default function App() {
               worktree,
               sessionId,
               spawning: true,
+              intent: seed?.intent,
+              intentRaw: seed?.intentRaw,
+              promptHistory: seed?.intentRaw ? [seed.intentRaw] : undefined,
+              launch: seed?.launch,
             },
           ],
         };
@@ -1764,7 +1538,13 @@ export default function App() {
         paneId,
         workspaceId,
         cmd,
-        args: [...withClaudeSession(args, sessionId, "new"), ...(await graphSpawnArgs(kind, workspaceId, ws.secure))],
+        args: [
+          ...withClaudeSession(args, sessionId, "new"),
+          ...launchArgs(kind, seed?.launch),
+          ...(await graphSpawnArgs(kind, workspaceId, ws.secure)),
+          // Last: `--` ends the options.
+          ...(promptArgs(kind, initialPrompt) ?? []),
+        ],
         cwd: spawnCwd,
         rows: ptyRows,
         cols: ptyCols,
@@ -1773,7 +1553,13 @@ export default function App() {
         graphEnabled: getGraphEnabled(),
         setupRepo,
       });
-      markFirstAgentLaunched();
+      recordUsage({ agents: 1, prompts: initialPrompt?.trim() ? 1 : 0 });
+      // In a co-pilot session the partner sees this agent and may type into it.
+      if (ws.copilot) {
+        shareCopilotPane(ws.copilot.partnerLogin, ws.copilot.sessionId, paneId).catch((error) =>
+          pushNotification({ status: "failure", category: "agent", priority: true, text: `Agent started, but sharing it failed: ${error instanceof Error ? error.message : error}` }),
+        );
+      }
     } catch (e) {
       // Spawn failed (e.g. secure mode with Docker down). Roll back the
       // optimistic pane so a dead placeholder isn't left behind, surface the
@@ -1809,47 +1595,21 @@ export default function App() {
       return;
     }
 
-    recordUsage({ agents: 1 });
-
-    // If this is a co-pilot workspace, set up streaming so the partner sees
-    // this new local pane as a remote pane on their side.
-    if (ws.copilot) {
-      try {
-        const { shareCopilotPane } = await import("./lib/session");
-        await shareCopilotPane(ws.copilot.partnerLogin, ws.copilot.sessionId, paneId);
-      } catch (error) {
-        pushNotification({ status: "failure", category: "agent", priority: true, text: `Agent started, but sharing failed: ${error instanceof Error ? error.message : error}` });
-      }
-    }
-
     // Process is live — drop the placeholder so the terminal mounts, and
     // persist the now-settled workspace.
     let updated: Workspace | undefined;
     setWorkspaces((prev) =>
       prev.map((w) => {
         if (w.id !== workspaceId) return w;
-        return updated = { ...w, panes: w.panes.map((p) => p.id === paneId ? { ...p, spawning: false, booting: true } : p) };
+        return updated = { ...w, panes: w.panes.map((p) => p.id === paneId ? { ...p, spawning: false, booting: !hasAgentStarted(paneId) } : p) };
       }),
     );
     if (updated) saveWorkspace(updated);
 
-    // Tell co-pilot partner about the new pane so they re-render their view
-    if (updated?.copilot) {
-      const localPaneIds = updated.panes.filter((p) => !p.streamId).map((p) => ({ id: p.id, label: p.displayName ?? p.kind }));
-      const { syncCopilotLayout } = await import("./lib/session");
-      syncCopilotLayout(
-        updated.copilot.partnerLogin,
-        updated.copilot.partnerWid,
-        updated.copilot.sessionId,
-        localPaneIds,
-      );
-    }
-
-    if (initialPrompt) {
-      // Same path as a race: wait for booting to clear, then bracketed paste
-      // and enter. A flat sleep + raw sendInput lands a multi-line PR-review
-      // prompt in the login shell as separate bash commands. Awaited so
-      // reviewPr's loading state covers delivery, not just spawn.
+    if (initialPrompt && promptArgs(kind, initialPrompt) === null) {
+      // An agent without a prompt argument has it typed in: wait for booting
+      // to clear, then bracketed paste and Enter. Awaited so reviewPr's
+      // loading state covers delivery, not just spawn.
       await deliverPromptWhenReady(paneId, initialPrompt);
     }
     return paneId;
@@ -2044,6 +1804,7 @@ export default function App() {
         cwd: repoPath,
         agentName: randomAgentName([...existingNames, ...descriptors.map((d) => d.agentName)]),
         sessionId: newClaudeSessionId(kind),
+        prompt,
       });
     }
 
@@ -2134,7 +1895,6 @@ export default function App() {
       if (settled) { const s = settled; queueMicrotask(() => saveWorkspace(s)); }
       return next;
     });
-    recordUsage({ agents: okCount });
 
     // Fanned out per pane rather than through broadcastInput: broadcast
     // replicates what is *typed into the focused pane* to the visible panes of
@@ -2142,8 +1902,12 @@ export default function App() {
     // switched away — none of which hold while N agents are still booting at
     // their own pace. Broadcast stays off, and stays available in the header
     // for the follow-up nudges where it is the right tool.
-    for (const d of descriptors) {
-      deliverPromptWhenReady(d.paneId, prompt).catch(console.error);
+    // On the command line where the agent takes it (see v2/launch.ts); typed
+    // in, per pane, where it does not.
+    if (promptArgs(kind, prompt) === null) {
+      for (const d of descriptors) {
+        deliverPromptWhenReady(d.paneId, prompt).catch(console.error);
+      }
     }
     refreshBranches().catch(() => {});
   };
@@ -2409,7 +2173,7 @@ export default function App() {
         // an open workspace on the same GitHub repo as this PR.
         let source: Workspace | undefined;
         for (const w of workspacesRef.current) {
-          if (!w.repo_path || w.copilot || w.observe || w.prReview) continue;
+          if (!w.repo_path || w.prReview) continue;
           if ((await repoSlugFor(w.repo_path)) === pr.repo) { source = w; break; }
         }
         if (!source) {
@@ -2515,13 +2279,12 @@ export default function App() {
     mergeQueueList().then((q) => { mergeQueueRef.current = q; setMergeQueue(q); }).catch(() => {});
   }, [dialog.kind]);
 
-  /** "owner/repo" → repo_path for every open real workspace (co-pilot/observe
-   * mirrors excluded — no usable checkout), feeding the merge-queue modal's
+  /** "owner/repo" → repo_path for every open workspace, feeding the merge-queue modal's
    * local conflict analysis. First workspace per slug wins. */
   const repoPathsForQueue = useCallback(async (): Promise<Record<string, string>> => {
     const paths: Record<string, string> = {};
     for (const w of workspacesRef.current) {
-      if (!w.repo_path || w.copilot || w.observe) continue;
+      if (!w.repo_path) continue;
       const slug = await repoSlugFor(w.repo_path);
       if (slug && paths[slug] === undefined) paths[slug] = w.repo_path;
     }
@@ -2600,22 +2363,17 @@ export default function App() {
         graphEnabled: getGraphEnabled(),
         setupRepo: fresh ? ws.repo_path : undefined,
       });
-      markFirstAgentLaunched();
+      recordUsage({ agents: 1 });
+      if (ws.copilot) {
+        shareCopilotPane(ws.copilot.partnerLogin, ws.copilot.sessionId, pane.id).catch((error) =>
+          pushNotification({ status: "failure", category: "agent", priority: true, text: `Agent started, but sharing it failed: ${error instanceof Error ? error.message : error}` }),
+        );
+      }
     } catch (e) {
       pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't spawn ${cmd}: ${e instanceof Error ? e.message : e}` });
       throw e;
     }
 
-    // Co-pilot: share this new pane so the partner sees it as a remote pane and
-    // may type into it (mirrors spawnAgentInWorkspace).
-    if (ws.copilot) {
-      try {
-        const { shareCopilotPane } = await import("./lib/session");
-        await shareCopilotPane(ws.copilot.partnerLogin, ws.copilot.sessionId, pane.id);
-      } catch (error) {
-        pushNotification({ status: "failure", category: "agent", priority: true, text: `Agent started, but sharing failed: ${error instanceof Error ? error.message : error}` });
-      }
-    }
     // Everything layout-related is derived inside the updater, from the tree
     // as it is NOW — not from a snapshot taken before the awaits above (which
     // can take seconds when worktrees are on). Writing back a pre-await tree
@@ -2649,28 +2407,23 @@ export default function App() {
               id: pane.id,
               workspaceId,
               kind: pane.kind,
-              status: pane.status as AgentStatusStr,
               attention: false,
               displayName: agentName,
               cwd: spawnCwd,
               worktree,
               sessionId,
-              // Same reason as the restore path: a split's pane boots through
-              // the same shell plumbing as one spawned into a fresh grid, and
-              // has the same claim on being covered until its agent paints.
-              booting: true,
+              // Same reason as the restore path: covered until its agent paints.
+              booting: !hasAgentStarted(pane.id),
+              status: latestAgentStatus(pane.id) ?? (pane.status as AgentStatusStr),
             },
           ],
         };
       }),
     );
     if (updated) saveWorkspace(updated);
-
-    // Tell the co-pilot partner about the new pane so it appears on their side.
     if (updated?.copilot) {
-      const localPaneIds = updated.panes.filter((p) => !p.streamId).map((p) => ({ id: p.id, label: p.displayName ?? p.kind }));
-      const { syncCopilotLayout } = await import("./lib/session");
-      syncCopilotLayout(updated.copilot.partnerLogin, updated.copilot.partnerWid, updated.copilot.sessionId, localPaneIds);
+      const mine = updated.panes.filter((p) => !p.streamId).map((p) => ({ id: p.id, label: p.displayName ?? p.kind }));
+      syncCopilotLayout(updated.copilot.partnerLogin, updated.copilot.partnerWid, updated.copilot.sessionId, mine);
     }
   };
 
@@ -2751,12 +2504,7 @@ export default function App() {
     await removeWorktree(repoPath, wt.path, wt.branch, deleteBranch);
   };
 
-  /** The workspace that OWNS a pane, which since borrowed panes is not always
-   * the workspace whose tab is displaying it. Every lifecycle decision that
-   * touches the filesystem or the agent itself - the repo a path resolves
-   * against, whether a worktree gets removed, whether the PTY is killed, what
-   * the jail chip claims - has to key off THIS and never off the tab's owner.
-   * The tab's owner is only ever the answer to "which tab do I show". */
+  /** The workspace that owns a pane. */
   const ownerOfPane = (paneId: string) =>
     workspacesRef.current.find((w) => w.panes.some((p) => p.id === paneId));
 
@@ -2765,21 +2513,6 @@ export default function App() {
    * All interactive close paths (topbar ✕, header ✕, ⌘⇧K, context menu) go
    * through here; closePaneInWorkspace below is the actual teardown. */
   const requestClosePane = async (paneId: string) => {
-    // Same rule the context menu applies: a borrowed pane is not this tab's
-    // to close. When the close gesture (topbar ✕, header ✕, ⌘⇧K) fires while
-    // the FOCUSED workspace only borrows the pane, the user is dismissing it
-    // from the tab they are looking at — killing the owning workspace's agent
-    // and tearing down its worktree from here would be the one destructive
-    // path the menu deliberately refuses to offer.
-    const focused = workspacesRef.current.find((w) => w.id === focusedWsIdRef.current);
-    if (
-      focused &&
-      !focused.panes.some((p) => p.id === paneId) &&
-      focused.tabs.some((t) => borrowedOwner(t.borrowed, paneId))
-    ) {
-      returnBorrowedPane(focused.id, paneId);
-      return;
-    }
     const ws = workspacesRef.current.find((w) => w.panes.some((p) => p.id === paneId));
     const pane = ws?.panes.find((p) => p.id === paneId);
     if (ws?.repo_path && pane?.worktree?.branch) {
@@ -2800,10 +2533,8 @@ export default function App() {
 
   const closePaneInWorkspace = async (paneId: string, deleteBranchOverride?: boolean) => {
     await closePaneCmd(paneId).catch(console.error);
-
-    // If a friend was watching this pane (observe) or it streamed into a
-    // co-pilot session, stop publishing — stopStream is a no-op otherwise.
-    import("./lib/streamPublisher").then(({ stopStream }) => stopStream(paneId));
+    // A friend watching this agent, or a co-pilot partner, stops receiving it.
+    stopStream(paneId);
     for (const [sid, pid] of observeSharesRef.current) {
       if (pid === paneId) observeSharesRef.current.delete(sid);
     }
@@ -2816,35 +2547,27 @@ export default function App() {
     setWorkspaces((prev) => {
       let saved: Workspace | undefined;
       const next = prev.map((w) => {
-        // A workspace that merely BORROWED this pane has no pane record to
-        // drop, but it does have a leaf and a ref pointing at an agent that no
-        // longer exists. Left alone that leaf is a blank, uncloseable tile,
-        // which is the exact failure pruneLayoutTree was written for.
-        if (!w.panes.some((p) => p.id === paneId)) {
-          if (!w.tabs.some((t) => borrowedOwner(t.borrowed, paneId))) return w;
-          const released = { ...w, tabs: w.tabs.map((t) => {
-            if (!borrowedOwner(t.borrowed, paneId)) return t;
-            const tree = t.layoutTree ? remove(t.layoutTree, paneId) : null;
-            return {
-              ...t,
-              layoutTree: tree,
-              focusedPaneId: t.focusedPaneId === paneId ? (tree ? firstPaneId(tree) : null) : t.focusedPaneId,
-              zoomedPaneId: t.zoomedPaneId === paneId ? null : t.zoomedPaneId,
-              borrowed: removeBorrowed(t.borrowed, paneId),
-            };
-          }) };
-          saveWorkspaceRef.current(released);
-          return released;
-        }
+        if (!w.panes.some((p) => p.id === paneId)) return w;
         const remainingPanes = w.panes.filter((p) => p.id !== paneId);
-        const tabs = w.tabs.map((t) => {
+        let emptiedTabId: string | null = null;
+        let tabs = w.tabs.map((t) => {
           if (!t.layoutTree || !allPaneIds(t.layoutTree).includes(paneId)) return t;
           const newTree = remove(t.layoutTree, paneId);
+          if (!newTree) emptiedTabId = t.id;
           const focusedPaneId = t.focusedPaneId === paneId ? (newTree ? firstPaneId(newTree) : null) : t.focusedPaneId;
           const zoomedPaneId = t.zoomedPaneId === paneId ? null : t.zoomedPaneId;
           return { ...t, layoutTree: newTree, focusedPaneId, zoomedPaneId };
         });
-        const result = { ...w, tabs, panes: remainingPanes };
+        // A thread whose last agent closed is over: drop it, and land on its
+        // neighbour. A project keeps one (empty) tab, which shows the composer.
+        let focusedTabId = w.focusedTabId;
+        if (emptiedTabId && tabs.length > 1) {
+          const at = tabs.findIndex((t) => t.id === emptiedTabId);
+          tabs = tabs.filter((t) => t.id !== emptiedTabId);
+          clearBroadcast(broadcastKey(w.id, emptiedTabId));
+          if (focusedTabId === emptiedTabId) focusedTabId = tabs[Math.max(0, at - 1)].id;
+        }
+        const result = { ...w, tabs, focusedTabId, panes: remainingPanes };
         saved = result;
         return result;
       });
@@ -2940,10 +2663,6 @@ export default function App() {
    * (explicit "close agent" from the popout), handled by the
    * pane-popout-closed listener below. */
   const popOutPane = async (workspaceId: string, paneId: string) => {
-    // Two different workspaces, and the distinction is the whole of borrowed
-    // panes: `ws` is the one whose TAB the pane is being pulled out of, and
-    // `owner` is the one that has the pane record and the accent. Reading the
-    // record off `ws` made popping out a borrowed pane a silent no-op.
     const ws = workspacesRef.current.find((w) => w.id === workspaceId);
     const owner = ownerOfPane(paneId);
     const pane = owner?.panes.find((p) => p.id === paneId);
@@ -2965,24 +2684,9 @@ export default function App() {
       return;
     }
 
+    // v2 keeps the pane's place in its thread: the tile says it is open in
+    // its own window (with a way back), and the thread stays in the sidebar.
     markPoppedOut(paneId, { workspaceId, tabId: tab.id });
-
-    const newLayoutTree = tab.layoutTree ? remove(tab.layoutTree, paneId) : null;
-    const focusedPaneId =
-      tab.focusedPaneId === paneId
-        ? newLayoutTree ? firstPaneId(newLayoutTree) : null
-        : tab.focusedPaneId;
-    const zoomedPaneId = tab.zoomedPaneId === paneId ? null : tab.zoomedPaneId;
-
-    let updated: Workspace | undefined;
-    setWorkspaces((prev) =>
-      prev.map((w) =>
-        w.id === workspaceId
-          ? (updated = { ...w, tabs: w.tabs.map((t) => t.id === tab.id ? { ...t, layoutTree: newLayoutTree, focusedPaneId, zoomedPaneId } : t) })
-          : w,
-      ),
-    );
-    if (updated) saveWorkspace(updated);
 
     const params = new URLSearchParams({
       pane: paneId,
@@ -3010,9 +2714,9 @@ export default function App() {
       // adding a theme fails the build here rather than flashing the wrong
       // colour on every popout.
       backgroundColor: {
-        light: "#FCFBF8",
-        dark: "#071122",
-        graphite: "#121212",
+        light: "#ffffff",
+        dark: "#16181d",
+        graphite: "#16181d",
         "high-contrast": "#000000",
       }[getEffectiveTheme()],
       titleBarStyle: "overlay",
@@ -3046,24 +2750,23 @@ export default function App() {
     // this used to leave every grid Terminal on visible={false} with nobody
     // calling resizePty. Origin is only where to re-insert.
     const origin = clearPoppedOut(paneId);
-    // The origin outranks the caller's workspace id. The popout-closed event
-    // carries the pane's OWNER (recorded at spawn on the Rust side), but a
-    // borrowed pane was popped out of the BORROWING workspace's tab — and in
-    // the owner the pane never left its tab, so the idempotency guard below
-    // would see it in place and return the whole event to a no-op: the
-    // borrowing tab silently loses the tile and keeps a leaf-less loan.
     const targetWsId = origin?.workspaceId ?? workspaceId;
     let updated: Workspace | undefined;
     setWorkspaces((prev) =>
       prev.map((w) => {
         if (w.id !== targetWsId) return w;
-        // The pane may be borrowed, so its record is not necessarily in `w`.
-        // What has to be true is only that it still exists somewhere.
         const pane = ownerOfPane(paneId)?.panes.find((p) => p.id === paneId);
         if (!pane) return w; // already closed/removed elsewhere
-        // Idempotency guard: if this pane is already in some tab's grid
-        // (e.g. a duplicate event slipped through), don't insert it again.
-        if (findTabForPane(w, paneId)) return w;
+        // Still laid out where it was popped from (v2 keeps its place): just
+        // bring that thread to the front.
+        const home = findTabForPane(w, paneId);
+        if (home) {
+          return updated = {
+            ...w,
+            focusedTabId: home.id,
+            tabs: w.tabs.map((t) => (t.id === home.id ? { ...t, focusedPaneId: paneId } : t)),
+          };
+        }
         const tab = w.tabs.find((t) => t.id === origin?.tabId) ?? getFocusedTab(w);
         const target = tab.focusedPaneId ?? (tab.layoutTree ? firstPaneId(tab.layoutTree) : null);
         const layoutTree: LayoutNode = tab.layoutTree
@@ -3194,12 +2897,13 @@ export default function App() {
       // doesn't stay stuck at awaiting (see ack_pane_attention).
       ackPaneAttention(paneId).catch(console.error);
     }
-    if (ws && !findTabForPane(ws, paneId)) {
+    // Open in its own window: raise that window as well as its thread.
+    if (popoutRef.current.ids.has(paneId)) {
       WebviewWindow.getByLabel(`pane-${paneId}`)
         .then((win) => win?.setFocus())
         .catch(() => {});
-      return;
     }
+    if (ws && !findTabForPane(ws, paneId)) return;
     let updated: Workspace | undefined;
     setWorkspaces((prev) =>
       prev.map((w) => {
@@ -3216,14 +2920,6 @@ export default function App() {
       }),
     );
     if (updated) saveWorkspace(updated);
-  };
-
-  /** Notification click-through: switch to the pane's workspace (it may not
-   * be the one currently focused, unlike the sidebar's agent list which only
-   * ever lists the focused workspace's panes), then focus the pane itself. */
-  const openNotificationPane = (workspaceId: string, paneId: string) => {
-    setFocusedWsId(workspaceId);
-    focusPane(workspaceId, paneId);
   };
 
   // ─── Tabs (independent split-pane layouts within a workspace) ──────
@@ -3280,9 +2976,6 @@ export default function App() {
     const ws = workspacesRef.current.find((w) => w.id === workspaceId);
     const tab = ws?.tabs.find((t) => t.id === tabId);
     if (!ws || !tab) return;
-    // Only the panes this workspace owns are going to be killed, so only those
-    // may be counted. Borrowed ones are released, and warning about them would
-    // ask the user to approve a loss that is not going to happen.
     const agentCount = tab.layoutTree
       ? allPaneIds(tab.layoutTree).filter((id) => ws.panes.some((p) => p.id === id)).length
       : 0;
@@ -3301,12 +2994,6 @@ export default function App() {
     const tab = ws?.tabs.find((t) => t.id === tabId);
     if (!ws || !tab) return;
     const paneIdsInTab = tab.layoutTree ? allPaneIds(tab.layoutTree) : [];
-    // A borrowed pane is only being DISPLAYED here. Closing this tab lets it
-    // go; it must not kill it. The agent belongs to another workspace, is
-    // still laid out in that workspace's own tabs, and killing it would take
-    // an unrelated workspace's work down with a tab it was merely visiting.
-    // The same reasoning governs the worktree cleanup below, which reads
-    // `ws.panes` and so was already right by construction.
     const ownIds = paneIdsInTab.filter((id) => ws.panes.some((p) => p.id === id));
     for (const paneId of ownIds) {
       await closePaneCmd(paneId).catch(console.error);
@@ -3330,11 +3017,14 @@ export default function App() {
           const fresh = makeTab("1");
           return updated = { ...w, tabs: [fresh], focusedTabId: fresh.id, panes: remainingPanes };
         }
-        const focusedTabId = w.focusedTabId === tabId ? remainingTabs[0].id : w.focusedTabId;
+        // Land on the thread above the one that closed, as a list does.
+        const at = w.tabs.findIndex((t) => t.id === tabId);
+        const focusedTabId = w.focusedTabId === tabId ? remainingTabs[Math.max(0, at - 1)].id : w.focusedTabId;
         return updated = { ...w, tabs: remainingTabs, focusedTabId, panes: remainingPanes };
       }),
     );
     if (updated) saveWorkspace(updated);
+    clearBroadcast(broadcastKey(workspaceId, tabId));
 
     if (ws.repo_path) {
       for (const p of worktreesToClean) {
@@ -3347,158 +3037,67 @@ export default function App() {
   };
 
   // ─── Global keyboard shortcuts (capture-phase) ─────────────────────
-
-  const shortcutData = useRef({ dialog, contextMenu, focusedWsId, workspaces, cmdBarOpen });
-  shortcutData.current = { dialog, contextMenu, focusedWsId, workspaces, cmdBarOpen };
-  const beginNewWorkspaceRef = useRef<() => void>(() => {});
-  beginNewWorkspaceRef.current = beginNewWorkspace;
-  const splitPaneRef = useRef<(wsId: string, dir: SplitDir) => void>(async () => {});
-  splitPaneRef.current = splitPane;
-  const closePaneRef = useRef<(paneId: string) => Promise<void>>(async () => {});
-  closePaneRef.current = requestClosePane;
-  const zoomPaneRef = useRef<(wsId: string, paneId: string | null) => void>(() => {});
-  zoomPaneRef.current = zoomPane;
-  const switchTabRef = useRef<(wsId: string, tabId: string) => void>(() => {});
-  switchTabRef.current = switchTab;
-  const newTabRef = useRef<(wsId: string) => void>(() => {});
-  newTabRef.current = newTabInWorkspace;
-  const closeTabRef = useRef<(wsId: string, tabId: string) => Promise<void>>(async () => {});
-  closeTabRef.current = requestCloseTab;
-  const focusPaneRef = useRef<(wsId: string, paneId: string) => void>(() => {});
-  focusPaneRef.current = focusPane;
+  //
+  // Read through one ref, refreshed every render (see `keysRef.current =`
+  // below the handlers), so the listener is registered once and never acts on
+  // a stale snapshot.
+  const keysRef = useRef<{
+    dialogOpen: boolean;
+    menuOpen: boolean;
+    paletteOpen: boolean;
+    run: (action: string, arg?: number) => void;
+  }>({ dialogOpen: false, menuOpen: false, paletteOpen: false, run: () => {} });
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const { dialog, contextMenu, focusedWsId, workspaces, cmdBarOpen } = shortcutData.current;
+      const k = keysRef.current;
       if (!e.metaKey) return;
       const stop = () => { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); };
+      const key = e.key.toLowerCase();
 
-      // ⌘K is checked BEFORE the dialog guard, not after it. Nineteen dialog
-      // kinds are declared below `DialogState`, and while any of them was open
-      // this handler returned early — so the app's command surface could be
-      // switched off by any modal, including the ones it opens itself. A
-      // command surface a dialog can disable is a menu with extra steps.
-      // Opening the palette closes whatever dialog was up: it is a jump to
-      // somewhere else, and leaving a modal stacked behind it would make
-      // Escape ambiguous.
-      if (e.key.toLowerCase() === "k" && !e.shiftKey && !e.altKey) {
+      // ⌘K before the dialog guard: no modal may switch the palette off.
+      if (key === "k" && !e.shiftKey && !e.altKey) {
         stop();
-        if (dialog.kind !== "none") setDialog({ kind: "none" });
-        setCmdBarOpen((v) => !v);
+        k.run("palette");
         return;
       }
+      if (k.dialogOpen || k.menuOpen || k.paletteOpen) return;
 
-      if (dialog.kind !== "none" || contextMenu) return;
-      // While the palette is up it owns the keyboard. ⌘K itself is handled
-      // above, so nothing here can fire behind an open palette — without this
-      // guard ⌘D would split a pane the user cannot see.
-      if (cmdBarOpen) return;
-
-      // +1 grow / -1 shrink / 0 not a text-size key. ⌘⇧= arrives as "+" and
-      // ⌘⇧- as "_", so both shifted forms count; the e.code arms carry the
-      // ⌥-modified variants, whose e.key is a different character entirely.
       const textSizeDelta =
         e.key === "=" || e.key === "+" || e.code === "Equal" || e.code === "NumpadAdd" ? 1
         : e.key === "-" || e.key === "_" || e.code === "Minus" || e.code === "NumpadSubtract" ? -1
         : 0;
-      const ws = workspaces.find((w: Workspace) => w.id === focusedWsId);
-      const tab = ws ? getFocusedTab(ws) : undefined;
 
-      if (e.key === "," && !e.shiftKey && !e.altKey) {
-        // ⌘, — the macOS convention for Preferences, and printed by the command
-        // bar's Settings row since that row existed. Nothing bound it, so the
-        // palette was teaching a shortcut that did nothing, which is worse than
-        // teaching none.
+      if (e.key === "," && !e.shiftKey && !e.altKey) { stop(); k.run("settings"); }
+      else if (key === "n" && !e.shiftKey) { stop(); k.run("new-agent"); }
+      else if (key === "n" && e.shiftKey) { stop(); k.run("new-project"); }
+      else if (key === "t" && !e.shiftKey) { stop(); k.run("new-agent"); }
+      else if (key === "p" && e.shiftKey) { stop(); k.run("capture"); }
+      else if (key === "d") { stop(); k.run(e.shiftKey ? "split-down" : "split-right"); }
+      else if (key === "z" && !e.shiftKey) { stop(); k.run("zoom"); }
+      else if (key === "k" && e.shiftKey) { stop(); k.run("close-agent"); }
+      else if (key === "w" && e.shiftKey) { stop(); k.run("close-thread"); }
+      else if (e.code === "BracketRight" || e.code === "BracketLeft") {
+        // ⌘] / ⌘[ move between the agents of this thread; with ⇧, between threads.
         stop();
-        openSettings();
-      } else if (e.key.toLowerCase() === "n" && !e.shiftKey) {
-        // ⌘N is the platform's "new document" and this app's document is a
-        // workspace. It was previously reachable only by clicking.
-        stop();
-        beginNewWorkspaceRef.current();
-      } else if (e.key.toLowerCase() === "p" && e.shiftKey) {
-        // ⌘⇧P captures a prompt into the personal queue. Only fires while
-        // flock is focused — there's no OS-global hotkey in v1.
-        stop();
-        setDialog({ kind: "queue-capture" });
-      } else if (e.key === "d" && !e.shiftKey) {
-        stop();
-        if (focusedWsId) splitPaneRef.current(focusedWsId, "horizontal");
-      } else if (e.key === "d" && e.shiftKey) {
-        stop();
-        if (focusedWsId) splitPaneRef.current(focusedWsId, "vertical");
-      } else if (e.key === "z" && !e.shiftKey) {
-        stop();
-        // Toggle whatever's currently zoomed (if anything) rather than always
-        // targeting the focused pane — those can diverge (e.g. zooming a pane
-        // via its own topbar button doesn't refocus it), and zoomPane's
-        // internal toggle only flips zoomedPaneId -> null when the id passed
-        // in matches what's actually zoomed.
-        const zoomTarget = tab?.zoomedPaneId ?? tab?.focusedPaneId;
-        if (zoomTarget && focusedWsId) zoomPaneRef.current(focusedWsId, zoomTarget);
-      } else if (e.key === "k" && e.shiftKey) {
-        // ⌘⇧K closes the focused pane. ⌘W is avoided (macOS native Close Window)
-        // and ⌘⌫ is avoided (macOS/terminal shortcut for delete-to-line-start).
-        stop();
-        if (tab?.focusedPaneId) closePaneRef.current(tab.focusedPaneId);
-      } else if (e.key === "t" && !e.shiftKey) {
-        stop();
-        if (focusedWsId) newTabRef.current(focusedWsId);
-      } else if (e.key === "w" && e.shiftKey) {
-        // ⌘⇧W closes the focused tab (⌘W alone is macOS's native Close Window).
-        stop();
-        if (ws) closeTabRef.current(ws.id, ws.focusedTabId);
-      } else if ((e.key === "]" || e.key === "[") && !e.shiftKey) {
-        // ⌘] / ⌘[ move focus to the next/previous pane in the current tab, so
-        // the room is drivable without the mouse — the flight-deck keyboard loop.
-        stop();
-        const ids = tab?.layoutTree ? allPaneIds(tab.layoutTree) : [];
-        if (ws && ids.length > 1) {
-          const cur = tab?.focusedPaneId ? ids.indexOf(tab.focusedPaneId) : -1;
-          const delta = e.key === "]" ? 1 : -1;
-          focusPaneRef.current(ws.id, ids[(cur + delta + ids.length) % ids.length]);
-        }
-      } else if (e.key.toLowerCase() === "j" && !e.shiftKey) {
-        // ⌘J jumps to the next agent waiting on you — across tabs, in tab-then-
-        // tree order — so answering a blocked agent never means hunting the grid.
-        stop();
-        if (ws) {
-          const waiting: string[] = [];
-          for (const t of ws.tabs) {
-            for (const id of (t.layoutTree ? allPaneIds(t.layoutTree) : [])) {
-              const p = ws.panes.find((pp) => pp.id === id);
-              if (p && (p.status === "awaiting_input" || p.status === "blocked")) waiting.push(id);
-            }
-          }
-          if (waiting.length > 0) {
-            const at = tab?.focusedPaneId ? waiting.indexOf(tab.focusedPaneId) : -1;
-            focusPaneRef.current(ws.id, waiting[(at + 1) % waiting.length]);
-          }
-        }
-      } else if (textSizeDelta !== 0) {
-        // ⌘+ / ⌘- resize the *agent panes* one point — the text the app exists
-        // to show. Hold ⌥ to move the app chrome's scale a notch instead; the
-        // two are independent settings (see lib/uiScale.ts).
-        //
-        // Matched on e.code as well as e.key because ⌥ rewrites the character:
-        // macOS reports ⌥- as "–" and ⌥= as "≠", so the alt half of this
-        // binding is unreachable through e.key alone.
+        const dir = e.code === "BracketRight" ? 1 : -1;
+        k.run(e.shiftKey ? "thread-step" : "pane-step", dir);
+      }
+      else if (key === "j" && !e.shiftKey) { stop(); k.run("next-waiting"); }
+      else if (e.key === "\\") { stop(); k.run("sidebar"); }
+      else if (textSizeDelta !== 0) {
+        // ⌘+ / ⌘- size the agents' text; with ⌥, the app's own.
         stop();
         if (e.altKey) stepUiScale(textSizeDelta);
         else stepPaneFontSize(textSizeDelta);
-      } else if (/^[1-9]$/.test(e.key) && !e.shiftKey) {
-        stop();
-        const targetTab = ws?.tabs[Number(e.key) - 1];
-        if (ws && targetTab) switchTabRef.current(ws.id, targetTab.id);
       }
+      else if (/^[1-9]$/.test(e.key) && !e.shiftKey) { stop(); k.run("thread-index", Number(e.key) - 1); }
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
   }, []);
 
-  // ⌘K pressed in a popped-out agent window. That webview cannot host the
-  // palette (every command acts on state that lives here), so it asks us to
-  // open ours; it has already called setFocus on this window.
+  // ⌘K pressed in a popped-out agent window: the palette opens here.
   useEffect(() => onPaletteSummon(() => {
     setDialog({ kind: "none" });
     setCmdBarOpen(true);
@@ -3515,7 +3114,9 @@ export default function App() {
       const ws = workspaces.find((w) => w.id === focusedWsId);
       return ws ? getFocusedTab(ws).focusedPaneId : null;
     },
-    guard: () => dialog.kind === "none" && !contextMenu,
+    // Dictation goes to the focused agent of the thread on screen, so it has
+    // to be on screen: not while the composer or Settings covers it.
+    guard: () => dialog.kind === "none" && !contextMenu && !composing,
   });
 
   // A dictation that captured pure silence means macOS blocked the mic
@@ -3562,33 +3163,13 @@ export default function App() {
     // the Rust Destroyed hook emits a "return this pane" event, and with
     // the workspace already gone that event no-ops instead of racing to
     // re-insert a pane into a workspace mid-deletion.
-    setWorkspaces((prev) => prev.filter((w) => w.id !== workspaceId).map((w) => {
-      // Every other workspace that was borrowing one of this one's agents now
-      // holds a leaf pointing at a pane that is about to be killed. Release
-      // those loans in the same update that removes the workspace, so no tab
-      // ever renders a tile for an agent that no longer exists.
-      const lost = w.tabs.flatMap((t) => (t.borrowed ?? []).filter((r) => r.workspaceId === workspaceId).map((r) => r.paneId));
-      if (lost.length === 0) return w;
-      const released = { ...w, tabs: w.tabs.map((t) => {
-        let tree = t.layoutTree;
-        let refs = t.borrowed;
-        for (const id of lost) {
-          if (!borrowedOwner(refs, id)) continue;
-          tree = tree ? remove(tree, id) : null;
-          refs = removeBorrowed(refs, id);
-        }
-        if (refs === t.borrowed) return t;
-        return {
-          ...t,
-          layoutTree: tree,
-          focusedPaneId: tree && t.focusedPaneId && lost.includes(t.focusedPaneId) ? firstPaneId(tree) : (tree ? t.focusedPaneId : null),
-          zoomedPaneId: t.zoomedPaneId && lost.includes(t.zoomedPaneId) ? null : t.zoomedPaneId,
-          borrowed: refs,
-        };
-      }) };
-      saveWorkspaceRef.current(released);
-      return released;
-    }));
+    setWorkspaces((prev) => prev.filter((w) => w.id !== workspaceId));
+    setDormant((prev) => {
+      if (!(workspaceId in prev)) return prev;
+      const next = { ...prev };
+      delete next[workspaceId];
+      return next;
+    });
     // Popped-out panes have their own OS windows — without this they'd
     // outlive the workspace, left showing dead terminals. Unhide now:
     // the Destroyed hook emits "return", but this workspace is already
@@ -3616,9 +3197,10 @@ export default function App() {
     }
 
     if (ws?.copilot) {
-      const myPaneIds = ws.panes.filter((p) => !p.streamId).map((p) => p.id);
-      await endCopilot(ws.copilot.partnerLogin, ws.copilot.partnerWid, ws.copilot.sessionId, myPaneIds)
-        .catch(() => pushNotification({ status: "info", category: "agent", priority: true, text: "Local sharing stopped, but the remote session could not be notified. Check your connection." }));
+      const mine = ws.panes.filter((p) => !p.streamId).map((p) => p.id);
+      await endCopilot(ws.copilot.partnerLogin, ws.copilot.partnerWid, ws.copilot.sessionId, mine).catch(() =>
+        pushNotification({ status: "info", category: "agent", priority: true, text: "Sharing stopped here, but your partner couldn't be told. Check your connection." }),
+      );
     } else if (ws?.observe) {
       endObserve(ws.observe.ownerLogin, ws.observe.ownerWid, ws.observe.sessionId);
     } else {
@@ -3627,6 +3209,7 @@ export default function App() {
     if (focusedWsId === workspaceId) {
       const rest = workspaces.filter((w) => w.id !== workspaceId);
       setFocusedWsId(rest[0]?.id ?? null);
+      if (rest.length === 0) setComposing({ projectId: null });
     }
 
     if (ws?.repo_path) {
@@ -3637,271 +3220,48 @@ export default function App() {
     }
   };
 
-  // Drag-and-drop reorder in the sidebar. `fromIndex`/`toIndex` are indices
-  // into the *displayed* list — which pins PR-review workspaces first (see
-  // orderForDisplay) — so they're translated back to state-array positions by
-  // workspace id before splicing. The underlying state order (what persists)
-  // is only ever changed relative to the card actually dropped on.
-  const reorderWorkspacesLocal = (fromIndex: number, toIndex: number) => {
-    if (fromIndex === toIndex) return;
-    setWorkspaces((prev) => {
-      const display = orderForDisplay(prev);
-      const fromId = display[fromIndex]?.id;
-      const toId = display[toIndex]?.id;
-      if (!fromId || !toId || fromId === toId) return prev;
-      const next = [...prev];
-      const fi = next.findIndex((w) => w.id === fromId);
-      const [moved] = next.splice(fi, 1);
-      const ti = next.findIndex((w) => w.id === toId);
-      // Dragging downwards lands *after* the card under the cursor, upwards
-      // lands before it — same feel as the old index-splice behavior.
-      next.splice(toIndex > fromIndex ? ti + 1 : ti, 0, moved);
-      reorderWorkspacesCmd(next.map((w) => w.id)).catch(console.error);
-      return next;
-    });
-  };
-
   // ─── Context menus ─────────────────────────────────────────────────
 
-  const openWorkspaceMenu = (workspaceId: string, e: React.MouseEvent) => {
-    e.preventDefault(); e.stopPropagation();
-    const ws = workspaces.find((w) => w.id === workspaceId);
-    if (!ws) return;
-    setContextMenu({
-      x: e.clientX, y: e.clientY,
-      items: [
-        { label: "New Agent Here", onClick: () => spawnAgentInWorkspace(workspaceId) },
-        // Only where there's a repo to branch: a co-pilot or observe workspace
-        // has no repo_path, and a race is nothing but branches.
-        ...(ws.repo_path ? [{ label: "Race Agents…", onClick: () => setDialog({ kind: "race", workspaceId }) }] : []),
-        { label: "", divider: true },
-        { label: "Rename Workspace…", onClick: () => setDialog({ kind: "rename-workspace", workspaceId, current: ws.name }) },
-        { label: "Delete Workspace", danger: true, onClick: () => requestCloseWorkspace(workspaceId) },
-      ],
-    });
-  };
-
-  /** Lay another workspace's agent out in this tab. The loan is recorded on
-   * the tab, the pane record is not moved: the lending workspace keeps the
-   * agent in its own tabs, keeps its worktree, keeps its jail, and keeps the
-   * right to close it. Nothing here spawns, and nothing here can outlive the
-   * lender - if that workspace is deleted, `borrowedByWorkspace` stops
-   * resolving the ref and the leaf becomes a ghost the next reconcile drops. */
-  const borrowPanesIntoTab = (workspaceId: string, paneIds: string[]) => {
-    const loans = paneIds
-      .map((paneId) => ({ paneId, owner: ownerOfPane(paneId) }))
-      .filter((l): l is { paneId: string; owner: Workspace } => !!l.owner && l.owner.id !== workspaceId);
-    if (loans.length === 0) return;
-    let updated: Workspace | undefined;
-    setWorkspaces((prev) =>
-      prev.map((w) => {
-        if (w.id !== workspaceId) return w;
-        const tab = getFocusedTab(w);
-        return updated = {
-          ...w,
-          tabs: w.tabs.map((t) => {
-            if (t.id !== tab.id) return t;
-            let layoutTree = t.layoutTree;
-            let borrowed = t.borrowed;
-            for (const l of loans) {
-              layoutTree = appendLeaf(layoutTree, l.paneId);
-              borrowed = addBorrowed(borrowed, { paneId: l.paneId, workspaceId: l.owner.id });
-            }
-            return {
-              ...t,
-              layoutTree,
-              focusedPaneId: loans[0].paneId,
-              // A zoomed tab would hide the panes the user just asked to see.
-              zoomedPaneId: null,
-              borrowed,
-            };
-          }),
-        };
-      }),
-    );
-    if (updated) saveWorkspace(updated);
-  };
-
-  /** End a loan. Removes the leaf and the ref; never touches the agent, which
-   * is still laid out in its own workspace exactly as it was. */
-  const returnBorrowedPane = (workspaceId: string, paneId: string) => {
-    let updated: Workspace | undefined;
-    setWorkspaces((prev) =>
-      prev.map((w) => {
-        if (w.id !== workspaceId) return w;
-        return updated = {
-          ...w,
-          tabs: w.tabs.map((t) => {
-            if (!borrowedOwner(t.borrowed, paneId)) return t;
-            const layoutTree = t.layoutTree ? remove(t.layoutTree, paneId) : null;
-            return {
-              ...t,
-              layoutTree,
-              focusedPaneId: t.focusedPaneId === paneId ? (layoutTree ? firstPaneId(layoutTree) : null) : t.focusedPaneId,
-              zoomedPaneId: t.zoomedPaneId === paneId ? null : t.zoomedPaneId,
-              borrowed: removeBorrowed(t.borrowed, paneId),
-            };
-          }),
-        };
-      }),
-    );
-    if (updated) saveWorkspace(updated);
-  };
-
+  /** Right-click on an agent: what you would do to the text and to that one
+   *  agent. Thread and project actions live in their "…" menus instead. */
   const openPaneMenu = (workspaceId: string, paneId: string | null, e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
-    // Refs, not render-scope state — so a stale instance kept by memo(PaneArea)
-    // still reads the current workspaces/queue at call (right-click) time.
-    const wsList = workspacesRef.current;
-    const ws = wsList.find((w) => w.id === workspaceId);
+    const ws = workspacesRef.current.find((w) => w.id === workspaceId);
+    if (!ws || !paneId) return;
+    const pane = ws.panes.find((p) => p.id === paneId);
     const items: MenuItem[] = [];
-
-    /* Agents from other workspaces, offered as a loan rather than a move: the
-     * pane keeps running where it lives and this tab merely lays it out. Only
-     * ones not already somewhere in this workspace, and only real agents - a
-     * co-pilot or observe pane is already a mirror of someone else's terminal,
-     * and a mirror of a mirror answers no question. */
-    const pushBringIn = () => {
-      const here = new Set(ws?.tabs.flatMap((t) => t.layoutTree ? allPaneIds(t.layoutTree) : []) ?? []);
-      const lenders = wsList
-        .filter((w) => w.id !== workspaceId && !w.copilot && !w.observe)
-        .map((w) => ({ w, panes: w.panes.filter((p) => !p.streamId && !here.has(p.id)) }))
-        .filter((l) => l.panes.length > 0);
-      if (lenders.length === 0) return;
-      items.push({ label: "", divider: true });
-      items.push({
-        label: "Bring In Agent",
-        submenu: lenders.flatMap(({ w, panes }) =>
-          panes.map((p) => ({
-            label: `${w.name} · ${p.displayName ?? agentLabel(p.kind)}`,
-            onClick: () => borrowPanesIntoTab(workspaceId, [p.id]),
-          })),
-        ),
-      });
-      // The whole workspace in one gesture, which is the shape of the actual
-      // intent behind this feature: watch what another project's agents are
-      // doing, not assemble a grid one pane at a time. Offered only where it
-      // differs from the item above, since a workspace with one agent would
-      // otherwise appear twice saying the same thing.
-      const wholesale = lenders.filter((l) => l.panes.length > 1);
-      if (wholesale.length > 0) {
-        items.push({
-          label: "Bring In Workspace",
-          submenu: wholesale.map(({ w, panes }) => ({
-            label: `${w.name} · ${panes.length} agents`,
-            onClick: () => borrowPanesIntoTab(workspaceId, panes.map((p) => p.id)),
-          })),
-        });
-      }
-    };
-
-    if (paneId === null) {
-      AGENT_KINDS.forEach((kind) => {
-        items.push({
-          label: `Spawn ${agentLabel(kind)}`,
-          onClick: () => spawnAgentInWorkspace(workspaceId, undefined, undefined, kind),
-        });
-      });
-      pushBringIn();
-    } else {
-      const selection = getTerminalSelection(paneId);
-      const selectionUrl = getSelectionUrl(paneId);
-      items.push({
-        label: "Copy",
-        disabled: !selection,
-        onClick: () => copyText(selection).catch(() => flashPanePill(paneId, "copy failed", true)),
-      });
-      items.push({
-        label: "Copy URL",
-        disabled: !selectionUrl,
-        onClick: () => copyText(selectionUrl ?? "").catch(() => flashPanePill(paneId, "copy failed", true)),
-      });
-      // Prompt-queue bridge: with text typed into the input line, lift it into
-      // the queue; with an empty line, drop a queued prompt back in for review.
-      const inputLine = getInputLine(paneId).trim();
-      const queued = queueItemsRef.current.filter((i) => i.status === "queued");
-      if (inputLine) {
-        items.push({ label: "", divider: true });
-        items.push({ label: "Send to Prompt Queue", onClick: () => void sendInputLineToQueue(paneId) });
-      } else if (queued.length > 0) {
-        items.push({ label: "", divider: true });
-        items.push({
-          label: `Insert from Prompt Queue (${queued.length})`,
-          submenu: queued
-            .slice()
-            .reverse()
-            .map((q) => ({
-              label: queuePreview(q.text),
-              onClick: () => sendPromptToPane(paneId, q.text),
-            })),
-        });
-      }
-      items.push({ label: "", divider: true });
-      AGENT_KINDS.forEach((kind) => {
-        items.push({
-          label: `Spawn ${agentLabel(kind)}`,
-          onClick: () => spawnAgentInWorkspace(workspaceId, undefined, undefined, kind),
-        });
-      });
-      pushBringIn();
-      items.push({ label: "", divider: true });
-      items.push({ label: "Split Right", shortcut: "⌘D", onClick: () => splitPane(workspaceId, "horizontal") });
-      items.push({ label: "Split Down", shortcut: "⌘⇧D", onClick: () => splitPane(workspaceId, "vertical") });
-      // Menu twin of dragging a pane's topbar onto another pane — the same
-      // swap, reachable without a mouse drag (and without hunting for the
-      // drop target in a 12-pane grid).
-      const paneTab = ws?.tabs.find((t) => t.layoutTree && allPaneIds(t.layoutTree).includes(paneId));
-      const swappable = paneTab?.layoutTree
-        ? allPaneIds(paneTab.layoutTree).filter((id) => id !== paneId)
-        : [];
-      if (paneTab && swappable.length > 0) {
-        items.push({
-          label: "Swap Position With",
-          submenu: swappable.map((id) => {
-            const other = ws?.panes.find((p) => p.id === id);
-            return {
-              label: other?.displayName ?? other?.kind ?? id,
-              onClick: () => swapPanesInTab(workspaceId, paneTab.id, paneId, id),
-            };
-          }),
-        });
-      }
-      items.push({ label: "", divider: true });
-      items.push({ label: (ws && getFocusedTab(ws).zoomedPaneId === paneId) ? "Unzoom Pane" : "Zoom Pane", shortcut: "⌘Z", onClick: () => zoomPane(workspaceId, paneId) });
-      // A borrowed pane is not this tab's to close. Offer the loan back
-      // instead, and say whose agent it is so the two are never confused.
-      const lentFrom = ws?.tabs.map((t) => borrowedOwner(t.borrowed, paneId)).find(Boolean);
-      if (lentFrom) {
-        const home = wsList.find((w) => w.id === lentFrom);
-        items.push({ label: `Return to ${home?.name ?? "its workspace"}`, onClick: () => returnBorrowedPane(workspaceId, paneId) });
-      } else {
-        items.push({ label: "Close Pane", shortcut: "⌘⇧K", danger: true, onClick: () => requestClosePane(paneId) });
-      }
-      items.push({ label: "", divider: true });
-      items.push({ label: "Clear Terminal", onClick: () => sendInput(paneId, new TextEncoder().encode("\f")).catch(console.error) });
-      if (ownerOfPane(paneId)?.panes.find((p) => p.id === paneId)?.intent) {
-        items.push({ label: "Reset Intent", onClick: () => resetPaneIntent(paneId) });
-      }
-      // The OWNING workspace's repo, not the displaying tab's. A borrowed pane
-      // sitting in another workspace's tab would otherwise open a checkout it
-      // has never touched, under a label saying "here".
-      const paneOwner = ownerOfPane(paneId) ?? ws;
-      if (paneOwner?.repo_path) {
-        // Menu twin of the header's terminal button, but scoped to THIS pane —
-        // an agent on its own worktree opens that checkout, not the shared one.
-        // All four use paneCwd: this is a *pane's* menu, so "here" has to mean
-        // the same directory in every one of them. Three of them used to read
-        // ws.repo_path while their sibling read the pane's cwd, so with
-        // per-agent worktrees on, "Open in Terminal" landed in the agent's
-        // branch and "Open in Finder" one directory away in the shared repo —
-        // silently the wrong tree to go poking around in.
-        const paneCwd = paneOwner.panes.find((p) => p.id === paneId && !p.streamId)?.cwd || paneOwner.repo_path;
-        items.push({ label: "Open in Terminal", onClick: () => void openTerminalHere(paneCwd) });
-        items.push({ label: "Open in Finder", onClick: () => openPath(paneCwd).catch(console.error) });
-        items.push({ label: "Open in VS Code", onClick: () => openPath(paneCwd, "Visual Studio Code").catch(console.error) });
-        items.push({ label: "Copy Path", onClick: () => copyText(paneCwd).catch(() => flashPanePill(paneId, "copy failed", true)) });
-      }
+    const selection = getTerminalSelection(paneId);
+    const selectionUrl = getSelectionUrl(paneId);
+    items.push({
+      label: "Copy",
+      disabled: !selection,
+      onClick: () => copyText(selection).catch(() => flashPanePill(paneId, "copy failed", true)),
+    });
+    if (selectionUrl) {
+      items.push({ label: "Copy Link", onClick: () => copyText(selectionUrl).catch(() => flashPanePill(paneId, "copy failed", true)) });
     }
+    // What's typed but not sent can be kept for later (⌘K sends it back).
+    if (getInputLine(paneId).trim()) {
+      items.push({ label: "Save Prompt for Later", onClick: () => void sendInputLineToQueue(paneId) });
+    }
+    items.push({ label: "", divider: true });
+    items.push({ label: "Add Agent Right", shortcut: "⌘D", onClick: () => void splitPane(workspaceId, "horizontal") });
+    items.push({ label: "Add Agent Below", shortcut: "⌘⇧D", onClick: () => void splitPane(workspaceId, "vertical") });
+    if (getFocusedTab(ws).layoutTree && allPaneIds(getFocusedTab(ws).layoutTree!).length > 1) {
+      items.push({ label: getFocusedTab(ws).zoomedPaneId === paneId ? "Show All Agents" : "Zoom", shortcut: "⌘Z", onClick: () => zoomPane(workspaceId, paneId) });
+    }
+    items.push({ label: "Open in Its Own Window", onClick: () => void popOutPane(workspaceId, paneId) });
+    items.push({ label: "", divider: true });
+    items.push({ label: "Clear Terminal", onClick: () => sendInput(paneId, new TextEncoder().encode("\f")).catch(console.error) });
+    if (ws.repo_path) {
+      const paneCwd = pane?.cwd || ws.repo_path;
+      items.push({ label: "Open in Terminal", onClick: () => void openTerminalHere(paneCwd) });
+      items.push({ label: "Open in Finder", onClick: () => openPath(paneCwd).catch(console.error) });
+      items.push({ label: "Open in VS Code", onClick: () => openPath(paneCwd, "Visual Studio Code").catch(console.error) });
+      items.push({ label: "Copy Path", onClick: () => copyText(paneCwd).catch(() => flashPanePill(paneId, "copy failed", true)) });
+    }
+    items.push({ label: "", divider: true });
+    items.push({ label: "Close Agent", shortcut: "⌘⇧K", danger: true, onClick: () => void requestClosePane(paneId) });
     setContextMenu({ x: e.clientX, y: e.clientY, items });
   };
 
@@ -3946,12 +3306,9 @@ export default function App() {
   const updatePaneStatus = (paneId: string, status: AgentStatusStr) => {
     maybeSummarizeReviewPane(paneId, status);
     setWorkspaces((prev) => {
-      // Touch ONLY the workspace that owns the pane. The old version spread
-      // every workspace and rebuilt every panes array on each status tick (which
-      // fire several times a second across live agents), giving every workspace
-      // a fresh identity and forcing a full re-render of all mounted PaneAreas.
-      // Now unchanged workspaces keep their identity, and an unchanged status
-      // bails before allocating anything at all — no state change, no re-render.
+      // Touch only the workspace that owns the pane: unchanged workspaces keep
+      // their identity, and an unchanged status bails before allocating
+      // anything — no state change, no re-render.
       const wi = prev.findIndex((w) => w.panes.some((p) => p.id === paneId));
       if (wi < 0) return prev;
       const w = prev[wi];
@@ -4008,7 +3365,7 @@ export default function App() {
    *  would re-render every pane's terminal. Nothing here closes over state. */
   const onAgentStart = useCallback((paneId: string) => {
     setWorkspaces((prev) => {
-      if (!prev.some((w) => w.panes.some((p) => p.id === paneId && p.booting))) return prev;
+      if (!prev.some((w) => w.panes.some((p) => p.id === paneId && (p.booting || p.phase)))) return prev;
       return prev.map((w) =>
         w.panes.some((p) => p.id === paneId)
           ? { ...w, panes: w.panes.map((p) => (p.id === paneId ? { ...p, booting: false, phase: undefined } : p)) }
@@ -4017,11 +3374,27 @@ export default function App() {
     });
   }, []);
 
-  // A submitted `/model <name>` (or `/models <name>`) switches the pane's model.
-  // Returns the chosen model token, or null if this isn't a model command or
-  // carries no argument (a bare `/model` opens the agent's interactive picker,
-  // whose outcome we can't observe from keystrokes). Kept short: we display the
-  // token verbatim, so `opus` / `sonnet[1m]` / `claude-opus-4-8` all pass through.
+  // One listener each for every pane's status and start, for the life of the
+  // window. v1 registered a status listener per pane inside every mounted
+  // workspace; v2 mounts only the thread on screen, and the sidebar still has
+  // to hear about all of them.
+  const updatePaneStatusRef = useRef(updatePaneStatus);
+  updatePaneStatusRef.current = updatePaneStatus;
+  useEffect(() => {
+    let cancelled = false;
+    const unlisten: Array<() => void> = [];
+    const keep = (p: Promise<() => void>) =>
+      p.then((fn) => { if (cancelled) fn(); else unlisten.push(fn); }).catch(() => {});
+    keep(onAnyAgentStatus((paneId, status) => updatePaneStatusRef.current(paneId, status)));
+    keep(onAnyAgentStarted((paneId) => onAgentStart(paneId)));
+    return () => {
+      cancelled = true;
+      for (const fn of unlisten) fn();
+    };
+  }, [onAgentStart]);
+
+  // A submitted `/model <name>` switches the pane's model. Returns the model
+  // token, or null if this isn't a model command or carries no argument.
   const parseModelCommand = (raw: string): string | null => {
     const m = raw.trim().match(/^\/models?\b\s*(\S+)?/i);
     if (!m) return null;
@@ -4030,104 +3403,64 @@ export default function App() {
     return arg.length > 24 ? arg.slice(0, 24) : arg;
   };
 
-  // Intent history, sniffed by Terminal on every prompt the user submits into
-  // a pane (not just the first) — a rolling window of the last few raw
-  // prompts per pane, so the label can track where the task has moved on to
-  // instead of freezing on an early one-off like "checkout master".
-  const intentHistoryRef = useRef<Map<string, string[]>>(new Map());
-  const intentDebounceRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  const INTENT_HISTORY_SIZE = 5;
-  const INTENT_DEBOUNCE_MS = 1200;
-  // Longer, persisted per-pane prompt log powering the topbar intent dropdown
-  // (re-send a past prompt). Seeded lazily from the pane's saved promptHistory
-  // so it survives restarts; the ref is the always-current source of truth
-  // within a burst of submissions (the `workspaces` closure can lag).
+  // The per-pane prompt log (for re-sending a past prompt), seeded from the
+  // pane's saved history so it survives restarts.
   const promptHistoryRef = useRef<Map<string, string[]>>(new Map());
   const PROMPT_HISTORY_SIZE = 25;
+  // Panes already given their one AI title this session (see below).
+  const aiTitledRef = useRef<Set<string>>(new Set());
 
-  // Quick client-side check gating only the *instant* raw label: does this
-  // prompt look like a real task, or a one-off nav/admin command we'd rather
-  // not flash into the UI before the summarizer decides how to fold it in?
-  // Everything is still sent to the summarizer regardless — this only avoids a
-  // bare "/model" or "git status" briefly becoming the label.
-  const looksLikeTask = (raw: string): boolean => {
-    const s = raw.trim();
-    if (s.length < 3) return false;
-    if (s.startsWith("/")) return false; // slash-commands (/model, /status, …)
-    return !/^(ls|cd|pwd|clear|exit|q|quit|status|help|which|echo|cat|git (status|checkout|switch|log|diff|pull|push|stash|branch|fetch))\b/i.test(s);
+  /** One short AI title for a new thread, once, when Settings allows: a single
+   *  `claude -p` per thread, never per prompt. It replaces the local title only
+   *  if nothing has renamed the thread in the meantime. */
+  const nameThreadWithAi = (paneId: string, prompt: string) => {
+    if (!getAiTitles() || aiTitledRef.current.has(paneId)) return;
+    const local = titleFromPrompt(prompt);
+    if (!local) return;
+    aiTitledRef.current.add(paneId);
+    summarizeIntent(prompt)
+      .then((summary) => {
+        const label = summary?.trim();
+        if (!label || label.length > 80) return;
+        const now = workspacesRef.current.flatMap((w) => w.panes).find((p) => p.id === paneId);
+        if (now && (now.intent === local || !now.intent)) {
+          patchPaneIntent(paneId, { intent: label, intentRaw: now.intentRaw ?? prompt, promptHistory: now.promptHistory });
+        }
+      })
+      .catch(() => { /* the local title stands */ });
   };
 
-  // Fold a newly submitted prompt into the pane's rolling history. If the
-  // pane has no label yet, show the raw prompt immediately for instant
-  // feedback; otherwise leave the visible label alone until the debounced
-  // summarizer (below) confirms a new one — so a mid-task navigational
-  // command can't flash into the label before its context catches up. The
-  // full recent history is kept as `intentRaw` for the tooltip.
-  // Stable identity (useCallback []) so it can be passed straight to the
-  // React.memo'd Terminal without re-rendering every terminal on each App
-  // render. Safe because every value it touches is a ref (intentHistoryRef,
-  // promptHistoryRef, intentDebounceRef, workspacesRef) or a functional-update /
-  // arg-based helper (patchPaneModel, patchPaneIntent, saveWorkspace) whose
-  // behavior is identical across renders — nothing closes over render-scope
-  // state. In particular it reads workspacesRef.current, NOT the render-scope
-  // `workspaces` (which would go stale the instant this is memoized).
+  /** Every prompt submitted into a pane. A thread is named after its first
+   *  real task, locally and at once (see v2/titles.ts) — v1 ran `claude -p`
+   *  on every prompt of every agent to relabel it. When Settings allows, the
+   *  thread then gets one short AI title, once, and never again. Stable
+   *  identity: it goes straight to the memoized Terminal. */
   const updatePaneIntent = useCallback((paneId: string, raw: string) => {
-    // A `/model` command isn't a task — capture the model for the sidebar chip
-    // and don't fold it into the intent label/history.
     const model = parseModelCommand(raw);
     if (model) { patchPaneModel(paneId, model); return; }
-
-    const history = intentHistoryRef.current.get(paneId) ?? [];
-    history.push(raw);
-    if (history.length > INTENT_HISTORY_SIZE) history.shift();
-    intentHistoryRef.current.set(paneId, history);
-    const joinedRaw = history.join(" → ");
+    // One prompt to an agent: the headline social stat (counted only for an
+    // account that shares its usage; see usageStats).
+    recordUsage({ prompts: 1 });
 
     const existingPane = workspacesRef.current.flatMap((w) => w.panes).find((p) => p.id === paneId);
-    const instant = existingPane?.intent ?? (looksLikeTask(raw) ? raw : undefined);
-
-    // Persisted prompt log for the intent dropdown: append (skipping an exact
-    // consecutive repeat), cap the length. Seed from the pane's saved history
-    // the first time we touch it this session.
     let log = promptHistoryRef.current.get(paneId);
     if (!log) { log = [...(existingPane?.promptHistory ?? [])]; promptHistoryRef.current.set(paneId, log); }
     if (log[log.length - 1] !== raw) log.push(raw);
     while (log.length > PROMPT_HISTORY_SIZE) log.shift();
 
-    patchPaneIntent(paneId, { intent: instant, intentRaw: joinedRaw, promptHistory: [...log] });
+    const firstTask = !existingPane?.intent && looksLikeTask(raw);
+    const title = firstTask ? titleFromPrompt(raw) : undefined;
+    patchPaneIntent(paneId, {
+      intent: existingPane?.intent ?? title,
+      intentRaw: existingPane?.intentRaw ?? (title ? raw : undefined),
+      promptHistory: [...log],
+    });
 
-    // Debounce so a burst of quick submissions (corrections, retries)
-    // coalesces into one summarizer call instead of one per prompt.
-    const existingTimer = intentDebounceRef.current.get(paneId);
-    if (existingTimer) clearTimeout(existingTimer);
-    intentDebounceRef.current.set(
-      paneId,
-      setTimeout(() => {
-        intentDebounceRef.current.delete(paneId);
-        const prompts = intentHistoryRef.current.get(paneId) ?? [];
-        if (prompts.length === 0) return;
-        summarizeIntent(prompts.join("\n"))
-          .then((summary) => {
-            if (summary) patchPaneIntent(paneId, { intent: summary, intentRaw: joinedRaw });
-          })
-          .catch(() => { /* keep the current label */ });
-      }, INTENT_DEBOUNCE_MS),
-    );
-    // Deps intentionally empty: see the comment on the declaration — every
-    // referenced binding is a ref or a behaviorally-stable helper.
+    if (title) nameThreadWithAi(paneId, raw);
+    // Deps intentionally empty: every binding it touches is a ref or a
+    // functional-update helper.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Clear a pane's captured intent and history — for when the captured
-  // prompts were a stray "ls" or the task has moved on and the label should
-  // start fresh from the next submitted prompt.
-  const resetPaneIntent = (paneId: string) => {
-    intentHistoryRef.current.delete(paneId);
-    promptHistoryRef.current.delete(paneId);
-    const timer = intentDebounceRef.current.get(paneId);
-    if (timer) { clearTimeout(timer); intentDebounceRef.current.delete(paneId); }
-    patchPaneIntent(paneId, { intent: undefined, intentRaw: undefined, promptHistory: [] });
-  };
 
   // Drop a past prompt back into the agent's input line — no trailing Enter,
   // so the user reviews/edits before submitting. Powers the topbar intent
@@ -4143,174 +3476,520 @@ export default function App() {
     noteInjectedInput(paneId, paste);
   };
 
-  // ─── Presence (Ably) ───────────────────────────────────────────────
+  // ─── Settings ──────────────────────────────────────────────────────
 
-  // Connect to Ably once signed in to flock ID with a claimed handle —
-  // the handle is the wire identity (Ably clientId) for presence and
-  // session signaling. Reconnects when the handle changes.
+  // Settings is a page of the main panel (lucy's Settings), not a dialog over
+  // it. `tab` deep-links a page.
+  const openSettings = (tab?: string) => {
+    closePages();
+    setDialog({ kind: "settings", tab: typeof tab === "string" ? tab : undefined });
+  };
+
+  // Opened via the native "flock → Settings…" menu item.
   useEffect(() => {
-    const myHandle = idProfile?.handle;
-    if (!myHandle) {
-      disconnectPresence();
-      setPresenceStatus("connecting");
+    let unlisten: (() => void) | undefined;
+    onOpenSettings(() => setDialog({ kind: "settings" })).then((fn) => (unlisten = fn));
+    return () => unlisten?.();
+  }, []);
+
+  // Light or dark, for the sidebar's toggle; kept in step with Settings.
+  const [theme, setThemeState] = useState(getEffectiveTheme());
+  useEffect(() => onThemeChange(setThemeState), []);
+  const dark = theme !== "light";
+
+  // ─── Where you are ─────────────────────────────────────────────────
+
+  const dormantRef = useRef(dormant);
+  dormantRef.current = dormant;
+  const projects = useMemo(() => buildProjects(displayWorkspaces, dormant), [displayWorkspaces, dormant]);
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
+  const composerProjects = useMemo(
+    () => workspaces.map((w) => ({ id: w.id, name: w.name, repoPath: w.repo_path })),
+    // Names and paths only: a status tick must not hand the composer a new list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [workspaces.map((w) => `${w.id}\u0000${w.name}\u0000${w.repo_path}`).join("\u0001")],
+  );
+  const waiting = useMemo(() => waitingThreads(projects), [projects]);
+
+  const focusedTab = focusedWs ? getFocusedTab(focusedWs) : undefined;
+  const waking = !!(focusedWs && dormant[focusedWs.id]);
+  const threadOnScreen = !!(focusedWs && focusedTab?.layoutTree && !waking);
+  // What the main panel shows. Settings sits over all of it.
+  const mainView: "thread" | "new" | "waking" = composing ? "new" : threadOnScreen ? "thread" : waking ? "waking" : "new";
+  const currentThread: Thread | undefined = threadOnScreen
+    ? projects.find((p) => p.id === focusedWs!.id)?.threads.find((t) => t.tabId === focusedTab!.id)
+    : undefined;
+  const focusedPane = threadOnScreen ? focusedWs!.panes.find((p) => p.id === focusedTab!.focusedPaneId) : undefined;
+
+  /** Open a thread: its project comes to the front (waking it if it has not
+   *  been restored yet), the thread is selected, and an agent in it that is
+   *  waiting on you gets the focus — which is also what acknowledges it. */
+  const openThread = (workspaceId: string, tabId: string) => {
+    setComposing(null);
+    closePages();
+    setFocusedWsId(workspaceId);
+    if (dormantRef.current[workspaceId]) {
+      pendingTabRef.current.set(workspaceId, tabId);
       return;
     }
+    const ws = workspacesRef.current.find((w) => w.id === workspaceId);
+    const tab = ws?.tabs.find((t) => t.id === tabId);
+    if (!ws || !tab) return;
+    const ids = tab.layoutTree ? allPaneIds(tab.layoutTree) : [];
+    const waitingPane = ids
+      .map((id) => ws.panes.find((p) => p.id === id))
+      .find((p) => p && (p.status === "awaiting_input" || p.status === "blocked"));
+    const target = waitingPane?.id ?? tab.focusedPaneId ?? ids[0];
+    if (target) focusPane(workspaceId, target);
+    else switchTab(workspaceId, tabId);
+  };
+  focusPaneRefForToasts.current = (wsId: string, paneId: string) => {
+    const ws = workspacesRef.current.find((w) => w.id === wsId);
+    const tab = ws ? findTabForPane(ws, paneId) : undefined;
+    if (tab) openThread(wsId, tab.id);
+  };
 
-    // Include our own handle so a second window shows up in the friends list
-    const friendHandles = [...new Set([
-      myHandle,
-      ...friends.map((f) => f.handle),
-    ])].filter(Boolean);
-    const agentCount = workspaces.reduce((n, w) => n + w.panes.length, 0);
+  /** The composer, for a project (or the one on screen). */
+  const beginNewAgent = (projectId?: string | null) => {
+    setDialog((d) => (d.kind === "settings" ? { kind: "none" } : d));
+    setComposing({ projectId: projectId ?? focusedWsIdRef.current });
+  };
 
-    // Fresh access token per Ably (re)auth — flock ID tokens expire hourly.
-    const getToken = async () => {
-      const { data } = await supabase().auth.getSession();
-      const token = data.session?.access_token;
-      if (!token) throw new Error("flock ID session expired");
-      return token;
+  /** A new thread in an existing project: a tab of its own (an empty one is
+   *  reused), one agent, and the composer's prompt as its first task. */
+  const startThread = async (workspaceId: string, kind: AgentKind, prompt: string, launch?: LaunchOptions) => {
+    setFocusedWsId(workspaceId);
+    // Waking a project replaces its tabs with the saved ones; the new thread
+    // has to be added after that, not raced against it.
+    if (!restoredWsIds.current.has(workspaceId)) await restoreWorkspaceById(workspaceId);
+    let fresh: WorkspaceTab | undefined;
+    setWorkspaces((prev) => prev.map((w) => {
+      if (w.id !== workspaceId) return w;
+      const empty = w.tabs.find((t) => !t.layoutTree);
+      fresh = empty ?? makeTab(String(w.tabs.length + 1));
+      return { ...w, tabs: empty ? w.tabs : [...w.tabs, fresh], focusedTabId: fresh.id };
+    }));
+    const title = prompt ? titleFromPrompt(prompt) : undefined;
+    const paneId = await spawnAgentInWorkspace(
+      workspaceId,
+      prompt || undefined,
+      undefined,
+      kind,
+      undefined,
+      { intent: title, intentRaw: prompt || undefined, launch },
+    ).catch(() => undefined);
+    if (paneId && prompt) nameThreadWithAi(paneId, prompt);
+  };
+
+  /** A new project from a folder, then its first thread. Uses your defaults
+   *  for branches and secure mode; "More options" has the rest. */
+  const startProject = async (dir: string, kind: AgentKind, prompt: string, launch?: LaunchOptions) => {
+    const name = dir.replace(/\/+$/, "").split("/").pop() || "project";
+    // Your checkout, unless you chose per-agent worktrees in Settings: a
+    // worktree is a new folder, and a new folder is one more "do you trust
+    // it?" from the agent before it starts.
+    const mode = getComposerBranchMode();
+    const plan: BranchPlan = mode === "new"
+      ? { mode: "new", stem: slugify(name), baseRef: "", fetch: getFetchBaseDefault() }
+      : { mode: "current", stem: slugify(name), baseRef: "", fetch: false };
+    let secure = false;
+    if (getSecureByDefault()) secure = await containerStatus().then((c) => c.daemon_running).catch(() => false);
+    await onNewWorkspaceConfirmed({ name, agents: [kind], dir, plan, secure }, prompt || undefined, launch);
+  };
+
+  const startFromComposer = (req: StartRequest) => {
+    setComposing(null);
+    if (req.projectId) void startThread(req.projectId, req.kind, req.prompt, req.launch);
+    else if (req.dir) void startProject(req.dir, req.kind, req.prompt, req.launch);
+  };
+
+  const pickFolder = async (): Promise<string | null> => {
+    const picked = await openDialog({ directory: true, multiple: false, title: "Choose a project folder" }).catch(() => null);
+    return typeof picked === "string" ? picked : null;
+  };
+
+  /** The next thread, in sidebar order (⌘⇧] / ⌘⇧[). */
+  const stepThread = (dir: number) => {
+    const list = projectsRef.current.flatMap((p) => p.threads);
+    if (list.length === 0) return;
+    const at = list.findIndex((t) => t.workspaceId === focusedWsIdRef.current && t.tabId === focusedTab?.id);
+    const next = list[(at + dir + list.length) % list.length];
+    openThread(next.workspaceId, next.tabId);
+  };
+
+  /** The next thread waiting on you, across every project (⌘J). */
+  const nextWaiting = () => {
+    const list = waitingThreads(projectsRef.current);
+    if (list.length === 0) return;
+    const at = list.findIndex((t) => t.workspaceId === focusedWsIdRef.current && t.tabId === focusedTab?.id);
+    const next = list[(at + 1) % list.length];
+    openThread(next.workspaceId, next.tabId);
+  };
+
+  const closeThread = (workspaceId: string, tabId: string) => void requestCloseTab(workspaceId, tabId);
+
+  const renameThread = (workspaceId: string, tabId: string, name: string) => renameTabInWorkspace(workspaceId, tabId, name);
+
+  // ─── Menus ─────────────────────────────────────────────────────────
+
+  const openInMenu = (dir: string): MenuEntry[] => [
+    { label: "Open in Terminal", onSelect: () => void openTerminalHere(dir) },
+    { label: "Open in Finder", onSelect: () => { openPath(dir).catch(console.error); } },
+    { label: "Open in VS Code", onSelect: () => { openPath(dir, "Visual Studio Code").catch(console.error); } },
+    { label: "Copy path", onSelect: () => { copyText(dir).catch(() => notifyFailure("Couldn't copy the path.")); } },
+  ];
+
+  const projectMenu = (workspaceId: string): MenuEntry[] => {
+    const ws = workspacesRef.current.find((w) => w.id === workspaceId);
+    if (!ws) return [];
+    return [
+      { label: "New agent", hint: "⌘N", onSelect: () => beginNewAgent(workspaceId) },
+      ...(ws.repo_path ? [{ label: "Race agents on one prompt…", onSelect: () => setDialog({ kind: "race", workspaceId }) } as MenuEntry] : []),
+      { separator: true },
+      ...(ws.repo_path ? openInMenu(ws.repo_path) : []),
+      { separator: true },
+      { label: "Rename project…", onSelect: () => setDialog({ kind: "rename-workspace", workspaceId, current: ws.name }) },
+      { label: "Remove project", danger: true, onSelect: () => requestCloseWorkspace(workspaceId) },
+    ];
+  };
+
+  const threadMenu = (t: Thread): MenuEntry[] => [
+    ...(t.paneId ? [{ label: "Open in its own window", onSelect: () => void popOutPane(t.workspaceId, t.paneId!) } as MenuEntry] : []),
+    { separator: true },
+    { label: t.agents > 1 ? `Close thread and its ${t.agents} agents` : "Close thread", danger: true, onSelect: () => closeThread(t.workspaceId, t.tabId) },
+  ];
+
+  useBroadcast();
+  const headerMenu = (): MenuEntry[] => {
+    if (!focusedWs || !focusedTab) return [];
+    const ws = focusedWs;
+    const tab = focusedTab;
+    const ids = tab.layoutTree ? allPaneIds(tab.layoutTree) : [];
+    const key = broadcastKey(ws.id, tab.id);
+    const target = tab.focusedPaneId;
+    const dir = (target && ws.panes.find((p) => p.id === target)?.cwd) || ws.repo_path;
+    return [
+      { label: "Add agent right", hint: "⌘D", onSelect: () => void splitPane(ws.id, "horizontal") },
+      { label: "Add agent below", hint: "⌘⇧D", onSelect: () => void splitPane(ws.id, "vertical") },
+      ...AGENT_KINDS.filter((k) => k !== ws.agentKind).map<MenuEntry>((k) => ({
+        label: `Add ${agentLabel(k)}`,
+        onSelect: () => void spawnAgentInWorkspace(ws.id, undefined, undefined, k),
+      })),
+      ...(ids.length > 1
+        ? [
+            { separator: true } as MenuEntry,
+            { label: "Type into every agent", checked: isBroadcasting(key), onSelect: () => toggleBroadcast(key) } as MenuEntry,
+            ...(target ? [{ label: tab.zoomedPaneId ? "Show all agents" : "Zoom this agent", hint: "⌘Z", onSelect: () => zoomPane(ws.id, target) } as MenuEntry] : []),
+          ]
+        : []),
+      ...(target ? [{ label: "Open in its own window", onSelect: () => void popOutPane(ws.id, target) } as MenuEntry] : []),
+      { separator: true },
+      ...(ws.repo_path ? [{ label: "Race this task across agents…", onSelect: () => setDialog({ kind: "race", workspaceId: ws.id }) } as MenuEntry] : []),
+      ...(dir ? openInMenu(dir) : []),
+      { separator: true },
+      ...(target && ids.length > 1 ? [{ label: "Close this agent", hint: "⌘⇧K", danger: true, onSelect: () => void requestClosePane(target) } as MenuEntry] : []),
+      { label: "Close thread", hint: "⌘⇧W", danger: true, onSelect: () => closeThread(ws.id, tab.id) },
+    ];
+  };
+
+  // The branches this thread's agents are on: the focused one's first.
+  const threadBranches = useMemo(() => {
+    if (!threadOnScreen || !focusedWs || !focusedTab?.layoutTree) return { branch: undefined as string | undefined, others: [] as string[] };
+    const map = repoMaps[focusedWs.id];
+    const live = (cwd: string, fallback?: string) => {
+      const wt = map?.worktrees.find((t) => t.path === cwd);
+      return wt ? wt.branch || (wt.head ? `detached@${wt.head.slice(0, 7)}` : "") : fallback ?? "";
     };
+    const ids = allPaneIds(focusedTab.layoutTree);
+    const branchOf = (id: string) => {
+      const p = focusedWs.panes.find((x) => x.id === id);
+      return p ? live(p.cwd, p.worktree?.branch || focusedWs.branch) : "";
+    };
+    const first = branchOf(focusedTab.focusedPaneId ?? ids[0]) || focusedWs.branch;
+    const others = [...new Set(ids.map(branchOf).filter((b) => b && b !== first))];
+    return { branch: first || undefined, others };
+  }, [threadOnScreen, focusedWs, focusedTab, repoMaps]);
 
-    // Reset the transition tracker for this connection: the initial backfill
-    // burst below establishes the baseline silently (primed stays false until
-    // connect resolves), so we only toast changes after that.
-    presencePrevRef.current.clear();
-    presencePrimedRef.current = false;
-
-    connectPresence(getToken, friendHandles, agentCount, (event) => {
-      const next: "online" | "offline" = event.kind === "offline" ? "offline" : "online";
-      const prevPresence = presencePrevRef.current.get(event.login);
-      presencePrevRef.current.set(event.login, next);
-      // Toast only a genuine change, and only once the baseline is primed.
-      // "update" events (agent-count changes) keep next==="online", so a friend
-      // already online doesn't re-toast.
-      if (presencePrimedRef.current && prevPresence !== next) {
-        if (next === "online") {
-          const n = "agentCount" in event ? event.agentCount : 0;
-          pushNotification({ status: "info", category: "agent", priority: false,
-            text: `@${event.login} connected${n ? ` — ${n} agent${n === 1 ? "" : "s"} running` : ""}` });
-        } else {
-          pushNotification({ status: "info", category: "agent", priority: false,
-            text: `@${event.login} disconnected` });
-        }
+  // ─── Command bar contents ──────────────────────────────────────────
+  //
+  // Everything in the app is reachable here by name. Built from live state on
+  // every render: most of it is not a static verb but the threads and projects
+  // that exist right now. Threads waiting on you come first.
+  const commands: Command[] = useMemo(() => {
+    const out: Command[] = [];
+    for (const p of projects) {
+      for (const t of p.threads) {
+        const waitingHere = t.state === "needs-you";
+        out.push({
+          id: `thread:${t.key}`,
+          group: waitingHere ? "Needs you" : "Agents",
+          label: waitingHere ? `${t.title} is waiting on you` : t.title,
+          hint: p.name,
+          attention: waitingHere,
+          detail: t.agents > 1 ? `${t.agents} agents` : undefined,
+          keywords: `${t.kinds.join(" ")} ${p.name} agent thread`,
+          run: () => openThread(t.workspaceId, t.tabId),
+        });
       }
-      setFriends((prev) => prev.map((f) => {
-        if (f.handle !== event.login) return f;
-        if (event.kind === "online")  return { ...f, presence: "online",  agentCount: event.agentCount, windowId: event.windowId };
-        if (event.kind === "offline") return { ...f, presence: "offline", agentCount: 0, windowId: undefined, lastSeen: Math.floor(Date.now() / 1000) };
-        if (event.kind === "update")  return { ...f, presence: "online",  agentCount: event.agentCount, windowId: event.windowId };
-        return f;
-      }));
-    }, setPresenceStatus).then(() => {
-      // Baseline is now established (initial members synced) — start toasting
-      // real transitions from here on.
-      presencePrimedRef.current = true;
-      // Init session signaling once presence is established. Route through the
-      // ref so the *current* handler (with live state) always runs, not the
-      // stale one captured when presence first connected.
-      initSessions(myHandle, (msg) => handleSessionMsgRef.current(msg));
-    }).catch(console.error);
+    }
+    for (const ws of workspaces) {
+      out.push({
+        id: `ws:${ws.id}`,
+        group: "Projects",
+        label: `New agent in ${ws.name}`,
+        hint: ws.branch || undefined,
+        keywords: "project workspace new start spawn",
+        context: ws.repo_path ?? "",
+        run: () => beginNewAgent(ws.id),
+      });
+    }
+    out.push({ id: "act:new", group: "Start", label: "New agent", hint: "⌘N", keywords: "spawn launch new claude codex opencode grok start", run: () => beginNewAgent() });
+    out.push({ id: "act:new-project", group: "Start", label: "New project with options…", hint: "⌘⇧N", keywords: "workspace worktree branch secure lineup grid create", run: () => beginNewWorkspace() });
+    if (focusedWs) {
+      const here = focusedWs.name;
+      out.push({ id: "act:grid", group: "Start", label: "Start a grid of agents", hint: here, keywords: "layout split quad six eight twelve many", run: () => {
+        const id = focusedWs.id;
+        setComposing(null);
+        newTabInWorkspace(id);
+        setDialog({ kind: "spawn-layout", workspaceId: id });
+      } });
+      if (focusedWs.repo_path) {
+        out.push({ id: "act:race", group: "Start", label: "Race agents on one prompt", hint: here, keywords: "fan out parallel worktree compare contenders", run: () => setDialog({ kind: "race", workspaceId: focusedWs.id }) });
+      }
+      if (focusedTab?.race) {
+        out.push({ id: "act:race-compare", group: "Review", label: `Compare the ${focusedTab.race.contenders.length} race contenders`, hint: here, keywords: "race diff judge merge winner", run: () => setDialog({ kind: "race-compare", workspaceId: focusedWs.id, tabId: focusedTab.id }) });
+      }
+      out.push({ id: "act:changes", group: "Review", label: changesOpen ? "Hide changes" : "Show changes", hint: here, keywords: "diff git status uncommitted review changes branches worktrees", run: () => toggleChanges() });
+      if (threadOnScreen) {
+        out.push({ id: "act:split-right", group: "Agents", label: "Add an agent right", hint: "⌘D", keywords: "pane split new beside", run: () => void splitPane(focusedWs.id, "horizontal") });
+        out.push({ id: "act:split-down", group: "Agents", label: "Add an agent below", hint: "⌘⇧D", keywords: "pane split new vertical", run: () => void splitPane(focusedWs.id, "vertical") });
+        if (focusedTab?.focusedPaneId) {
+          const target = focusedTab.focusedPaneId;
+          out.push({ id: "act:zoom", group: "Agents", label: focusedTab.zoomedPaneId === target ? "Show all agents" : "Zoom this agent", hint: "⌘Z", keywords: "full screen maximize expand", run: () => zoomPane(focusedWs.id, target) });
+          out.push({ id: "act:popout", group: "Agents", label: "Open this agent in its own window", keywords: "pop out detach window monitor", run: () => void popOutPane(focusedWs.id, target) });
+          out.push({ id: "act:close-pane", group: "Agents", label: "Close this agent", hint: "⌘⇧K", keywords: "kill stop quit end pane", run: () => void requestClosePane(target) });
+        }
+        if (focusedTab) out.push({ id: "act:close-thread", group: "Agents", label: "Close this thread", hint: "⌘⇧W", keywords: "close tab end", run: () => closeThread(focusedWs.id, focusedTab.id) });
+      }
+      out.push({ id: "act:rename-ws", group: "Projects", label: `Rename "${here}"`, keywords: "project workspace title name", run: () => setDialog({ kind: "rename-workspace", workspaceId: focusedWs.id, current: focusedWs.name }) });
+      out.push({ id: "act:delete-ws", group: "Projects", label: `Remove "${here}"`, keywords: "project workspace remove close delete", run: () => requestCloseWorkspace(focusedWs.id) });
+    }
+    // Saved prompts (⌘⇧P, or "Save prompt for later" on an agent), sent back
+    // into the agent on screen.
+    const target = focusedTab?.focusedPaneId;
+    for (const q of queueItems.filter((i) => i.status === "queued").slice().reverse()) {
+      out.push({
+        id: `queue:${q.id}`,
+        group: "Saved prompts",
+        label: queuePreview(q.text),
+        hint: target ? "send to this agent" : undefined,
+        keywords: "queue saved prompt later send",
+        run: () => { if (target) void launchQueueItem(q.id, target); else notifyFailure("Open an agent first, then send the prompt to it."); },
+      });
+    }
+    out.push({ id: "act:queue", group: "Start", label: "Save a prompt for later", hint: "⌘⇧P", keywords: "queue idea note screenshot capture", run: () => setDialog({ kind: "queue-capture" }) });
+    out.push({ id: "act:prs", group: "Review", label: "Pull requests", keywords: "github pr checks review", run: () => setDialog({ kind: "pr-hub", view: "prs" }) });
+    out.push({ id: "act:queue-view", group: "Review", label: "Merge queue", keywords: "github merge", run: () => setDialog({ kind: "pr-hub", view: "queue" }) });
+    if (getGraphEnabled()) {
+      out.push({ id: "act:graph", group: "App", label: "Graph Explorer", keywords: "knowledge memory decisions recall nodes", run: () => window.dispatchEvent(new Event(OPEN_GRAPH_EXPLORER_EVENT)) });
+      out.push({ id: "act:insights", group: "App", label: "Graph insights", keywords: "knowledge memory coverage recall metrics", run: () => window.dispatchEvent(new CustomEvent<GraphExplorerOpenDetail>(OPEN_GRAPH_EXPLORER_EVENT, { detail: { view: "insights" } })) });
+    }
+    out.push({ id: "act:graph-setup", group: "App", label: getGraphEnabled() ? "Graph settings" : "Set up the knowledge graph", keywords: "kg memory postgres docker engine mcp", run: () => window.dispatchEvent(new Event(OPEN_GRAPH_SETUP_EVENT)) });
+    for (const t of THEMES) {
+      out.push({ id: `theme:${t.id}`, group: "App", label: `Theme: ${t.label}`, keywords: "appearance dark light colour color contrast", run: () => applyTheme(t.id) });
+    }
+    out.push({ id: "act:settings", group: "App", label: "Settings", hint: "⌘,", keywords: "preferences theme appearance security graph shortcuts", run: () => openSettings() });
+    if (idProfile?.id) out.push({ id: "act:me", group: "App", label: "Your stats and achievements", keywords: "usage tokens spend profile trophies me", run: () => { closePages(); setDialog({ kind: "my-info" }); } });
+    out.push({ id: "act:sidebar", group: "App", label: sidebarCollapsed ? "Show sidebar" : "Hide sidebar", hint: "⌘\\", keywords: "rail panel collapse", run: () => toggleSidebarCollapsed() });
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects, workspaces, focusedWsId, focusedTab, threadOnScreen, sidebarCollapsed, changesOpen, queueItems]);
 
-    return () => disconnectPresence();
-  }, [idProfile?.handle]);
+  /** The palette's answer to text that is not a command: the agents you can
+   *  hand it to (pasted into their input line, not submitted), or a new one. */
+  const promptActions = useCallback((text: string): Command[] => {
+    const out: Command[] = [];
+    const inject = (paneId: string) =>
+      deliverPrompt(paneId, text, {
+        readiness: (id) => {
+          const pane = workspacesRef.current.flatMap((w) => w.panes).find((p) => p.id === id);
+          if (!pane) return "gone";
+          return pane.spawning || pane.booting ? "booting" : "ready";
+        },
+        paste: sendPromptToPane,
+        submit: async () => {},
+      });
+    for (const p of projectsRef.current) {
+      for (const t of p.threads) {
+        if (!t.paneId) continue;
+        out.push({
+          id: `send:${t.key}`,
+          group: "Send to",
+          label: t.title,
+          hint: p.name,
+          attention: t.state === "needs-you",
+          keywords: `${t.kinds.join(" ")} ${p.name} send prompt tell ask`,
+          run: () => {
+            openThread(t.workspaceId, t.tabId);
+            void inject(t.paneId!);
+          },
+        });
+      }
+    }
+    const here = focusedWsIdRef.current;
+    if (here) {
+      out.push({
+        id: "send:new",
+        group: "Send to",
+        label: "A new agent",
+        hint: workspacesRef.current.find((w) => w.id === here)?.name,
+        keywords: "spawn start fresh new",
+        run: () => void startThread(here, workspacesRef.current.find((w) => w.id === here)?.agentKind ?? "claude", text),
+      });
+      if (workspacesRef.current.find((w) => w.id === here)?.repo_path) {
+        out.push({ id: "send:race", group: "Send to", label: "Several agents, racing", keywords: "race fan out parallel compare", run: () => setDialog({ kind: "race", workspaceId: here, prompt: text }) });
+      }
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Broadcast agent count changes without reconnecting
-  useEffect(() => {
-    const agentCount = workspaces.reduce((n, w) => n + w.panes.length, 0);
-    updateAgentCount(agentCount).catch(console.error);
-  }, [workspaces]);
+  // ─── Stable handler identities for the memoized children ───────────────
+  // useEventCallback: one identity for the life of the component, always
+  // calling the current render's function (see lib/useEventCallback.ts).
+  const sNewAgent = useEventCallback(beginNewAgent);
+  const sOpenThread = useEventCallback(openThread);
+  const sNextWaiting = useEventCallback(nextWaiting);
+  const sOpenPrs = useEventCallback(() => {
+    closePages();
+    setDialog({ kind: "pr-hub", view: "prs" });
+  });
+  const sOpenGraph = useEventCallback(() =>
+    window.dispatchEvent(new Event(getGraphEnabled() ? OPEN_GRAPH_EXPLORER_EVENT : OPEN_GRAPH_SETUP_EVENT)),
+  );
+  const sOpenSettings = useEventCallback(openSettings);
+  const sToggleSidebar = useEventCallback(toggleSidebarCollapsed);
+  const sRenameThread = useEventCallback(renameThread);
+  const sThreadMenu = useEventCallback(threadMenu);
+  const sProjectMenu = useEventCallback(projectMenu);
+  const sToggleTheme = useEventCallback(() => applyTheme(dark ? "light" : "dark"));
+  const sHeaderMenu = useEventCallback(headerMenu);
+  const sToggleChanges = useEventCallback(toggleChanges);
+  const sSplitRight = useEventCallback(() => { if (focusedWsIdRef.current) void splitPane(focusedWsIdRef.current, "horizontal"); });
+  const sShowSidebar = useEventCallback(() => { if (sidebarCollapsed) toggleSidebarCollapsed(); });
+  const sRenameCurrent = useEventCallback((name: string) => {
+    if (focusedWs && focusedTab) renameTabInWorkspace(focusedWs.id, focusedTab.id, name);
+  });
+  const sCompareRace = useEventCallback(() => {
+    if (focusedWs && focusedTab?.race) setDialog({ kind: "race-compare", workspaceId: focusedWs.id, tabId: focusedTab.id });
+  });
+  const sFocusPane = useEventCallback(focusPane);
+  const sResizeSplit = useEventCallback(resizeSplit);
+  const sEvenSplits = useEventCallback(evenSplits);
+  const sSwapPanes = useEventCallback(swapPanesInTab);
+  const sZoomPane = useEventCallback(zoomPane);
+  const sClosePane = useEventCallback(requestClosePane);
+  const sPaneContextMenu = useEventCallback(openPaneMenu);
+  const sBringBack = useEventCallback(bringBackPane);
+  const sStart = useEventCallback(startFromComposer);
+  const sPickFolder = useEventCallback(pickFolder);
+  const sMoreOptions = useEventCallback(() => { setComposing(null); beginNewWorkspace(); });
+  const sCancelComposer = useEventCallback(() => setComposing(null));
 
-  // Update the presence filter whenever the set of friends changes, and
-  // backfill presence for any of them already online (e.g. a friend you just
-  // added who was online before you started tracking them).
-  const friendKey = friends.map((f) => f.handle).sort().join(",");
-  useEffect(() => {
-    updateFriends(friends.map((f) => f.handle));
-    resyncFriendPresence();
-  }, [friendKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Stable for the memoized sidebar: rebuilt only when the profile changes.
+  // ─── Sessions with friends: co-pilot, watching, tasks ────────────────────
+  // All three ride the presence connection (lib/session.ts, over Ably). A
+  // friend asking to watch, inviting you to co-pilot or sending a task is a
+  // note in the corner with an answer on it. Co-pilot is a temporary project,
+  // "co-pilot · @friend", holding your agents and theirs; watching is a
+  // temporary project with their one agent, read-only; a task is a prompt
+  // handed to the agent in focus (or to a new one).
+  const [sessionToasts, setSessionToasts] = useState<ToastItem[]>([]);
+  const [taskDialog, setTaskDialog] = useState<{ login: string; windowId: string; avatar?: string } | null>(null);
+  /** Session id → the local pane a friend is watching. */
+  const observeSharesRef = useRef(new Map<string, string>());
+  const handleSessionMsgRef = useRef<(msg: SessionMsg) => void>(() => {});
 
-  // ─── Friends ───────────────────────────────────────────────────────
+  /** The agent to share, or to hand a task to: the one in focus on screen,
+   *  else the first of yours anywhere. Never a friend's. */
+  const resolveShareTarget = (): { ws: Workspace; pane: Pane } | null => {
+    const local = (w: Workspace) => !w.observe && !w.copilot;
+    const ws =
+      workspacesRef.current.find((w) => w.id === focusedWsIdRef.current && local(w) && w.panes.some((p) => !p.streamId)) ??
+      workspacesRef.current.find((w) => local(w) && w.panes.some((p) => !p.streamId && !p.spawning));
+    if (!ws) return null;
+    const focusedId = getFocusedTab(ws)?.focusedPaneId;
+    const pane = ws.panes.find((p) => p.id === focusedId && !p.streamId) ?? ws.panes.find((p) => !p.streamId);
+    return pane ? { ws, pane } : null;
+  };
 
-
-  // ─── Sessions ──────────────────────────────────────────────────────
-
-  /** Build a fresh co-pilot workspace shell with no panes yet. */
-  /** Build a single-pane observe workspace (read-only). */
-  const newObserveWorkspace = useCallback((
-    sessionId: string,
-    ownerLogin: string,
-    ownerWid: string,
-    ownerAvatar: string | undefined,
-    paneLabel: string,
-  ): Workspace => {
+  const newObserveWorkspace = (sessionId: string, ownerLogin: string, ownerWid: string, ownerAvatar: string | undefined, paneLabel: string): Workspace => {
     const wsId = `observe:${sessionId}`;
-    const remotePane = {
+    const remotePane: Pane = {
       id: `${wsId}:pane`,
       workspaceId: wsId,
       kind: paneLabel,
-      status: "idle" as AgentStatusStr,
-      statusChangedAt: Date.now(),
+      displayName: paneLabel,
+      status: "idle",
       attention: false,
-      streamId: sessionId, // observe streams use session_id as the channel
-      cwd: "", // remote pane — no local working directory
+      streamId: sessionId, // observe streams use the session id as the channel
+      cwd: "",
     };
-    const tab = makeTab("1");
+    const tab = makeTab(paneLabel);
     return {
       id: wsId,
-      name: `observing · ${ownerLogin}`,
+      name: `watching @${ownerLogin}`,
       repo_path: "",
       branch: "live",
       created_at: Date.now(),
-      // The palette's gold slot, by token: the literal #f4d49b this used to
-      // carry is a Nightfall pastel and reads at 1.27:1 on Daybreak's paper.
       accentColor: "var(--ws-accent-5)",
       panes: [remotePane],
       tabs: [{ ...tab, layoutTree: { type: "leaf", paneId: remotePane.id }, focusedPaneId: remotePane.id }],
       focusedTabId: tab.id,
-      agentKind: "claude" as AgentKind,
+      agentKind: "claude",
       observe: { sessionId, ownerLogin, ownerWid, ownerAvatar },
     };
-  }, []);
+  };
 
-  const newCopilotWorkspace = useCallback((
+  const newCopilotWorkspace = (
     sessionId: string,
     partnerLogin: string,
     partnerWid: string,
     partnerAvatar: string | undefined,
     // The inviter starts "pending" and flips to "connected" on copilot_accept;
-    // the guest passes "connected" since they build this by accepting.
+    // the guest is connected from the start: they build this by accepting.
     status: "pending" | "connected" = "pending",
   ): Workspace => {
-    const tab = makeTab("1");
+    const tab = makeTab("Together");
     return {
       id: `copilot:${sessionId}`,
-      name: `co-pilot · ${partnerLogin}`,
+      name: `co-pilot · @${partnerLogin}`,
       repo_path: "",
       branch: "shared",
       created_at: Date.now(),
-      // The palette's slot 6, by token, for the same reason as observe above.
       accentColor: "var(--ws-accent-6)",
       panes: [],
       tabs: [tab],
       focusedTabId: tab.id,
-      agentKind: "claude" as AgentKind,
+      agentKind: "claude",
       copilot: { sessionId, partnerLogin, partnerWid, partnerAvatar, status },
     };
-  }, []);
+  };
 
-  /** Merge partner's panes into an existing co-pilot workspace, preserving local panes. */
-  const mergePartnerPanes = useCallback((ws: Workspace, partnerPanes: CopilotPane[]): Workspace => {
+  /** Lay the partner's panes beside yours in a co-pilot workspace. */
+  const mergePartnerPanes = (ws: Workspace, partnerPanes: CopilotPane[]): Workspace => {
     const wsId = ws.id;
     const localPanes = ws.panes.filter((p) => !p.streamId);
-    const remotePanes = partnerPanes.map((p) => ({
+    const remotePanes: Pane[] = partnerPanes.map((p) => ({
       id: `${wsId}:${p.id}`,
       workspaceId: wsId,
       kind: p.label,
-      status: "idle" as AgentStatusStr,
-      statusChangedAt: Date.now(),
+      displayName: p.label,
+      status: "idle",
       attention: false,
       streamId: p.id,
-      cwd: "", // remote pane — no local working directory
+      cwd: "",
     }));
     const allPanes = [...localPanes, ...remotePanes];
     const n = allPanes.length;
@@ -4319,30 +3998,33 @@ export default function App() {
     const layoutTree = n > 0 ? buildGridLayout(allPanes.map((p) => p.id), rows, cols) : null;
     const tab = getFocusedTab(ws);
     const focusedPaneId = allPanes.find((p) => p.id === tab.focusedPaneId)?.id ?? allPanes[0]?.id ?? null;
-    return { ...ws, panes: allPanes, tabs: ws.tabs.map((t) => t.id === tab.id ? { ...t, layoutTree, focusedPaneId } : t) };
-  }, []);
+    return { ...ws, panes: allPanes, tabs: ws.tabs.map((t) => (t.id === tab.id ? { ...t, layoutTree, focusedPaneId } : t)) };
+  };
 
-  /** Settle a co-pilot workspace's status to "connected" (idempotent). */
-  const markCopilotConnected = useCallback((ws: Workspace): Workspace =>
-    ws.copilot && ws.copilot.status !== "connected"
-      ? { ...ws, copilot: { ...ws.copilot, status: "connected" } }
-      : ws,
-  []);
+  const markCopilotConnected = (ws: Workspace): Workspace =>
+    ws.copilot && ws.copilot.status !== "connected" ? { ...ws, copilot: { ...ws.copilot, status: "connected" } } : ws;
 
-  const handleSessionMsg = useCallback((msg: SessionMsg) => {
-    // Authorization gate. `msg.from` is already proven authentic in session.ts
-    // (it must equal Ably's verified clientId), so it's safe to allowlist on:
-    // only accepted friends — or our own other windows in the self-test — may
-    // drive observe/co-pilot/task control. This stops a stranger from sending
-    // spoofed requests or a one-click task-injection that runs in our agent.
+  /** Show a session workspace: it takes the main panel from any page. */
+  const showSessionWorkspace = (wsId: string) => {
+    closePages();
+    setComposing(null);
+    setFocusedWsId(wsId);
+  };
+
+  handleSessionMsgRef.current = (msg: SessionMsg) => {
+    // Authorization gate. `msg.from` is proven authentic in session.ts (it must
+    // equal Ably's verified clientId), so it is safe to allowlist on: only
+    // accepted friends, or your own other windows, may ask to watch, invite or
+    // hand over a task. A stranger's request would otherwise be a one-click
+    // task injection into an agent running with bypassed permissions.
     const isSelf = msg.from === idProfile?.handle;
-    const friend = friends.find((f) => f.handle === msg.from);
+    const friend = friends.find((f) => f.handle === msg.from && f.friendStatus === "accepted");
     if (!friend && !isSelf) return;
 
-    // ── Observe ──────────────────────────────────────────────────────────────
+    // ── Watching ─────────────────────────────────────────────────────────
     if (msg.type === "observe_request") {
-      pushNotification({ status: "info", category: "agent", priority: false, text: `@${msg.from} asked to watch your terminal` });
-      // The notification above is unconditional. Only the pop-up is suppressible.
+      pushNotification({ status: "info", category: "agent", priority: false, text: `@${msg.from} asked to watch your agent` });
+      // The note above is unconditional; only the pop-up can be turned off.
       if (isToastSuppressed("observe_request")) return;
       setSessionToasts((prev) => [...prev, {
         id: msg.session_id,
@@ -4351,59 +4033,54 @@ export default function App() {
         fromAvatar: friend?.avatarUrl,
         sessionId: msg.session_id,
         onAccept: async () => {
-          // Resolve the shared pane NOW — the toast may have arrived while
-          // no pane was focused (the old silent no-op), or focus moved.
+          // Resolved now: focus may have moved since the request arrived.
           const target = resolveShareTarget();
           if (!target) {
             declineObserve(msg.from, msg.from_wid, msg.session_id);
-            pushNotification({ status: "info", category: "agent", priority: true, text: `No agent running to share — @${msg.from}'s request was declined. Spawn an agent and have them retry.` });
+            pushNotification({ status: "info", category: "agent", priority: true, text: `No agent running to share, so @${msg.from}'s request was declined. Start one and ask them to try again.` });
             return;
           }
           try {
             await acceptObserve(msg.from, msg.from_wid, msg.session_id, target.pane.id, target.pane.displayName ?? target.pane.kind);
-            if (!workspacesRef.current.some(w => w.panes.some(p => p.id === target.pane.id))) {
+            if (!workspacesRef.current.some((w) => w.panes.some((p) => p.id === target.pane.id))) {
               endObserve(msg.from, msg.from_wid, msg.session_id, target.pane.id);
               return;
             }
             observeSharesRef.current.set(msg.session_id, target.pane.id);
-            pushNotification({ status: "success", category: "agent", priority: false, text: `@${msg.from} is watching ${target.pane.displayName ?? target.pane.kind} live` });
+            pushNotification({ status: "success", category: "agent", priority: false, text: `@${msg.from} is watching ${target.pane.displayName ?? target.pane.kind}` });
           } catch (error) {
-            pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't share the terminal: ${error instanceof Error ? error.message : error}. Check your connection and friendship, then try again.` });
+            pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't share the agent: ${error instanceof Error ? error.message : error}` });
           }
         },
         onDecline: () => declineObserve(msg.from, msg.from_wid, msg.session_id),
       }]);
     }
     if (msg.type === "observe_accept") {
-      const ws = newObserveWorkspace(
-        msg.session_id, msg.from, msg.from_wid, friend?.avatarUrl, msg.pane_label,
-      );
+      const ws = newObserveWorkspace(msg.session_id, msg.from, msg.from_wid, friend?.avatarUrl, msg.pane_label);
       setWorkspaces((prev) => [...prev, ws]);
-      setFocusedWsId(ws.id);
-      pushNotification({ status: "success", category: "agent", priority: false, text: `Connected to @${msg.from}'s ${msg.pane_label}` });
+      showSessionWorkspace(ws.id);
+      pushNotification({ status: "success", category: "agent", priority: false, text: `Watching @${msg.from}'s ${msg.pane_label}` });
     }
     if (msg.type === "observe_decline" || msg.type === "observe_end") {
-      // Observer side: drop the observe workspace.
       const wsId = `observe:${msg.session_id}`;
-      const wasObserving = workspaces.some((w) => w.id === wsId);
+      const wasWatching = workspacesRef.current.some((w) => w.id === wsId);
       setWorkspaces((prev) => prev.filter((w) => w.id !== wsId));
-      setFocusedWsId((prev) => prev === wsId ? null : prev);
+      setFocusedWsId((prev) => (prev === wsId ? null : prev));
       if (msg.type === "observe_decline") {
-        pushNotification({ status: "info", category: "agent", priority: true, text: `@${msg.from} declined to share their terminal` });
+        pushNotification({ status: "info", category: "agent", priority: true, text: `@${msg.from} declined to share their agent` });
       }
-      // Owner side: the observer left — stop publishing that pane's bytes.
+      // Your side: the watcher left, so stop publishing that pane.
       const sharedPaneId = observeSharesRef.current.get(msg.session_id);
       if (msg.type === "observe_end" && sharedPaneId) {
         observeSharesRef.current.delete(msg.session_id);
-        import("./lib/streamPublisher").then(({ stopStream }) => stopStream(sharedPaneId));
-        pushNotification({ status: "info", category: "agent", priority: false, text: `@${msg.from} disconnected from your terminal` });
-      } else if (msg.type === "observe_end" && wasObserving) {
-        // Observer side: the owner stopped sharing their terminal.
-        pushNotification({ status: "info", category: "agent", priority: false, text: `@${msg.from} disconnected — stopped sharing their terminal` });
+        stopStream(sharedPaneId);
+        pushNotification({ status: "info", category: "agent", priority: false, text: `@${msg.from} stopped watching` });
+      } else if (msg.type === "observe_end" && wasWatching) {
+        pushNotification({ status: "info", category: "agent", priority: false, text: `@${msg.from} stopped sharing their agent` });
       }
     }
 
-    // ── Task handoff ─────────────────────────────────────────────────────────
+    // ── Tasks ────────────────────────────────────────────────────────────
     if (msg.type === "task_send") {
       pushNotification({ status: "info", category: "agent", priority: false, text: `@${msg.from} sent you a task` });
       if (isToastSuppressed("task_send")) return;
@@ -4415,37 +4092,35 @@ export default function App() {
         sessionId: msg.task_id,
         prompt: msg.prompt,
         onAccept: async () => {
-          // Resolve at accept time. With an agent running, the prompt is
-          // typed into it (\r submits — \n never did); with none, a fresh
-          // agent is spawned carrying the task as its opening prompt.
+          // With an agent in focus the prompt is typed into it (\r submits);
+          // with none, a new agent starts with the task as its first prompt.
           const target = resolveShareTarget();
           if (target) {
-            const { sendInput: sendInputCmd } = await import("./lib/tauri");
-            await sendInputCmd(target.pane.id, new TextEncoder().encode(msg.prompt + "\r"));
+            await sendInput(target.pane.id, new TextEncoder().encode(msg.prompt + "\r"));
           } else {
             const ws = workspacesRef.current.find((w) => w.id === focusedWsIdRef.current && !w.observe && !w.copilot)
               ?? workspacesRef.current.find((w) => !w.observe && !w.copilot);
             if (!ws) {
               declineTask(msg.from, msg.from_wid, msg.task_id);
-              pushNotification({ status: "info", category: "agent", priority: true, text: `No workspace open for @${msg.from}'s task — it was declined.` });
+              pushNotification({ status: "info", category: "agent", priority: true, text: `No project open for @${msg.from}'s task, so it was declined.` });
               return;
             }
             await spawnAgentInWorkspace(ws.id, msg.prompt).catch(console.error);
           }
           acceptTask(msg.from, msg.from_wid, msg.task_id);
-          pushNotification({ status: "success", category: "agent", priority: false, text: `Task from @${msg.from} handed to an agent` });
+          pushNotification({ status: "success", category: "agent", priority: false, text: `@${msg.from}'s task went to an agent` });
         },
         onDecline: () => declineTask(msg.from, msg.from_wid, msg.task_id),
       }]);
     }
     if (msg.type === "task_accept") {
-      pushNotification({ status: "success", category: "agent", priority: true, text: `@${msg.from} accepted your task` });
+      pushNotification({ status: "success", category: "agent", priority: true, text: `@${msg.from} took your task` });
     }
     if (msg.type === "task_decline") {
       pushNotification({ status: "info", category: "agent", priority: true, text: `@${msg.from} declined your task` });
     }
 
-    // ── Co-pilot ─────────────────────────────────────────────────────────────
+    // ── Co-pilot ─────────────────────────────────────────────────────────
     if (msg.type === "copilot_invite") {
       pushNotification({ status: "info", category: "agent", priority: false, text: `@${msg.from} invited you to co-pilot` });
       if (isToastSuppressed("copilot_invite")) return;
@@ -4459,68 +4134,62 @@ export default function App() {
           try {
             await acceptCopilot(msg.from, msg.from_wid, msg.session_id, []);
           } catch (error) {
-            pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't join co-pilot: ${error instanceof Error ? error.message : error}` });
+            pushNotification({ status: "failure", category: "agent", priority: true, text: `Couldn't join the co-pilot session: ${error instanceof Error ? error.message : error}` });
             return;
           }
-          const shell = newCopilotWorkspace(msg.session_id, msg.from, msg.from_wid, friend?.avatarUrl, "connected");
-          const ws = mergePartnerPanes(shell, msg.panes);
+          const ws = mergePartnerPanes(newCopilotWorkspace(msg.session_id, msg.from, msg.from_wid, friend?.avatarUrl, "connected"), msg.panes);
           setWorkspaces((prev) => [...prev, ws]);
-          setFocusedWsId(ws.id);
-          setSidebarTab("workspaces"); // surface the shared workspace immediately
-          // Auto-spawn a local agent — pass ws directly to avoid closure race
+          showSessionWorkspace(ws.id);
+          // Your own agent beside theirs; the workspace is passed in directly,
+          // since state has not caught up with it yet.
           await spawnAgentInWorkspace(ws.id, undefined, ws).catch(console.error);
         },
         onDecline: () => {
-          // No local panes belong to an invitation we have not accepted.
-          void endCopilot(msg.from, msg.from_wid, msg.session_id, [])
-            .catch(() => pushNotification({ status: "info", category: "agent", priority: true, text: "Invitation dismissed locally, but the sender could not be notified." }));
+          void endCopilot(msg.from, msg.from_wid, msg.session_id, []).catch(() =>
+            pushNotification({ status: "info", category: "agent", priority: true, text: "Invitation dismissed here, but the sender couldn't be told." }),
+          );
         },
       }]);
     }
     if (msg.type === "copilot_accept") {
-      // Inviter receives accept — merge partner's panes and flip pending→connected.
-      setWorkspaces((prev) => prev.map((w) =>
-        w.copilot?.sessionId === msg.session_id ? markCopilotConnected(mergePartnerPanes(w, msg.panes)) : w
-      ));
-      pushNotification({ status: "success", category: "agent", priority: false, text: `@${msg.from} connected to your co-pilot session` });
-      // Push our current local panes to the partner in case they spawned before we accepted
+      setWorkspaces((prev) => prev.map((w) => (w.copilot?.sessionId === msg.session_id ? markCopilotConnected(mergePartnerPanes(w, msg.panes)) : w)));
+      pushNotification({ status: "success", category: "agent", priority: false, text: `@${msg.from} joined your co-pilot session` });
+      // Send your current agents in case they started before the partner joined.
       setTimeout(() => {
         const ws = workspacesRef.current.find((w) => w.copilot?.sessionId === msg.session_id);
         if (!ws?.copilot) return;
-        const localPanes = ws.panes.filter((p) => !p.streamId).map((p) => ({ id: p.id, label: p.displayName ?? p.kind }));
-        import("./lib/session").then(({ syncCopilotLayout }) =>
-          syncCopilotLayout(ws.copilot!.partnerLogin, ws.copilot!.partnerWid, msg.session_id, localPanes)
-        );
+        const mine = ws.panes.filter((p) => !p.streamId).map((p) => ({ id: p.id, label: p.displayName ?? p.kind }));
+        syncCopilotLayout(ws.copilot.partnerLogin, ws.copilot.partnerWid, msg.session_id, mine);
       }, 100);
     }
     if (msg.type === "copilot_layout") {
-      // Partner updated their pane list — merge while preserving our local panes.
       // A layout also proves the partner is live, so settle any lingering pending.
-      setWorkspaces((prev) => prev.map((w) =>
-        w.copilot?.sessionId === msg.session_id ? markCopilotConnected(mergePartnerPanes(w, msg.panes)) : w
-      ));
+      setWorkspaces((prev) => prev.map((w) => (w.copilot?.sessionId === msg.session_id ? markCopilotConnected(mergePartnerPanes(w, msg.panes)) : w)));
     }
     if (msg.type === "copilot_end") {
-      const wasInSession = workspaces.some((w) => w.copilot?.sessionId === msg.session_id);
+      const wasInSession = workspacesRef.current.some((w) => w.copilot?.sessionId === msg.session_id);
+      const ending = workspacesRef.current.find((w) => w.copilot?.sessionId === msg.session_id);
       setWorkspaces((prev) => prev.filter((w) => w.copilot?.sessionId !== msg.session_id));
-      setFocusedWsId((prev) => {
-        const remaining = workspaces.filter((w) => w.copilot?.sessionId !== msg.session_id);
-        return remaining.find((w) => w.id === prev)?.id ?? remaining[0]?.id ?? null;
-      });
+      if (ending) setFocusedWsId((prev) => (prev === ending.id ? null : prev));
       if (wasInSession) {
-        pushNotification({ status: "info", category: "agent", priority: false, text: `@${msg.from} disconnected from the co-pilot session` });
+        pushNotification({ status: "info", category: "agent", priority: false, text: `@${msg.from} left the co-pilot session` });
       }
     }
-  }, [friends, workspaces, focusedWsId, newCopilotWorkspace, mergePartnerPanes, newObserveWorkspace, pushNotification]);
-  handleSessionMsgRef.current = handleSessionMsg;
-
-  const handleRequestObserve = (login: string, windowId: string) => { requestObserve(login, windowId); };
-
-  const handleSendTask = (login: string, windowId: string, avatar?: string) => {
-    setTaskDialog({ login, windowId, avatar });
   };
 
-  const handleCopilot = async (login: string, windowId: string, avatar?: string) => {
+  // Dev builds only: the UI harness has no Ably, so it hands session messages
+  // in here to show what a friend's request looks like.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as unknown as { __flockSessionMsg?: (msg: SessionMsg) => void };
+    w.__flockSessionMsg = (msg) => handleSessionMsgRef.current(msg);
+    return () => {
+      delete w.__flockSessionMsg;
+    };
+  }, []);
+
+  /** Invite a friend to co-pilot: a shared project with an agent of yours in it. */
+  const startCopilot = async (login: string, windowId: string, avatar?: string) => {
     let sessionId: string;
     try {
       sessionId = await inviteCopilot(login, windowId, []);
@@ -4530,662 +4199,427 @@ export default function App() {
     }
     const cws = newCopilotWorkspace(sessionId, login, windowId, avatar);
     setWorkspaces((prev) => [...prev, cws]);
-    setFocusedWsId(cws.id);
-    setSidebarTab("workspaces"); // jump off Friends to the new shared workspace
-    // Auto-spawn a local agent — pass cws directly to avoid closure race
+    showSessionWorkspace(cws.id);
     await spawnAgentInWorkspace(cws.id, undefined, cws).catch(console.error);
   };
 
-  // ─── Settings ──────────────────────────────────────────────────────
-
-  // Optional `tab` deep-links a quick action to the right Settings pane. Guard
-  // against event objects from `onClick={openSettings}` call sites.
-  const openSettings = (tab?: string) =>
-    setDialog({ kind: "settings", tab: typeof tab === "string" ? tab : undefined });
-
-  // Focus a workspace and pop its sidebar Git section open — the click target
-  // for the titlebar's uncommitted-changes bar.
-  const openGit = useCallback((wsId: string) => {
-    setFocusedWsId(wsId);
-    setSidebarCollapsed(false);
-    window.dispatchEvent(new CustomEvent("flock:open-section", { detail: "git" }));
-  }, []);
-
-  // Opened via the native "flock → Settings…" menu item (⌘,).
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    onOpenSettings(() => setDialog({ kind: "settings" })).then((fn) => (unlisten = fn));
-    return () => unlisten?.();
-  }, []);
-
-  // ─── Command bar contents ──────────────────────────────────────────
-  //
-  // The palette's founding claim (890e476) was that everything the removed
-  // chrome offered is reachable here by name. It was not: tabs, splits, zoom,
-  // pop-out, close, rename/delete workspace, theme and Graph Explorer were all
-  // button- or shortcut-only, and Graph Explorer's single entry point was a
-  // sidebar card the palette itself could hide. This list is the answer to
-  // that inventory.
-  //
-  // Built from live state on every render rather than registered once, because
-  // most of what belongs in a palette here is not a static verb: it is a list
-  // of the agents and workspaces that exist right now. A registry would have to
-  // be invalidated on every spawn, every status change and every close, which
-  // is three subscriptions to avoid one array rebuild of a few dozen entries.
-  //
-  // Order matters and is the design: agents that need input, then the rest of
-  // the live agents, then workspaces, then verbs. CommandBar sorts `attention`
-  // above everything regardless of match score, so the first thing the palette
-  // shows on ⌘K with an empty query is always whoever is waiting on you.
-  const commands: Command[] = useMemo(() => {
-    const out: Command[] = [];
-    const focused = workspaces.find((w) => w.id === focusedWsId);
-    const focusedTab = focused ? getFocusedTab(focused) : undefined;
-
-    for (const ws of workspaces) {
-      for (const pane of ws.panes) {
-        const waiting = pane.status === "awaiting_input" || pane.status === "blocked";
-        const name = pane.displayName ?? "Agent";
-        out.push({
-          id: `pane:${pane.id}`,
-          group: waiting ? "Needs you" : "Agents",
-          label: waiting ? `${name} is waiting on you` : name,
-          hint: ws.name,
-          attention: waiting,
-          // `detail` rather than a keyword: the sidebar row for this same agent
-          // shows its status and task, and the palette opens *over* the
-          // sidebar. A row that carries less than the thing it covers is a
-          // downgrade the user paid a keystroke for.
-          detail: paneDetail(pane),
-          keywords: `${pane.kind} ${ws.name} ${pane.intent ?? ""} agent`,
-          context: `${pane.cwd} ${pane.worktree?.branch ?? ""} ${pane.model ?? ""}`,
-          run: () => focusPane(ws.id, pane.id),
-        });
-      }
-    }
-
-    for (const ws of workspaces) {
-      out.push({
-        id: `ws:${ws.id}`,
-        group: "Workspaces",
-        label: ws.name,
-        hint: ws.branch || undefined,
-        detail: ws.panes.length ? `${ws.panes.length} agent${ws.panes.length === 1 ? "" : "s"}` : undefined,
-        keywords: "workspace",
-        // The repo path is `context`, not a keyword. As a keyword it made every
-        // workspace under ~/git outrank "Show uncommitted changes" for the
-        // query "git".
-        context: ws.repo_path ?? "",
-        run: () => setFocusedWsId(ws.id),
-      });
-    }
-
-    if (focused) {
-      const here = focused.name;
-      out.push({
-        id: "act:spawn",
-        group: "Start",
-        label: "New agent here",
-        hint: here,
-        keywords: "spawn launch new claude codex opencode grok",
-        run: () => void spawnAgentInWorkspace(focused.id),
-      });
-      out.push({
-        id: "act:race",
-        group: "Start",
-        label: "Race agents on one prompt",
-        hint: here,
-        keywords: "fan out parallel worktree compare contenders",
-        run: () => setDialog({ kind: "race", workspaceId: focused.id }),
-      });
-      if (focusedTab?.race) {
-        out.push({
-          id: "act:race-compare",
-          group: "Review",
-          label: `Compare the ${focusedTab.race.contenders.length} race contenders`,
-          hint: here,
-          keywords: "race diff judge merge winner",
-          run: () => setDialog({ kind: "race-compare", workspaceId: focused.id, tabId: focusedTab.id }),
-        });
-      }
-      out.push({
-        id: "act:git",
-        group: "Review",
-        label: "Show uncommitted changes",
-        hint: here,
-        keywords: "diff git status uncommitted review changes",
-        run: () => openGit(focused.id),
-      });
-
-      // ── Panes. Every one of these was keyboard-only or button-only before,
-      // which is the gap that made the palette's founding claim untrue.
-      out.push({
-        id: "act:split-right",
-        group: "Panes",
-        label: "Split right",
-        hint: "⌘D",
-        keywords: "pane divide horizontal new",
-        run: () => void splitPane(focused.id, "horizontal"),
-      });
-      out.push({
-        id: "act:split-down",
-        group: "Panes",
-        label: "Split down",
-        hint: "⌘⇧D",
-        keywords: "pane divide vertical new",
-        run: () => void splitPane(focused.id, "vertical"),
-      });
-      if (focusedTab?.focusedPaneId) {
-        const target = focusedTab.focusedPaneId;
-        const zoomed = focusedTab.zoomedPaneId === target;
-        out.push({
-          id: "act:zoom",
-          group: "Panes",
-          label: zoomed ? "Unzoom this pane" : "Zoom this pane",
-          hint: "⌘Z",
-          keywords: "full screen maximise maximize expand",
-          run: () => zoomPane(focused.id, target),
-        });
-        out.push({
-          id: "act:popout",
-          group: "Panes",
-          label: "Open this agent in its own window",
-          keywords: "pop out detach window monitor",
-          run: () => void popOutPane(focused.id, target),
-        });
-        out.push({
-          id: "act:close-pane",
-          group: "Panes",
-          label: "Close this agent",
-          hint: "⌘⇧K",
-          keywords: "kill stop quit end pane",
-          run: () => void requestClosePane(target),
-        });
-      }
-
-      // ── Tabs. Entirely absent before; ⌘T and ⌘1–9 were the only paths.
-      out.push({
-        id: "act:new-tab",
-        group: "Tabs",
-        label: "New tab",
-        hint: "⌘T",
-        keywords: "room grid layout",
-        run: () => newTabInWorkspace(focused.id),
-      });
-      for (const t of focused.tabs) {
-        if (t.id === focused.focusedTabId) continue;
-        out.push({
-          id: `tab:${t.id}`,
-          group: "Tabs",
-          label: t.name,
-          hint: here,
-          keywords: "tab room switch",
-          run: () => switchTab(focused.id, t.id),
-        });
-      }
-      if (focused.tabs.length > 1) {
-        out.push({
-          id: "act:close-tab",
-          group: "Tabs",
-          label: "Close this tab",
-          hint: "⌘⇧W",
-          keywords: "remove room",
-          run: () => void requestCloseTab(focused.id, focused.focusedTabId),
-        });
-      }
-
-      // ── Workspace management, previously right-click only — the exact class
-      // of hidden affordance a palette exists to abolish.
-      out.push({
-        id: "act:rename-ws",
-        group: "Workspaces",
-        label: `Rename "${here}"`,
-        keywords: "workspace title name",
-        run: () => setDialog({ kind: "rename-workspace", workspaceId: focused.id, current: focused.name }),
-      });
-      out.push({
-        id: "act:delete-ws",
-        group: "Workspaces",
-        label: `Delete "${here}"`,
-        keywords: "workspace remove close destroy",
-        run: () => requestCloseWorkspace(focused.id),
-      });
-    }
-
-    out.push({
-      id: "act:new-ws",
-      group: "Start",
-      label: "New workspace",
-      hint: "⌘N",
-      keywords: "create repo clone worktree open",
-      run: () => beginNewWorkspace(),
-    });
-    out.push({
-      id: "act:queue",
-      group: "Start",
-      label: "Capture a prompt for later",
-      hint: "⌘⇧P",
-      keywords: "queue idea note screenshot",
-      run: () => setDialog({ kind: "queue-capture" }),
-    });
-    out.push({
-      id: "act:prs",
-      group: "Review",
-      label: "Pull requests",
-      keywords: "github pr checks review",
-      run: () => setDialog({ kind: "pr-hub", view: "prs" }),
-    });
-    out.push({
-      id: "act:queue-view",
-      group: "Review",
-      label: "Merge queue",
-      keywords: "github merge",
-      run: () => setDialog({ kind: "pr-hub", view: "queue" }),
-    });
-    out.push({
-      id: "act:stats",
-      group: "App",
-      // Reachable only by clicking a 16px chart icon in the sidebar footer
-      // before this. Every other surface in the app has a keyboard path.
-      label: "Your usage and stats",
-      keywords: "metrics tokens spend chart achievements profile account cost",
-      run: () => setDialog({ kind: "my-info" }),
-    });
-    // The Graph Explorer's only other entry point is one card in the sidebar —
-    // and the palette itself offers "Hide sidebar", so it could remove the last
-    // path to a feature it did not expose.
-    if (getGraphEnabled()) {
-      out.push({
-        id: "act:graph",
-        group: "App",
-        label: "Graph Explorer",
-        keywords: "knowledge memory decisions recall nodes",
-        run: () => window.dispatchEvent(new Event(OPEN_GRAPH_EXPLORER_EVENT)),
-      });
-    }
-    out.push({
-      id: "act:graph-setup",
-      group: "App",
-      label: getGraphEnabled() ? "Graph settings" : "Set up the knowledge graph",
-      keywords: "kg memory postgres docker engine mcp",
-      run: () => window.dispatchEvent(new Event(OPEN_GRAPH_SETUP_EVENT)),
-    });
-    for (const t of THEMES) {
-      out.push({
-        id: `theme:${t.id}`,
-        group: "App",
-        label: `Theme: ${t.label}`,
-        keywords: "appearance dark light colour color contrast",
-        run: () => applyTheme(t.id),
-      });
-    }
-    out.push({
-      id: "act:settings",
-      group: "App",
-      label: "Settings",
-      hint: "⌘,",
-      keywords: "preferences theme appearance security graph shortcuts",
-      run: () => openSettings(),
-    });
-    out.push({
-      id: "act:sidebar",
-      group: "App",
-      label: sidebarCollapsed ? "Show sidebar" : "Hide sidebar",
-      keywords: "rail panel collapse",
-      run: () => toggleSidebarCollapsed(),
-    });
-
-    return out;
-    // `workspaces` covers panes, statuses and names; the rest are the handles
-    // this list closes over. Deliberately not exhaustive on the setters, which
-    // are stable for the lifetime of the component.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaces, focusedWsId, sidebarCollapsed]);
-
-  /**
-   * The palette's answer to text that is not a command: the agents you can
-   * hand it to, plus the two ways to create one that starts with it.
-   *
-   * This is the only thing in the palette that is not also a button somewhere,
-   * and it is therefore the only reason to prefer ⌘K over the mouse. Delivery
-   * is `sendPromptToPane` — bracketed paste into the input line, **not
-   * submitted** — which is the same contract the diff-review composer ships
-   * under, for the same reason: the user reads it before it costs tokens.
-   *
-   * A pane that is still booting is a login shell for a second or two, and
-   * bytes sent into that window are run by bash. `deliverPromptWhenReady` is
-   * reused with a no-op `submit` so the wait is shared with the race path and
-   * only the Enter key is dropped.
-   */
-  const promptActions = useCallback((text: string): Command[] => {
-    const out: Command[] = [];
-    const focused = workspacesRef.current.find((w) => w.id === focusedWsId);
-    const inject = (paneId: string) =>
-      deliverPrompt(paneId, text, {
-        readiness: (id) => {
-          const pane = workspacesRef.current.flatMap((w) => w.panes).find((p) => p.id === id);
-          if (!pane) return "gone";
-          return pane.spawning || pane.booting ? "booting" : "ready";
-        },
-        paste: sendPromptToPane,
-        submit: async () => {},
-      });
-
-    // Focused workspace first — the agents you can see. A prompt aimed at an
-    // agent in another workspace is aimed at a different checkout of the tree.
-    const ordered = [
-      ...(focused ? [focused] : []),
-      ...workspacesRef.current.filter((w) => w.id !== focusedWsId),
+  /** What you can do with an online friend, from their row's "…". */
+  const friendActions = useEventCallback((f: Friend): MenuEntry[] => {
+    const wid = f.windowId;
+    if (!wid) return [];
+    return [
+      ...(f.agentCount > 0
+        ? [{
+            label: "Watch their agent",
+            onSelect: () => {
+              requestObserve(f.handle, wid);
+              pushNotification({ status: "info", category: "agent", priority: true, text: `Asked @${f.handle} to share an agent` });
+            },
+          } as MenuEntry]
+        : []),
+      { label: "Co-pilot together", onSelect: () => void startCopilot(f.handle, wid, f.avatarUrl) },
+      { label: "Send a task…", onSelect: () => setTaskDialog({ login: f.handle, windowId: wid, avatar: f.avatarUrl }) },
     ];
-    for (const ws of ordered) {
-      for (const pane of ws.panes) {
-        const waiting = pane.status === "awaiting_input" || pane.status === "blocked";
-        out.push({
-          id: `send:${pane.id}`,
-          group: "Send to",
-          label: pane.displayName ?? "Agent",
-          hint: ws.name,
-          attention: waiting,
-          detail: paneDetail(pane),
-          keywords: `${pane.kind} ${ws.name} send prompt tell ask`,
-          // Switch workspace as well as pane, the same pair `openNotificationPane`
-          // uses: `focusPane` alone leaves a cross-workspace target selected in a
-          // layer that is still `visibility: hidden`, so the prompt lands
-          // somewhere the user cannot see it and has to press Enter blind.
-          run: () => {
-            setFocusedWsId(ws.id);
-            focusPane(ws.id, pane.id);
-            void inject(pane.id);
-          },
-        });
-      }
-    }
-
-    if (focused) {
-      out.push({
-        id: "send:new",
-        group: "Send to",
-        label: "A new agent here",
-        hint: focused.name,
-        keywords: "spawn start fresh new",
-        run: () => void spawnAgentInWorkspace(focused.id).then((id) => { if (id) void inject(id); }),
-      });
-      if (focused.repo_path) {
-        out.push({
-          id: "send:race",
-          group: "Send to",
-          label: "Several agents, racing",
-          hint: focused.name,
-          keywords: "race fan out parallel compare",
-          run: () => setDialog({ kind: "race", workspaceId: focused.id, prompt: text }),
-        });
-      }
-    }
-    return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedWsId]);
-
-  // ─── Render ────────────────────────────────────────────────────────
-
-  // ─── Stable handler identities for the memoized children ───────────────
-  // Sidebar and PaneArea are both wrapped in React.memo, and until this block
-  // existed that memo had never once prevented a re-render: all 54 handler
-  // props between them were freshly-created functions on every render, so the
-  // props comparison failed every time. PaneArea is rendered once per
-  // workspace and every workspace stays mounted, so one setState anywhere in
-  // this component re-rendered every pane header, branch chip and context
-  // meter in every open workspace.
-  //
-  // useEventCallback rather than useCallback: see lib/useEventCallback.ts. The
-  // short version is that 45 hand-written dependency arrays over a component
-  // with this much state is a stale-closure bug waiting to happen, and a
-  // handler acting on a workspace list from three renders ago corrupts data
-  // rather than merely painting slowly.
-  const sToggleSidebar = useEventCallback(toggleSidebarCollapsed);
-  const sNewWorkspace = useEventCallback(beginNewWorkspace);
-  const sCloseWorkspace = useEventCallback(requestCloseWorkspace);
-  const sWorkspaceMenu = useEventCallback(openWorkspaceMenu);
-  const sReorderWorkspaces = useEventCallback(reorderWorkspacesLocal);
-  const sSelectPane = useEventCallback(focusPane);
-  const sBringBackPane = useEventCallback(bringBackPane);
-  const sResetIntent = useEventCallback(resetPaneIntent);
-  const sOpenSettings = useEventCallback(openSettings);
-  const sAdoptWorktree = useEventCallback(adoptWorktree);
-  const sPruneWorktree = useEventCallback(pruneWorktree);
-  const sSendPrompt = useEventCallback(sendPromptToPane);
-  const sReviewAll = useEventCallback(reviewAllPrs);
-  const sRequestObserve = useEventCallback(handleRequestObserve);
-  const sSendTask = useEventCallback(handleSendTask);
-  const sCopilot = useEventCallback(handleCopilot);
-  const sQueueLaunch = useEventCallback(openQueueLaunchPicker);
-  const sQueueEdit = useEventCallback(editQueueItem);
-  const sQueueDelete = useEventCallback(deleteQueueItem);
-  const sPaneContextMenu = useEventCallback(openPaneMenu);
-  const sSpawnInWorkspace = useEventCallback(spawnAgentInWorkspace);
-  // The nine handlers that were written inline at the call site, hoisted so
-  // they get an identity at all. Each only closes over setDialog (a stable
-  // setState) or reads the live workspace list through workspacesRef.
-  const sOpenPrManager = useEventCallback((pr?: { number: number }) =>
-    setDialog({ kind: "pr-hub", view: "prs", initialPr: pr?.number }));
-  const sOpenMergeQueue = useEventCallback(() => setDialog({ kind: "pr-hub", view: "queue" }));
-  const sOpenFriend = useEventCallback((friend: Friend) => setDialog({ kind: "friend-stats", friend }));
-  const sOpenMyInfo = useEventCallback(() => setDialog({ kind: "my-info" }));
-  const sOpenQueueCapture = useEventCallback(() => setDialog({ kind: "queue-capture" }));
-  const sGitChanged = useEventCallback(() => { refreshBranches().catch(() => {}); });
-  const sRace = useEventCallback((workspaceId: string) => setDialog({ kind: "race", workspaceId }));
-  const sCompareRace = useEventCallback((workspaceId: string, tabId: string) =>
-    setDialog({ kind: "race-compare", workspaceId, tabId }));
-  // Takes the workspace id and re-reads the workspace from the ref, so this
-  // is one identity shared by every PaneArea instead of a closure per card.
-  const sSpawnAgent = useEventCallback((workspaceId: string) => {
-    const ws = workspacesRef.current.find((w) => w.id === workspaceId);
-    if (!ws) return;
-    const emptyTab = getFocusedTab(ws).layoutTree === null;
-    debugLog(`EmptyPane spawn clicked ws=${ws.id} focusedTab=${ws.focusedTabId} layoutTreeNull=${emptyTab} panes=${ws.panes.length}`);
-    if (emptyTab) setDialog({ kind: "spawn-layout", workspaceId: ws.id });
-    else void sSpawnInWorkspace(ws.id);
   });
 
-  // Hard gate: no cockpit without a signed-in flock ID and a claimed handle.
-  //
-  // It has to sit below EVERY hook, including the useEventCallback block above,
-  // and its own comment has said so since it was written. When the block was
-  // added between the gate and the render, the signed-out pass ran ~30 fewer
-  // hooks than the signed-in one and React threw "Rendered more hooks than
-  // during the previous render" on the transition — i.e. on every cold launch
-  // that has to check the session. Nothing may be added between here and the
-  // return but JSX.
+  // ─── Presence (Ably) ───────────────────────────────────────────────────
+  // Which friends are online and how many agents they run, and the same about
+  // you to them, once you are signed in with a handle. Ably retries a failed
+  // connection on its own every 15–30 s, and while the presence service could
+  // not authorise (two months of it; see services/flock-id/PRIVACY.md) that
+  // was an endless stream of requests. So a failure gives up, and the next try
+  // waits 2, 4, 8, 16, then 30 minutes.
+  const [presenceStatus, setPresenceStatus] = useState<PresenceStatus>("connecting");
+  const [presenceEpoch, setPresenceEpoch] = useState(0);
+  const presenceRetryRef = useRef(0);
+  const friendsRef = useRef(friends);
+  friendsRef.current = friends;
+  const totalAgents = workspaces.reduce((n, w) => n + w.panes.length, 0);
+  const totalAgentsRef = useRef(totalAgents);
+  totalAgentsRef.current = totalAgents;
+  useEffect(() => {
+    const myHandle = idProfile?.handle;
+    if (!myHandle) {
+      disconnectPresence();
+      setPresenceStatus("connecting");
+      return;
+    }
+    let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let stopSessions: (() => void) | undefined;
+    const giveUp = () => {
+      if (cancelled || retry) return;
+      disconnectPresence();
+      setPresenceStatus("failed");
+      const attempt = ++presenceRetryRef.current;
+      retry = setTimeout(() => setPresenceEpoch((e) => e + 1), Math.min(30, 2 ** Math.min(attempt, 5)) * 60_000);
+    };
+    const handles = [...new Set([myHandle, ...friendsRef.current.map((f) => f.handle)])].filter(Boolean);
+    const getToken = async () => {
+      const { data } = await supabase().auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) throw new Error("flock ID session expired");
+      return token;
+    };
+    connectPresence(
+      getToken,
+      handles,
+      totalAgentsRef.current,
+      (event) => {
+        setFriends((prev) =>
+          prev.map((f): Friend => {
+            if (f.handle !== event.login) return f;
+            if (event.kind === "offline") return { ...f, presence: "offline", agentCount: 0, windowId: undefined, lastSeen: Math.floor(Date.now() / 1000) };
+            return { ...f, presence: "online", agentCount: event.agentCount, windowId: event.windowId };
+          }),
+        );
+      },
+      (status) => {
+        if (cancelled) return;
+        setPresenceStatus(status);
+        if (status === "failed") giveUp();
+      },
+    )
+      .then(() => {
+        if (cancelled) return;
+        presenceRetryRef.current = 0;
+        // Session signalling rides the same connection; routed through the
+        // ref so the current handler, with current state, always runs.
+        stopSessions = initSessions(myHandle, (msg) => handleSessionMsgRef.current(msg));
+      })
+      .catch(giveUp);
+    return () => {
+      cancelled = true;
+      if (retry) clearTimeout(retry);
+      stopSessions?.();
+      disconnectPresence();
+    };
+  }, [idProfile?.handle, presenceEpoch, setFriends]);
+
+  // Your agent count, to friends, without reconnecting.
+  useEffect(() => {
+    updateAgentCount(totalAgents).catch(() => {});
+  }, [totalAgents]);
+
+  // Who to listen for follows the friend list.
+  const friendKey = friends.map((f) => f.handle).sort().join(",");
+  useEffect(() => {
+    updateFriends(friends.map((f) => f.handle));
+    resyncFriendPresence().catch(() => {});
+  }, [friendKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openFriend = useCallback(
+    (f: Friend) => {
+      closePages();
+      setDialog({ kind: "friend-stats", friendId: f.id });
+    },
+    [closePages],
+  );
+  const people = useMemo(
+    () =>
+      idProfile?.id
+        ? { friends, myHandle: idProfile.handle ?? null, onAdd: addFriend, onAccept: acceptFriend, onRemove: removeFriend, onOpen: openFriend, actions: friendActions }
+        : undefined,
+    [idProfile?.id, idProfile?.handle, friends, addFriend, acceptFriend, removeFriend, openFriend, friendActions],
+  );
+  const sOpenMe = useEventCallback(() => {
+    closePages();
+    setDialog({ kind: "my-info" });
+  });
+
+  const me = useMemo(() => ({
+    name: idProfile?.display_name || idProfile?.handle || "You",
+    handle: idProfile?.handle ?? null,
+    avatarUrl: idProfile?.avatar_url ?? null,
+  }), [idProfile]);
+
+  // What the global shortcuts act on, refreshed every render.
+  keysRef.current = {
+    dialogOpen: dialog.kind !== "none" && !isPageDialog(dialog.kind),
+    menuOpen: !!contextMenu,
+    paletteOpen: cmdBarOpen,
+    run: (action, arg) => {
+      const ws = workspacesRef.current.find((w) => w.id === focusedWsIdRef.current);
+      const tab = ws ? getFocusedTab(ws) : undefined;
+      switch (action) {
+        case "palette":
+          if (dialog.kind !== "none" && !isPageDialog(dialog.kind)) setDialog({ kind: "none" });
+          setCmdBarOpen((v) => !v);
+          break;
+        case "settings": openSettings(); break;
+        case "new-agent": beginNewAgent(); break;
+        case "new-project": beginNewWorkspace(); break;
+        case "capture": setDialog({ kind: "queue-capture" }); break;
+        case "split-right": if (ws && threadOnScreen) void splitPane(ws.id, "horizontal"); break;
+        case "split-down": if (ws && threadOnScreen) void splitPane(ws.id, "vertical"); break;
+        case "zoom": {
+          const target = tab?.zoomedPaneId ?? tab?.focusedPaneId;
+          if (ws && target && threadOnScreen) zoomPane(ws.id, target);
+          break;
+        }
+        case "close-agent": if (tab?.focusedPaneId && threadOnScreen) void requestClosePane(tab.focusedPaneId); break;
+        case "close-thread": if (ws && tab && threadOnScreen) closeThread(ws.id, tab.id); break;
+        case "pane-step": {
+          const ids = tab?.layoutTree ? allPaneIds(tab.layoutTree) : [];
+          if (ws && ids.length > 1) {
+            const cur = tab?.focusedPaneId ? ids.indexOf(tab.focusedPaneId) : -1;
+            focusPane(ws.id, ids[(cur + (arg ?? 1) + ids.length) % ids.length]);
+          }
+          break;
+        }
+        case "thread-step": stepThread(arg ?? 1); break;
+        case "next-waiting": nextWaiting(); break;
+        case "sidebar": toggleSidebarCollapsed(); break;
+        case "thread-index": {
+          const p = projectsRef.current.find((x) => x.id === ws?.id);
+          const t = p?.threads[arg ?? 0];
+          if (t) openThread(t.workspaceId, t.tabId);
+          break;
+        }
+      }
+    },
+  };
+
+  // No cockpit without a signed-in flock ID and a claimed handle. Below every
+  // hook: nothing may be added between here and the return but JSX.
   if (!idChecked || !idProfile?.handle) {
     return (
       <SignInGate
         checking={!idChecked}
         needsHandle={!!idProfile && !idProfile.handle}
-        onReady={() => refreshIdFriends({ requireProfile: true })}
+        onReady={() => refreshIdentity({ requireProfile: true })}
       />
     );
   }
 
   return (
-    <div className="app-shell" onContextMenu={(e) => e.preventDefault()}>
-      {/* data-tauri-drag-region is what moves the window, and on macOS it is
-          the ONLY thing that does. `-webkit-app-region: drag` in the CSS is a
-          Windows path (WebView2 123+, see wry's custom_titlebar example) and is
-          inert under WKWebView, so a titlebar carrying only the CSS is a
-          titlebar you cannot drag the window by. It was removed here on the
-          theory that the CSS was the macOS handle and the attribute merely
-          duplicated it; the two do not overlap on this platform.
+    <div className="v2-app" data-sidebar={effectiveSidebarCollapsed ? "closed" : "open"} onContextMenu={(e) => e.preventDefault()}>
+      <Sidebar
+        projects={projects}
+        currentWorkspaceId={focusedWsId}
+        currentTabId={focusedTab?.id ?? null}
+        view={
+          dialog.kind === "settings" ? "settings"
+            : dialog.kind === "pr-hub" ? "prs"
+              : showGraphExplorer || showGraphSetup ? "graph"
+                : mainView === "new" ? "new" : "thread"
+        }
+        waiting={waiting.length}
+        prCount={ghStatus?.connected ? pullRequests.length : undefined}
+        graphEnabled={graphOn}
+        me={me}
+        meOnline={presenceStatus === "connected" && idProfile?.presence_sharing === true}
+        people={people}
+        onOpenMe={sOpenMe}
+        dark={dark}
+        onToggleTheme={sToggleTheme}
+        onNewAgent={sNewAgent}
+        onOpenThread={sOpenThread}
+        onNextWaiting={sNextWaiting}
+        onOpenPrs={sOpenPrs}
+        onOpenGraph={sOpenGraph}
+        onSettings={sOpenSettings}
+        onCollapse={sToggleSidebar}
+        onRenameThread={sRenameThread}
+        threadMenu={sThreadMenu}
+        projectMenu={sProjectMenu}
+      />
 
-          Bare, not "deep": Tauri's drag.js treats a bare attribute as "only
-          direct clicks on this exact element", and separately refuses to drag
-          from any clickable descendant. So the strip drags and the
-          notifications pill inside it still takes its own clicks — which is
-          the same intent `.titlebar * { -webkit-app-region: no-drag }`
-          expresses for Windows.
-
-          Titlebar stays sparse — just the notifications pill centered — so
-          most of it is bare, draggable window chrome. Ambient telemetry
-          (usage bars, uncommitted changes) lives in the bottom StatusBar. */}
-      <div className="titlebar" data-tauri-drag-region>
-        <NotificationsBadge
-          checks={wsChecks}
-          notifications={notifications}
-          attentionAgents={attentionAgents}
-          agents={agentTally}
-          onOpenPr={() => { if (wsChecks) openUrl(wsChecks.pr_url).catch(console.error); }}
-          onOpenPane={openNotificationPane}
-          attentionPinned={attentionPinned}
-          onToggleAttentionPin={toggleAttentionPin}
-        />
-      </div>
-      {attentionPinned && <AttentionPanel agents={attentionAgents} onOpenPane={openNotificationPane} onUnpin={toggleAttentionPin} />}
-      <div className="app-main">
-        <Sidebar
-          collapsed={effectiveSidebarCollapsed}
-          onToggleSidebar={sToggleSidebar}
-          activeTab={sidebarTab}
-          onTabChange={setSidebarTab}
-          onRightRailPopulated={setRightRailHasContent}
-          workspaces={displayWorkspaces}
-          focusedWsId={focusedWsId}
-          onSelectWs={setFocusedWsId}
-          onNewWorkspace={sNewWorkspace}
-          onCloseWorkspace={sCloseWorkspace}
-          onWorkspaceContextMenu={sWorkspaceMenu}
-          onReorderWorkspaces={sReorderWorkspaces}
-          onSelectPane={sSelectPane}
-          onBringBackPane={sBringBackPane}
-          onResetIntent={sResetIntent}
-          onSettings={sOpenSettings}
-          repoMaps={repoMaps}
-          onAdoptWorktree={sAdoptWorktree}
-          onPruneWorktree={sPruneWorktree}
-          onSendPrompt={sSendPrompt}
-          githubConnected={ghStatus?.connected ?? false}
-          ghUser={ghStatus?.user ?? null}
-          pullRequests={pullRequests}
-          prError={prError}
-          reviewingPr={reviewingPr}
-          onOpenPrManager={sOpenPrManager}
-          mergeQueue={mergeQueue}
-          onOpenMergeQueue={sOpenMergeQueue}
-          onReviewAll={sReviewAll}
-          friends={friends}
-          idSignedIn={!!idProfile}
-          idHandle={idProfile?.handle ?? null}
-          idDisplayName={idProfile?.display_name ?? null}
-          idAvatarUrl={idProfile?.avatar_url ?? null}
-          presenceStatus={presenceStatus}
-          onAddFriend={addIdFriend}
-          onAcceptFriend={acceptIdFriend}
-          onRemoveFriend={removeIdFriend}
-          onRequestObserve={sRequestObserve}
-          onSendTask={sSendTask}
-          onCopilot={sCopilot}
-          onOpenFriend={sOpenFriend}
-          onOpenMyInfo={sOpenMyInfo}
-          queueItems={queueItems}
-          onOpenQueueCapture={sOpenQueueCapture}
-          onQueueLaunch={sQueueLaunch}
-          onQueueEdit={sQueueEdit}
-          onQueueDelete={sQueueDelete}
-        />
-        {/* Seam between the sidebar and the panes. Gone while the sidebar is
-            collapsed — there is no edge to drag, and a seam pinned at x=0
-            would sit on top of the pane header's expand button. */}
-        {!effectiveSidebarCollapsed && (
-          <RailResizer
-            side="left"
-            cssVar="--sidebar-w"
-            spec={SIDEBAR_W}
-            width={sidebarWidth}
-            onCommit={commitSidebarWidth}
-            label="Resize sidebar"
-          />
-        )}
-        <div className="workspace-stack">
-          {workspaces.length === 0 ? (
-            <Splash onNewWorkspace={sNewWorkspace} onOpenCommandBar={() => setCmdBarOpen(true)} />
-          ) : (
-            workspaces.map((ws) => (
-              <div
-                key={ws.id}
-                className="workspace-layer"
-                data-workspace-id={ws.id}
-                style={{
-                  visibility: ws.id === focusedWsId ? "visible" : "hidden",
-                  pointerEvents: ws.id === focusedWsId ? "auto" : "none",
-                }}
-              >
-                <PaneArea
-                  borrowed={borrowedByWorkspace.get(ws.id)}
-                  workspace={ws}
-                  repoMap={repoMaps[ws.id]}
-                  onGitChanged={sGitChanged}
-                  isVisible={ws.id === focusedWsId}
+      <main className="v2-main" aria-label="Agent">
+        {mainView === "thread" && focusedWs && focusedTab ? (
+          <>
+            <ThreadHeader
+              title={currentThread?.title ?? focusedTab.name}
+              project={focusedWs.name}
+              branch={threadBranches.branch}
+              otherBranches={threadBranches.others}
+              kind={focusedPane?.kind}
+              sessionId={focusedPane?.sessionId}
+              secure={focusedWs.secure}
+              race={!!focusedTab.race}
+              sidebarHidden={effectiveSidebarCollapsed}
+              changesOpen={changesOpen}
+              canRename
+              onShowSidebar={sShowSidebar}
+              onRename={sRenameCurrent}
+              onToggleChanges={sToggleChanges}
+              onSplit={sSplitRight}
+              onCompareRace={sCompareRace}
+              menu={sHeaderMenu}
+            />
+            {focusedTab.layoutTree && isBroadcasting(broadcastKey(focusedWs.id, focusedTab.id)) && allPaneIds(focusedTab.layoutTree).length > 1 && (
+              <div className="v2-sync-strip" role="status">
+                Typing goes to every agent in this thread.
+                <button type="button" className="v2-btn" onClick={() => toggleBroadcast(broadcastKey(focusedWs.id, focusedTab.id))}>
+                  Stop
+                </button>
+              </div>
+            )}
+            <div className="v2-body">
+              <div className="v2-stage">
+                <ThreadView
+                  key={`${focusedWs.id}:${focusedTab.id}`}
+                  workspace={focusedWs}
+                  tab={focusedTab}
+                  title={currentThread?.title ?? focusedTab.name}
                   poppedOutIds={poppedOutIds}
-                  onStatusChange={updatePaneStatus}
-                  onIntentCaptured={updatePaneIntent}
-                  onAgentStart={onAgentStart}
+                  onFocusPane={sFocusPane}
+                  onResizeSplit={sResizeSplit}
+                  onEvenSplits={sEvenSplits}
+                  onSwapPanes={sSwapPanes}
+                  onZoomPane={sZoomPane}
+                  onClosePane={sClosePane}
                   onPaneContextMenu={sPaneContextMenu}
-                  onSpawnAgent={sSpawnAgent}
-                  onRace={sRace}
-                  onCompareRace={sCompareRace}
-                  onSplitPane={splitPane}
-                  onResizeSplit={resizeSplit}
-                  onEvenSplits={evenSplits}
-                  onSwapPanes={swapPanesInTab}
-                  onZoomPane={zoomPane}
-                  onClosePane={requestClosePane}
-                  onPopOutPane={popOutPane}
-                  onFocusPane={focusPane}
-                  onSubmitPrompt={sendPromptToPane}
-                  onSwitchTab={switchTab}
-                  onNewTab={newTabInWorkspace}
-                  onCloseTab={requestCloseTab}
-                  onRenameTab={renameTabInWorkspace}
-                  // Effective, not raw: this now decides whether the expand
-                  // button exists at all, so it has to agree with what the
-                  // rail is actually doing.
-                  sidebarCollapsed={effectiveSidebarCollapsed}
-                  onToggleSidebar={sToggleSidebar}
-                  rightRailCollapsed={rightRailCollapsed}
-                  onToggleRightRail={toggleRightRailCollapsed}
-                  rightRailHasContent={rightRailHasContent}
-                  onError={notifyFailure}
+                  onIntentCaptured={updatePaneIntent}
+                  onReveal={onAgentStart}
+                  onBringBack={sBringBack}
                 />
               </div>
-            ))
-          )}
-        </div>
-
-        {/* Right rail — Sidebar portals any right-docked sections in here.
-            Stays 0-width (see .right-rail:empty) until empty; the manual
-            collapse (pane-header toggle) zeroes it too, keeping content mounted. */}
-        <aside
-          className={`right-rail${rightRailCollapsed && rightRailHasContent ? " right-rail-collapsed" : ""}`}
-          id="flock-right-rail"
-        />
-        {/* Only when the rail is actually on screen: with nothing docked it's
-            zero-width by CSS (.right-rail:empty), and the width variable the
-            seam positions off would strand it out over the panes. */}
-        {rightRailHasContent && !rightRailCollapsed && (
-          <RailResizer
-            side="right"
-            cssVar="--right-rail-w"
-            spec={RIGHT_RAIL_W}
-            width={rightRailWidth}
-            onCommit={commitRightRailWidth}
-            label="Resize right rail"
+              {changesOpen && focusedWs.repo_path && (
+                <aside className="v2-side-panel" aria-label="Changes">
+                  <div className="v2-side-panel-head">
+                    Changes
+                    <button type="button" className="v2-icon-btn" aria-label="Hide changes" onClick={toggleChanges}><XIcon size={14} /></button>
+                  </div>
+                  <div className="v2-side-panel-body">
+                    <ErrorBoundary label="Changes">
+                    <GitPanel
+                      repoPath={focusedWs.repo_path}
+                      workspace={focusedWs}
+                      repoMap={repoMaps[focusedWs.id]}
+                      overviewPath={focusedPane?.cwd || focusedWs.repo_path}
+                      onSelectPane={(paneId) => focusPane(focusedWs.id, paneId)}
+                      onAdoptWorktree={(wt) => void adoptWorktree(focusedWs.id, wt)}
+                      onPruneWorktree={(wt) => void pruneWorktree(focusedWs.id, wt)}
+                      onSendPrompt={sendPromptToPane}
+                    />
+                    </ErrorBoundary>
+                  </div>
+                </aside>
+              )}
+            </div>
+          </>
+        ) : mainView === "waking" && focusedWs ? (
+          <>
+            <header className="v2-head" data-tauri-drag-region>
+              <h1 className="v2-head-title">{focusedWs.name}</h1>
+            </header>
+            <div className="v2-body">
+              <div className="v2-stage">
+                <div className="v2-boot" role="status" style={{ cursor: "default" }}>
+                  <span className="v2-boot-line">Starting the agents in {focusedWs.name}…</span>
+                  <span className="v2-boot-bar" />
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <header className="v2-head" data-tauri-drag-region>
+              {effectiveSidebarCollapsed && (
+                <button type="button" className="v2-icon-btn" aria-label="Show sidebar" onClick={sShowSidebar}>
+                  <PanelLeftIcon size={16} />
+                </button>
+              )}
+              <h1 className="v2-head-title" data-tauri-drag-region>New agent</h1>
+              {composing && threadOnScreen && (
+                <div className="v2-head-tools">
+                  <button type="button" className="v2-btn" onClick={() => setComposing(null)}>Cancel</button>
+                </div>
+              )}
+            </header>
+            <div className="v2-body">
+              <div className="v2-stage">
+                <Composer
+                  projects={composerProjects}
+                  projectId={composing?.projectId ?? focusedWsId}
+                  defaultKind={focusedWs?.agentKind ?? "claude"}
+                  onStart={sStart}
+                  onPickFolder={sPickFolder}
+                  onMoreOptions={sMoreOptions}
+                  onCancel={composing && threadOnScreen ? sCancelComposer : undefined}
+                />
+              </div>
+            </div>
+          </>
+        )}
+        {dialog.kind === "settings" && (
+          <SettingsDialog
+            onClose={() => { setDialog({ kind: "none" }); refreshGh(); refreshVoice(); }}
+            onShowSidebar={effectiveSidebarCollapsed ? sShowSidebar : undefined}
+            onTestVoiceHud={previewVoiceHud}
+            initialTab={dialog.tab as never}
+            workspaces={workspaces}
+            onSetWorkspaceBudget={setWorkspaceBudget}
           />
         )}
-      </div>
+        {dialog.kind === "pr-hub" && (
+          <PrManagerModal
+            prs={modalPrs}
+            prError={prError}
+            initialPr={dialog.initialPr}
+            initialView={dialog.view}
+            onClose={() => setDialog({ kind: "none" })}
+            onReview={(pr) => {
+              setDialog({ kind: "none" });
+              reviewPr(pr);
+            }}
+            reviewingPr={reviewingPr}
+            onReviewAll={() => {
+              setDialog({ kind: "none" });
+              reviewAllPrs();
+            }}
+            summaries={prSummaries}
+            ghUser={ghStatus?.user ?? null}
+            mergeQueue={mergeQueue}
+            onQueueAdd={addPrToMergeQueue}
+            onQueueRemove={removePrFromMergeQueue}
+            onQueueReorder={reorderPrInMergeQueue}
+            onApprove={approvePr}
+            onMergeNow={mergePrNow}
+            resolveRepoPaths={repoPathsForQueue}
+            onShowSidebar={effectiveSidebarCollapsed ? sShowSidebar : undefined}
+          />
+        )}
+        {dialog.kind === "my-info" && idProfile?.id && (
+          <MyInfoModal
+            profileId={idProfile.id}
+            handle={idProfile.handle ?? ""}
+            avatarUrl={idProfile.avatar_url ?? null}
+            onSignOut={() => setDialog({ kind: "confirm-signout" })}
+            onAccount={() => openSettings("account")}
+            onClose={() => setDialog({ kind: "none" })}
+            onShowSidebar={effectiveSidebarCollapsed ? sShowSidebar : undefined}
+          />
+        )}
+        {dialog.kind === "friend-stats" &&
+          (() => {
+            const friend = friends.find((f) => f.id === dialog.friendId);
+            return friend ? (
+              <FriendStatsModal
+                friend={friend}
+                onClose={() => setDialog({ kind: "none" })}
+                onShowSidebar={effectiveSidebarCollapsed ? sShowSidebar : undefined}
+              />
+            ) : null;
+          })()}
+        {showGraphExplorer && (
+          <GraphExplorer
+            workspaceId={graphExplorerWorkspaceId}
+            workspaceName={workspaces.find((workspace) => workspace.id === graphExplorerWorkspaceId)?.name ?? null}
+            initialView={graphExplorerView}
+            onClose={() => setShowGraphExplorer(false)}
+            onShowSidebar={effectiveSidebarCollapsed ? sShowSidebar : undefined}
+          />
+        )}
+        {showGraphSetup && (
+          <GraphOnboardingDialog
+            onClose={() => setShowGraphSetup(false)}
+            onShowSidebar={effectiveSidebarCollapsed ? sShowSidebar : undefined}
+          />
+        )}
+      </main>
 
-      <StatusBar workspaces={workspaces} repoMaps={repoMaps} mergeQueue={mergeQueue} onOpenGit={openGit} onOpenMergeQueue={() => setDialog({ kind: "pr-hub", view: "queue" })} onOpenCommandBar={() => setCmdBarOpen(true)} />
-
-      {/* Above the status bar in source order so it stacks over everything in
-          the shell, and outside .app-main so the scrim covers the rails too —
-          a palette that dims only the work area reads as belonging to the work
-          area rather than to the app. */}
       <CommandBar
         open={cmdBarOpen}
         onClose={() => setCmdBarOpen(false)}
@@ -5195,26 +4629,31 @@ export default function App() {
 
       {voiceHud && <VoiceOverlay {...voiceHud} level={voiceLevel} onDismiss={dismissVoiceError} />}
 
-      <SessionToasts
-        toasts={sessionToasts}
-        onDismiss={(id) => setSessionToasts((prev) => prev.filter((t) => t.id !== id))}
-      />
-
-      <UpdateBanner />
-
+      <Toasts toasts={toasts} onDismiss={dismissToast} />
+      {/* A friend asking to watch, a co-pilot invite, a task: these wait for an
+          answer (45 s), so they stand apart from the passing notes. */}
+      {sessionToasts.length > 0 && (
+        <SessionToasts toasts={sessionToasts} onDismiss={(id) => setSessionToasts((prev) => prev.filter((t) => t.id !== id))} />
+      )}
       {taskDialog && (
         <TaskDialog
           toLogin={taskDialog.login}
           toAvatar={taskDialog.avatar}
-          onSend={(prompt) => sendTask(taskDialog.login, taskDialog.windowId, prompt)}
+          onSend={(prompt) => {
+            sendTask(taskDialog.login, taskDialog.windowId, prompt);
+            pushNotification({ status: "info", category: "agent", priority: true, text: `Task sent to @${taskDialog.login}` });
+            setTaskDialog(null);
+          }}
           onClose={() => setTaskDialog(null)}
         />
       )}
 
+      <UpdateBanner />
+
       {dialog.kind === "new-workspace" && (
         <NewWorkspaceDialog
           cwd={cwd}
-          onConfirm={onNewWorkspaceConfirmed}
+          onConfirm={(launch) => void onNewWorkspaceConfirmed(launch)}
           onCancel={() => setDialog({ kind: "none" })}
         />
       )}
@@ -5223,10 +4662,6 @@ export default function App() {
         return (
           <SpawnLayoutDialog
             defaultKind={ws?.agentKind ?? "claude"}
-            // The same plan spawnAgentInWorkspace will actually use, read
-            // through the same planFor() — including its normalization, which
-            // is why an "existing branch" workspace correctly reports that
-            // agents past the first get their own branches cut off it.
             branchNote={(count) => {
               if (!ws?.repo_path) return "";
               const plan = planFor(ws, count);
@@ -5252,10 +4687,6 @@ export default function App() {
         return (
           <RaceDialog
             defaultKind={ws.agentKind}
-            // The main checkout's branch as the poll last saw it, not
-            // `ws.branch` — that one is frozen at workspace-creation time, and
-            // a race promising to branch off a branch the user left days ago
-            // is the kind of wrong that only shows up after the fact.
             baseLabel={repoMaps[ws.id]?.worktrees.find((w) => w.is_main)?.branch || ws.branch || "HEAD"}
             initialPrompt={dialog.prompt}
             onConfirm={(kind, count, prompt) => {
@@ -5280,70 +4711,28 @@ export default function App() {
           />
         );
       })()}
-      {dialog.kind === "settings" && (
-        <SettingsDialog
-          onClose={() => { setDialog({ kind: "none" }); refreshGh(); refreshVoice(); }}
-          onTestVoiceHud={previewVoiceHud}
-          initialTab={dialog.tab as never}
-          workspaces={workspaces}
-          onSetWorkspaceBudget={setWorkspaceBudget}
-        />
-      )}
       {dialog.kind === "rename-workspace" && (
         <RenameDialog
-          title="Rename Workspace"
+          title="Rename project"
           initial={dialog.current}
           onConfirm={(name) => onRenameConfirmed(dialog.workspaceId, name)}
           onCancel={() => setDialog({ kind: "none" })}
         />
       )}
-      {dialog.kind === "pr-hub" && (
-        <PrManagerModal
-          prs={modalPrs}
-          prError={prError}
-          initialPr={dialog.initialPr}
-          initialView={dialog.view}
-          onClose={() => setDialog({ kind: "none" })}
-          onReview={(pr) => {
-            setDialog({ kind: "none" });
-            reviewPr(pr);
-          }}
-          reviewingPr={reviewingPr}
-          onReviewAll={() => {
-            setDialog({ kind: "none" });
-            reviewAllPrs();
-          }}
-          summaries={prSummaries}
-          ghUser={ghStatus?.user ?? null}
-          mergeQueue={mergeQueue}
-          onQueueAdd={addPrToMergeQueue}
-          onQueueRemove={removePrFromMergeQueue}
-          onQueueReorder={reorderPrInMergeQueue}
-          onApprove={approvePr}
-          onMergeNow={mergePrNow}
-          resolveRepoPaths={repoPathsForQueue}
-        />
-      )}
       {dialog.kind === "confirm-close" && (
         <ConfirmDialog
-          title={
-            dialog.mode === "copilot"
-              ? "End co-pilot session?"
-              : dialog.mode === "observe"
-              ? "Stop observing?"
-              : "Close workspace?"
-          }
+          title={dialog.mode === "copilot" ? "End the co-pilot session?" : dialog.mode === "observe" ? "Stop watching?" : "Remove project?"}
           message={
-            dialog.mode === "copilot"
-              ? <>This ends the shared session <strong>{dialog.name}</strong> for both of you.</>
-              : dialog.mode === "observe"
-              ? <>This stops observing <strong>{dialog.name}</strong>.</>
-              : <>This closes <strong>{dialog.name}</strong> and shuts down its running agents. This can't be undone.</>
+            dialog.mode === "copilot" ? (
+              <>Your agents in <strong>{dialog.name}</strong> stop, and your partner stops seeing them.</>
+            ) : dialog.mode === "observe" ? (
+              <>You stop seeing <strong>{dialog.name.replace(/^watching /, "")}</strong>'s agent. Nothing changes on their side.</>
+            ) : (
+              <>This removes <strong>{dialog.name}</strong> from flock and stops its running agents. Your files stay where they are.</>
+            )
           }
-          confirmLabel={
-            dialog.mode === "copilot" ? "End session" : dialog.mode === "observe" ? "Stop" : "Close workspace"
-          }
-          danger={dialog.mode === "close"}
+          confirmLabel={dialog.mode === "copilot" ? "End session" : dialog.mode === "observe" ? "Stop watching" : "Remove project"}
+          danger
           onConfirm={() => {
             const id = dialog.workspaceId;
             setDialog({ kind: "none" });
@@ -5392,14 +4781,14 @@ export default function App() {
       )}
       {dialog.kind === "confirm-close-tab" && (
         <ConfirmDialog
-          title="Close this tab?"
+          title="Close this thread?"
           message={
             <>
-              Closing <strong>{dialog.tabName}</strong> shuts down{" "}
-              {dialog.agentCount === 1 ? "the agent" : `all ${dialog.agentCount} agents`} laid out in it. This can't be undone.
+              Closing <strong>{dialog.tabName}</strong> stops{" "}
+              {dialog.agentCount === 1 ? "its agent" : `its ${dialog.agentCount} agents`}. This can't be undone.
             </>
           }
-          confirmLabel="Close tab"
+          confirmLabel="Close thread"
           danger
           onConfirm={() => {
             const { workspaceId, tabId } = dialog;
@@ -5412,7 +4801,7 @@ export default function App() {
       {dialog.kind === "confirm-signout" && (
         <ConfirmDialog
           title="Sign out of flock?"
-          message={<>This signs you out of your flock ID{idProfile?.handle ? <> (<strong>@{idProfile.handle}</strong>)</> : null} and locks the cockpit until you sign back in. Agents keep running locally.</>}
+          message={<>This signs you out of your flock ID{idProfile?.handle ? <> (<strong>@{idProfile.handle}</strong>)</> : null}. Agents keep running.</>}
           confirmLabel="Sign out"
           danger
           onConfirm={() => {
@@ -5420,18 +4809,6 @@ export default function App() {
             signOut().catch(console.error);
           }}
           onCancel={() => setDialog({ kind: "none" })}
-        />
-      )}
-      {dialog.kind === "friend-stats" && (
-        <FriendStatsModal friend={dialog.friend} onClose={() => setDialog({ kind: "none" })} />
-      )}
-      {dialog.kind === "my-info" && idProfile?.handle && (
-        <MyInfoModal
-          profileId={idProfile.id}
-          handle={idProfile.handle}
-          avatarUrl={idProfile.avatar_url}
-          onSignOut={() => setDialog({ kind: "confirm-signout" })}
-          onClose={() => setDialog({ kind: "none" })}
         />
       )}
       {dialog.kind === "queue-capture" && (
@@ -5442,23 +4819,6 @@ export default function App() {
       )}
       {contextMenu && (
         <ContextMenu x={contextMenu.x} y={contextMenu.y} items={contextMenu.items} onClose={() => setContextMenu(null)} />
-      )}
-      {showOnboarding && (
-        <OnboardingDialog mode={onboardingMode}
-          onStart={() => { markOnboardingSeen(); setShowOnboarding(false); setDialog({ kind: "new-workspace" }); }}
-          onDone={() => { markOnboardingSeen(); setShowOnboarding(false); }} />
-      )}
-      {/* Rendered after OnboardingDialog so "Set up now" from the tutorial's
-          graph step opens the wizard on top of it. */}
-      {showGraphSetup && (
-        <GraphOnboardingDialog onClose={() => setShowGraphSetup(false)} />
-      )}
-      {showGraphExplorer && (
-        <GraphExplorer
-          workspaceId={graphExplorerWorkspaceId}
-          workspaceName={workspaces.find((workspace) => workspace.id === graphExplorerWorkspaceId)?.name ?? null}
-          onClose={() => setShowGraphExplorer(false)}
-        />
       )}
     </div>
   );
@@ -5527,20 +4887,6 @@ function orderForDisplay(list: Workspace[]): Workspace[] {
  * sidebar, whose row for the same agent carries exactly this, so a palette row
  * without it is strictly less than the thing it covers. Capped short — the
  * label and the workspace still own the row. */
-function paneDetail(pane: Pane): string | undefined {
-  const state =
-    pane.status === "awaiting_input" || pane.status === "blocked" ? "waiting"
-    : pane.status === "working" ? "working"
-    : pane.spawning || pane.booting ? "starting"
-    : pane.status === "failed" ? "failed"
-    : pane.status === "done" ? "done"
-    : "idle";
-  const task = pane.intent?.replace(/\s+/g, " ").trim();
-  if (!task) return state;
-  return `${state} · ${task.length > 48 ? `${task.slice(0, 48)}…` : task}`;
-}
-
-/** One-line, length-capped preview of a queued prompt for menus and toasts. */
 function queuePreview(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat || "(empty)";
@@ -5607,19 +4953,21 @@ async function resolveNewPaneCwd(
   return { cwd: repoPath };
 }
 
-// Estimate PTY dimensions so the agent starts rendering at approximately
-// the right size. Uses window dimensions minus known chrome offsets and
-// SF Mono 13px approximate cell metrics (7.8×15.6 px per character).
+// Estimate PTY dimensions so the agent starts rendering at approximately the
+// right size: the window minus v2's chrome (the frame, the sidebar, the
+// thread's header, a tiled agent's own bar) at SF Mono 13px cell metrics
+// (7.8×15.6 px). The first fit corrects whatever this gets wrong.
 function estimatePtyDims(gridRows: number, gridCols: number): { ptyCols: number; ptyRows: number } {
-  const sidebarW = 240;
-  const titlebarH = 32;
-  const statusBarH = 26;       // bottom status bar (usage + changes)
-  const paneHeaderH = 40 + 30; // workspace header + tab bar
-  const paneTopbarH = 22;      // per-pane name/controls strip (inside each pane)
+  const frame = 10;          // gap around and between the panels
+  const sidebarW = 264;
+  const headH = 46;          // the thread's header
+  const tiledBarH = gridRows * gridCols > 1 ? 30 : 0;
+  const padW = 16;           // pane body padding, left + right
+  const padH = 10;           // and top + bottom
   const cellW = 7.8;
   const cellH = 15.6;
-  const paneW = (window.innerWidth - sidebarW) / gridCols;
-  const paneH = (window.innerHeight - titlebarH - statusBarH - paneHeaderH) / gridRows - paneTopbarH;
+  const paneW = (window.innerWidth - sidebarW - frame * 3) / gridCols - padW;
+  const paneH = (window.innerHeight - frame * 2 - headH) / gridRows - tiledBarH - padH;
   return {
     ptyCols: Math.max(20, Math.floor(paneW / cellW)),
     ptyRows: Math.max(5, Math.floor(paneH / cellH)),

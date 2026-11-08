@@ -101,14 +101,10 @@ export default function PoppedPaneWindow({ paneId, name, kind, accent, sessionId
         </span>
       </div>
       <div className="popout-body" data-pane-id={paneId}>
-        {/* Sole resizePty driver while this window is live: every grid
-            Terminal for this paneId is marked not-visible (see poppedOutIds
-            in App / PaneArea), so this instance can keep visible={true}
-            without fighting a tile that still lays the id out. `primary`
-            is not what does that — it is the default, and it gates stream
-            mirroring and registry ownership, which in this webview are its
-            own. Left off so nothing reads it as the mechanism. */}
-        <Terminal paneId={paneId} focused={true} visible={true} />
+        {/* Sole resizePty driver while this window is live: the main window
+            shows a "open in its own window" tile for this pane instead of a
+            terminal (see poppedOutIds in App / ThreadView). */}
+        <Terminal paneId={paneId} focused={true} />
       </div>
       {voiceHud && <VoiceOverlay {...voiceHud} level={voiceLevel} onDismiss={dismissError} />}
     </div>

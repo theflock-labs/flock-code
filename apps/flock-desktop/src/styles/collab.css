@@ -1,0 +1,428 @@
+/* Friends' sessions: the waiting notes (SessionToast), the task dialog and the
+   remote terminal, as v1 shipped them; v2's overrides follow at the end. */
+
+/* ─── Session Toasts ───────────────────────────────────────────────────────── */
+
+.session-toasts {
+  position: fixed;
+  bottom: 24px;
+  left: calc(var(--sidebar-w) + 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 100;
+}
+
+/* Auto-update "Restart to update to vX.Y.Z" pill. The new version is already
+   downloaded by the time this shows; Restart just installs + relaunches. */
+.update-banner {
+  position: fixed;
+  bottom: 24px;
+  right: 20px;
+  z-index: 101;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-chrome);
+  border: 1px solid var(--border-hover);
+  border-radius: 999px;
+  padding: 8px 8px 8px 14px;
+  box-shadow: var(--lift-2);
+  animation: toast-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.update-banner-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--action-fill);
+  box-shadow: 0 0 8px var(--action-fill);
+  flex-shrink: 0;
+}
+.update-banner-text {
+  font-size: var(--fs-base);
+  color: var(--text-mid);
+  white-space: nowrap;
+}
+.update-banner-text strong {
+  color: var(--text-hi);
+  font-weight: var(--weight-strong);
+}
+.update-banner-btn {
+  font-size: var(--fs-sm);
+  font-weight: var(--weight-medium);
+  color: var(--bg-window);
+  background: var(--action-fill);
+  border: none;
+  border-radius: 999px;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: opacity 0.12s ease-out;
+}
+.update-banner-btn:hover:not(:disabled) { opacity: 0.9; }
+.update-banner-btn:disabled { opacity: 0.6; cursor: default; }
+.update-banner-x {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  font-size: var(--fs-lg);
+  line-height: 1;
+  color: var(--text-low);
+  background: none;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: color 0.12s ease-out, background 0.12s ease-out;
+}
+.update-banner-x:hover:not(:disabled) { color: var(--text-hi); background: var(--bg-hover); }
+
+.session-toast {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-chrome);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-control);
+  padding: 12px 14px 14px;
+  width: 320px;
+  box-shadow: var(--lift-2);
+  animation: toast-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+.session-toast-kind-icon {
+  font-size: var(--fs-base);
+  color: var(--action);
+}
+.session-toast-ttl {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: color-mix(in srgb, var(--action) 55%, transparent);
+  transition: width 1s linear;
+}
+
+.session-toast-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.session-toast-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.session-toast-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--action) 18%, var(--bg-window));
+  color: var(--action);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: var(--weight-strong);
+}
+.session-toast-prompt {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-hi);
+  font-style: italic;
+}
+
+.session-toast-from {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  font-weight: var(--weight-strong);
+  color: var(--text-hi);
+  flex: 1;
+}
+
+.session-toast-body {
+  font-size: var(--fs-base);
+  color: var(--text-mid);
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+/* pr_opened toasts: one tab per newly-opened PR */
+.session-toast-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.session-toast-tab {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-low);
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 2px 7px;
+  cursor: pointer;
+  transition: color 0.12s ease-out, border-color 0.12s ease-out;
+}
+.session-toast-tab:hover { color: var(--text-mid); }
+.session-toast-tab.active {
+  color: var(--action);
+  border-color: var(--action);
+}
+
+.session-toast-actions {
+  display: flex;
+  flex-wrap: wrap;   /* so "Don't show again" can take a line of its own */
+  gap: 6px;
+}
+
+.session-toast-btn {
+  flex: 1;
+  padding: 5px 0;
+  border-radius: var(--radius-chip);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-normal);
+  text-transform: none;
+  cursor: pointer;
+  border: none;
+}
+.session-toast-btn.accept {
+  background: var(--action-fill);
+  color: var(--bg-window);
+}
+.session-toast-btn.accept:hover { opacity: 0.9; }
+.session-toast-btn.decline {
+  background: transparent;
+  color: var(--text-mid);
+  border: 1px solid var(--border-subtle);
+}
+.session-toast-btn.decline:hover { color: var(--orange); border-color: var(--orange); }
+
+/* Wraps onto its own line under the two real answers, because it is not a
+   third answer to the question the toast is asking. Text only, ghost weight:
+   the two things that matter here are Accept and Decline, and an off switch
+   competing with them for the eye is how people turn off the thing they meant
+   to keep. The actions row is flex, so `flex-basis: 100%` is what makes it
+   wrap rather than squash the other two into thirds. */
+.session-toast-btn.never {
+  flex: 0 0 100%;
+  margin-top: 2px;
+  padding: 2px 0 0;
+  background: none;
+  border: none;
+  color: var(--text-ghost);
+  font-size: var(--fs-xs);
+  font-weight: var(--weight-normal);
+}
+.session-toast-btn.never:hover { color: var(--text-mid); text-decoration: underline; }
+.friend-watch-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: var(--fs-base);
+  opacity: 0;
+  padding: 0 2px;
+  transition: opacity 0.1s ease-out;
+  flex-shrink: 0;
+}
+.friend-row:hover .friend-watch-btn,
+.friend-row:focus-within .friend-watch-btn,
+.friend-watch-btn:focus-visible { opacity: 1; }
+.friend-watch-btn:hover { opacity: 1; filter: drop-shadow(0 0 4px var(--action)); }
+
+/* ─── Task Dialog ──────────────────────────────────────────────────────────── */
+
+.task-dialog { width: 480px; }
+
+.task-prompt-input {
+  width: 100%;
+  background: var(--bg-window);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-chip);
+  color: var(--text-hi);
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
+  padding: 10px 12px;
+  outline: none;
+  resize: vertical;
+  min-height: 80px;
+  line-height: 1.5;
+}
+.task-prompt-input:focus { border-color: var(--action); }
+.task-prompt-input::placeholder { color: var(--text-ghost); }
+
+/* ─── Co-pilot Panel ───────────────────────────────────────────────────────── */
+
+.copilot-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 50%;
+  height: 100%;
+  background: var(--bg-window);
+  border-left: 1px solid var(--action);
+  display: flex;
+  flex-direction: column;
+  z-index: 40;
+  /* The one directional elevation in the app, so it can't use --lift-*: the
+     panel slides in from the right and casts left, over the pane it covers.
+     Same discipline as the lift scale though — a tight contact line plus a
+     blur pulled inward, not the 60%-black wall that used to sit here. */
+  box-shadow: -1px 0 2px rgba(2, 5, 12, 0.35), -16px 0 32px -16px rgba(2, 5, 12, 0.5);
+}
+
+.copilot-panel-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.copilot-panel-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.copilot-grid {
+  flex: 1;
+  display: grid;
+  gap: 1px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.copilot-tile {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-window);
+  overflow: hidden;
+}
+
+.copilot-tile-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+/* Row actions — hidden until the row is hovered, then a full-height cluster of
+   icon buttons on the right (generous, full-row click targets). Requests and
+   pending rows carry `-static` to stay visible: they're the primary action,
+   not a reveal-on-hover convenience. */
+.friend-action-btns {
+  display: flex;
+  align-self: stretch;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  margin-left: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+.friend-row:hover .friend-action-btns,
+.friend-row:focus-within .friend-action-btns { opacity: 1; }
+.friend-action-btns-static { opacity: 1; }
+
+.friend-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  background: var(--bg-chrome);
+  border: 1px solid var(--border-subtle);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  width: 24px;
+  padding: 0;
+  border-radius: var(--radius-chip);
+  line-height: 1;
+  color: var(--text-mid);
+  transition: background 0.1s ease-out, color 0.1s ease-out, border-color 0.1s ease-out;
+}
+.friend-action-btn:hover {
+  background: color-mix(in srgb, var(--action) 12%, transparent);
+  color: var(--action);
+  border-color: var(--action);
+}
+/* Destructive actions (remove/decline/cancel) warm to red, not the accent. */
+.friend-action-btn-danger:hover {
+  background: color-mix(in srgb, var(--orange) 14%, transparent);
+  color: var(--orange);
+  border-color: var(--orange);
+}
+
+/* Remote (streamed) terminal pane styling */
+.terminal-pane.remote-pane { background: var(--bg-window); }
+.remote-outer {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+.remote-inner {
+  transform-origin: top left;
+  display: inline-block;
+}
+.remote-pane-badge {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 10;
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--weight-strong);
+  letter-spacing: var(--tracking-caps);
+  color: var(--bg-window);
+  background: var(--action-fill);
+  padding: 2px 5px;
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+/* Co-pilot workspace card accent. Identity is the tinted name + corner label
+   only — the card's border-left is none (see .workspace-card), so a
+   border-left-color here would be dead weight. */
+.workspace-card.copilot .ws-name { color: var(--blue); }
+.workspace-card.copilot::after {
+  content: "CO-PILOT";
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--weight-strong);
+  letter-spacing: var(--tracking-caps);
+  color: var(--blue);
+  opacity: 0.7;
+}
+
+.workspace-card.observe .ws-name { color: var(--yellow); }
+.workspace-card.observe::after {
+  content: "OBSERVE";
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-eyebrow);
+  font-weight: var(--weight-strong);
+  letter-spacing: var(--tracking-caps);
+  color: var(--yellow);
+  opacity: 0.7;
+}
+

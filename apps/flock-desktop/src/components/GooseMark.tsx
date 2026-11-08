@@ -1,123 +1,111 @@
 import { useEffect, useState } from "react";
 
-// The goose — flock's bird, the HD sprite (36x16: feathered wingtips, a real
-// neck, an eye that reads, shaded wing and bill), straight from
-// flock-website/brand/generate-goose.py. This bare sprite IS the in-app
-// mark; the night-disc version exists only in the macOS app icon. `flap`
-// animates the two-frame wingbeat, sprite-style.
+// The goose: flock's bird, drawn as pixels (38 by 23 cells). This bare sprite
+// is the in-app mark, beside the wordmark; `flap` beats its wing, two frames,
+// sprite-style.
 //
-// One bird, every theme: sky body, apricot wing. It used to shift palette with
-// the theme, which meant the app had three different geese depending on where
-// you looked. A mark that changes colour is not one mark.
+// REDRAWN 2026-11-08 from the owner's reference: a goose in flight with its
+// wing raised, the body shaded in five blues (a highlight along the back, a
+// shadow under the belly), a cream wing and breast, an orange bill and feet
+// tucked under, and an eye with a dark pupil. It replaces the 36 by 16 flat
+// "firstlight" sprite (sky body, apricot wing), whose palettes and variants
+// went with it: no caller asked for any but the default. The wing and the
+// body stay far apart in lightness (cream on blue), so the bird keeps its
+// shape in greyscale and at small sizes, which is what the old apricot wing
+// was there to fix.
 //
-// THE WING SWEEPS BACK, as of 2026-07-29. It used to sit five cells forward of
-// its root, toward the bill, which is the pose a goose holds to kill speed on
-// approach — tail pointing one way and wing the other, so the mark read as
-// static. Same wing, same row widths cell for cell, mirrored and then sheared
-// so both edges rake; the bounding box did not move. The downstroke still
-// leans forward on purpose: that is the power stroke, so the two frames now
-// row rather than both pointing the same way. Reasoning in full lives in
-// flock-website/scripts/generate-goose.py, which is the sprite's source.
-//
-// THE NECK IS SHORT, same day. The head dropped a row and moved a column in
-// toward the shoulder, and the eye slid two columns forward, one cell in from
-// the front of the skull. A shoulder now carries the head into the back rather
-// than leaving it floating over a notch, and the belly runs into the tail
-// instead of cutting away under it. Everything above the waterline is one mass
-// at 16px, which is the size that decides the mark.
+// The second frame is the same wing lowered onto the back (squashed toward
+// it and raked a little back), derived from the first rather than drawn, so
+// the two stay one bird. The flock website draws the same sprite.
 
-type Variant = "mint" | "dawn" | "ink" | "firstlight";
-
-const PALETTES: Record<Variant, Record<string, string>> = {
-  // Nightfall: the classic goose — mint body, blue wing, gold beak.
-  mint: { M: "#4fffb0", T: "#2fc98c", B: "#4daffe", D: "#2f89d8", Y: "#e8ff3a", Z: "#c3d631" },
-  // Daybreak: the dawn goose — sky body, rose wing, peach beak.
-  dawn: { M: "#7fb4f0", T: "#4a7bc0", B: "#f6c6d8", D: "#d89ab8", Y: "#ffb59e", Z: "#e0906e" },
-  // High-contrast option: navy ink body, action-blue wing, peach beak.
-  ink:  { M: "#0b1b33", T: "#060f1e", B: "#1e5eff", D: "#1849c9", Y: "#ff8a63", Z: "#e0704f" },
-  // "first light": sky body, apricot wing, gold bill. The bird, everywhere.
-  //
-  // Blue + pink until 2026-07-28. The wing is drawn on top of the body, so the
-  // two are each other's background, and they sat 1.09:1 apart: the wing
-  // disappeared in greyscale, at favicon size, and under protanopia and
-  // deuteranopia. Now 2.17:1, and 2.18 desaturated. The body keeps the
-  // signature's sky hue and drops in lightness; the wing and bill take the warm
-  // end of dawn. Chroma falls from 1.73x the sky/rose/peach signature to 1.27x.
-  // Rose is unchanged in the wordmark crest, where it belongs.
-  //
-  // These six values must stay identical to PALETTES["firstlight"] in
-  // flock-website/scripts/generate-goose.py.
-  firstlight: { M: "#4f89c9", T: "#3a6aa7", B: "#fdb89b", D: "#e1957a", Y: "#e8a962", Z: "#cb8747" },
+const PALETTE: Record<string, string> = {
+  h: "#a1bfef", // body highlight
+  l: "#7da1db", // body light
+  g: "#6282bb", // body
+  m: "#5171a5", // body mid
+  d: "#3b5178", // body shade
+  n: "#23324b", // body shadow
+  w: "#f7ede4", // wing, belly
+  c: "#decdbd", // wing
+  s: "#c1b09f", // wing shade
+  u: "#aa9a8a", // wing shadow
+  q: "#fcd0af", // bill highlight
+  p: "#eaae86", // bill, feet light
+  o: "#d3885a", // bill, feet
+  r: "#a05f3c", // bill shade
+  b: "#613925", // bill, feet dark
+  k: "#0e1117", // eye
 };
 
-/** What you get when a caller doesn't ask for a palette, whatever the theme.
- *  The other three stay reachable by name: `ink` is the app icon's bird, and
- *  `mint` / `dawn` are the old per-theme pair, kept because they are brand
- *  assets rather than dead code. */
-const DEFAULT_VARIANT: Variant = "firstlight";
-
 const UPSTROKE = [
-  "..........B.B.B.....................",
-  "..........BBBBBB....................",
-  "..........BBBBBBB...................",
-  "..........BBBBBBBB........MMMM......",
-  "..........DBBBBBBBB......MMMMMM.....",
-  "..........DDBBBBBBBB.....MMMMKM.....",
-  "...........DDBBBBBBBB...MMMMMMMYYYY.",
-  "..MMM.......DDBBBBBBB..MMMMMMMYYYZ..",
-  "..MMMMMMMMMMMMMDBBBBBMMMMMMMMM......",
-  "..TTMMMMMMMMMMMMMMMMMMMMMMMM........",
-  "...TTMMMMMMMMMMMMMMMMMMMMM..........",
-  "....TTTMMMMMMMMMMMMMMMMMM...........",
-  "......TTTTMMMMMMMMMMMMM.............",
-  "........TTTTTMMMMMMMM...............",
-  "....................................",
-  "....................................",
+  "...........w.w........................",
+  "...........wwww.......................",
+  ".........s.cwwww......................",
+  ".........scccwwww.....................",
+  ".........wccccwwww....................",
+  ".........ssccccwwww........nhhhh......",
+  ".........wwcccccwww.......nmgllhh.....",
+  ".........sccccccwwww......dmgdkdh.....",
+  "..........uusscccwwww.....dmgdkdlg....",
+  "h..........sscccccwwww...nndmmgllppqqq",
+  "lhh.........uuusssswww..dmnddddmooooo.",
+  "mmlhhhhlldddnnnuuuucwwgmmmmnnnnnbbbb..",
+  "nmmmllggggmdddddddlllggmmmmmd.........",
+  ".dddmmmmlllllllllllllggmmmmln.........",
+  "..nnnmmmmmggglllllllgggmwww...........",
+  "...nnndmmmmmggggggggggwwww............",
+  "....nnnndmmmmmmmmmmmlwwwww............",
+  ".....nnnnndmmmmmmmmmwwwww.............",
+  ".......nnnndddmmmmmccccc..............",
+  ".........nbboumnnuussss...............",
+  "..........bor..uuuuu..................",
+  ".........brpr.........................",
+  "........oopp..........................",
 ];
 
-// Same body as the upstroke with the down-wing painted over it — the pair is
-// one bird with two wings, not two birds, so this frame is derived rather than
-// drawn. Change the body above and this has to be rebuilt from it.
 const DOWNSTROKE = [
-  "....................................",
-  "....................................",
-  "....................................",
-  "..........................MMMM......",
-  ".........................MMMMMM.....",
-  ".........................MMMMKM.....",
-  "........................MMMMMMMYYYY.",
-  "..MMM..................MMMMMMMYYYZ..",
-  "..MMMMMMMMMMMMMMMMMMMMMMMMMMMM......",
-  "..TTMMMMMMMMBBBBBBBBMMMMMMMM........",
-  "...TTMMMMMMMBBBBBBBBBMMMMM..........",
-  "....TTTMMMMMBBBBBBBBBMMMM...........",
-  "......TTTTMMMDBBBBBBBMM.............",
-  "........TTTTTMMDDBBBB...............",
-  ".................DDBB...............",
-  "...................D................",
+  "......................................",
+  "......................................",
+  "......................................",
+  "......................................",
+  "......................................",
+  "...........................nhhhh......",
+  "...........s.wwwww........nmgllhh.....",
+  "...........scccwwwww......dmgdkdh.....",
+  "..........ssccccwwww......dmgdkdlg....",
+  "h.........sccccccwwww....nndmmgllppqqq",
+  "lhh........sscccccwwww..dmnddddmooooo.",
+  "mmlhhhhlldddnnnuuuucwwgmmmmnnnnnbbbb..",
+  "nmmmllggggmdddddddlllggmmmmmd.........",
+  ".dddmmmmlllllllllllllggmmmmln.........",
+  "..nnnmmmmmggglllllllgggmwww...........",
+  "...nnndmmmmmggggggggggwwww............",
+  "....nnnndmmmmmmmmmmmlwwwww............",
+  ".....nnnnndmmmmmmmmmwwwww.............",
+  ".......nnnndddmmmmmccccc..............",
+  ".........nbboumnnuussss...............",
+  "..........bor..uuuuu..................",
+  ".........brpr.........................",
+  "........oopp..........................",
 ];
 
-const VOID = "var(--bg-window, #06080c)";
 const CELL = 10;
-const COLS = 36;
-const ROWS = 16;
+const COLS = 38;
+const ROWS = 23;
 
 export default function GooseMark({
   width = 54,
-  variant,
   flap = false,
   flapMs = 260,
   flapFor,
 }: {
   width?: number;
-  /** Explicit palette; defaults to the effective theme's bird. */
-  variant?: Variant;
   /** Two-frame wingbeat. Respect it sparingly — motion is seasoning. */
   flap?: boolean;
   /** Wingbeat period; faster reads as excitement (voice bar uses 150). */
   flapMs?: number;
-  /** Stop flapping after this many ms and settle wings-up (the Settings
-   * goose lands; perpetual motion in a dialog gets annoying). */
+  /** Stop flapping after this many ms and settle wings-up (the sign-in goose
+   *  lands; perpetual motion gets annoying). */
   flapFor?: number;
 }) {
   const [down, setDown] = useState(false);
@@ -131,23 +119,12 @@ export default function GooseMark({
     return () => { clearInterval(t); if (stop) clearTimeout(stop); };
   }, [flap, flapMs, flapFor]);
 
-  const pal = PALETTES[variant ?? DEFAULT_VARIANT];
   const grid = flap && down ? DOWNSTROKE : UPSTROKE;
-
   const rects: React.ReactNode[] = [];
   grid.forEach((row, y) => {
     [...row].forEach((c, x) => {
       if (c === ".") return;
-      rects.push(
-        <rect
-          key={`${x}-${y}`}
-          x={x * CELL}
-          y={y * CELL}
-          width={CELL}
-          height={CELL}
-          fill={c === "K" ? VOID : pal[c]}
-        />,
-      );
+      rects.push(<rect key={`${x}-${y}`} x={x * CELL} y={y * CELL} width={CELL} height={CELL} fill={PALETTE[c]} />);
     });
   });
   return (
@@ -161,4 +138,15 @@ export default function GooseMark({
       {rects}
     </svg>
   );
+}
+
+/** The sprite as a standalone SVG document, for the README and the website. */
+export function gooseSvg(cell = 10): string {
+  const rects: string[] = [];
+  UPSTROKE.forEach((row, y) =>
+    [...row].forEach((c, x) => {
+      if (c !== ".") rects.push(`<rect x="${x * cell}" y="${y * cell}" width="${cell}" height="${cell}" fill="${PALETTE[c]}"/>`);
+    }),
+  );
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${COLS * cell} ${ROWS * cell}" width="${COLS * cell}" height="${ROWS * cell}" shape-rendering="crispEdges">${rects.join("")}</svg>`;
 }

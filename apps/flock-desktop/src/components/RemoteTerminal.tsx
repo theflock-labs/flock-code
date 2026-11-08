@@ -5,6 +5,7 @@ import { getStreamGrant, onRealtimeContext } from "../lib/presence";
 import { subscribeToStream, streamChannels } from "../lib/session";
 import { getEffectiveTheme, getXtermTheme, TERMINAL_FONT_FAMILY } from "../lib/theme";
 import { bindTerminalFont } from "../lib/terminalFont";
+import "../styles/collab.css";
 
 interface Props {
   streamId: string;

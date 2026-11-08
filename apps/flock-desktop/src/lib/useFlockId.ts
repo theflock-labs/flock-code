@@ -14,26 +14,25 @@ import {
   type IdProfile,
 } from "./flockId";
 import { setUsageConsent } from "./usageStats";
-import { refreshAuthorization, getAblyClient } from "./presence";
+import { getAblyClient, refreshAuthorization } from "./presence";
 import { isWindowActive, onWindowActiveChange } from "./windowActive";
-import type { Notification } from "../components/NotificationsBadge";
+import type { NotificationInput } from "./useNotifications";
 import type { Friend } from "../types";
 
-/** flock ID session state: the signed-in profile and the friend graph.
- * Friends and presence key off this; GitHub stays a repo-scoped integration.
- * `setFriends` is exposed because live presence events (Ably, wired in App)
- * overlay online/agent-count state onto the server-side friendship list. */
-export function useFlockId(pushNotification: (n: Omit<Notification, "id" | "time">) => void) {
+/** The signed-in flock ID and its friends.
+ *
+ *  The profile is what the app gates on. Friends are the server-side
+ *  friendship list (Supabase), kept live by a realtime subscription with a
+ *  one-minute fallback poll while the window is in use; live presence (Ably,
+ *  wired in App) is laid over it through `setFriends`, and a refresh keeps
+ *  whatever presence already arrived. */
+export function useFlockIdentity(notify?: (n: NotificationInput) => void) {
   const [idProfile, setIdProfile] = useState<IdProfile | null>(null);
-  // Distinguishes "session check hasn't resolved yet" from "signed out" so
-  // the welcome dialog never flashes for a signed-in user on launch.
+  // "Not checked yet" is not "signed out": the gate must not flash.
   const [idChecked, setIdChecked] = useState(false);
   const [friends, setFriends] = useState<Friend[]>([]);
 
-  /** Load the signed-in profile and friend list from flock ID. Presence
-   * state from Ably events that already fired is preserved via the
-   * functional updater; the friendships themselves live server-side. */
-  const refreshIdFriends = useCallback(async (options?: { requireProfile?: boolean }) => {
+  const refreshIdentity = useCallback(async (options?: { requireProfile?: boolean }) => {
     if (!isIdConfigured()) {
       setIdProfile(null);
       setFriends([]);
@@ -47,14 +46,7 @@ export function useFlockId(pushNotification: (n: Omit<Notification, "id" | "time
     if (options?.requireProfile && !profile?.handle) {
       throw new Error("Your handle was saved, but your profile couldn’t be loaded. Try again.");
     }
-    // Heal a rotated/stale Google avatar. The handle_new_user trigger seeds
-    // profiles.avatar_url once at first sign-up and never refreshes it, so a
-    // changed Google photo (or a since-rotated avatar URL) would stay stale
-    // forever. If the live OAuth session carries a different avatar, push it to
-    // the profile row (via the existing "own profile is editable" RLS policy)
-    // and use it immediately. getSession() is a local read; the DB write only
-    // fires when the value actually drifted, so after the first heal this is a
-    // string compare and no-ops on every later refresh.
+    // Heal a rotated Google avatar: the profile row is seeded once at sign-up.
     let synced = profile;
     if (profile) {
       const meta = (await getSession().catch(() => null))?.user?.user_metadata as
@@ -62,8 +54,11 @@ export function useFlockId(pushNotification: (n: Omit<Notification, "id" | "time
         | undefined;
       const live = meta?.avatar_url || meta?.picture;
       if (live && live !== profile.avatar_url) {
-        await supabase().from("profiles").update({ avatar_url: live }).eq("id", profile.id)
-          .then(() => {}, () => { /* best-effort; UI still uses the live value */ });
+        await supabase()
+          .from("profiles")
+          .update({ avatar_url: live })
+          .eq("id", profile.id)
+          .then(() => {}, () => { /* best-effort; the live value is used either way */ });
         synced = { ...profile, avatar_url: live };
       }
     }
@@ -77,94 +72,98 @@ export function useFlockId(pushNotification: (n: Omit<Notification, "id" | "time
     const list = await listIdFriends().catch(() => []);
     setFriends((prev) => {
       const live = new Map(prev.map((f) => [f.handle, f]));
-      const merge = (handle: string, base: Friend): Friend => {
-        const existing = live.get(handle);
-        return existing
-          ? { ...base, presence: existing.presence, agentCount: existing.agentCount, windowId: existing.windowId ?? base.windowId }
-          : base;
-      };
-      // Friends only — the signed-in user is intentionally excluded from the
-      // list (their own identity lives in the profile footer, not here).
-      return list.map((f) =>
-        merge(f.profile.handle ?? "", {
+      return list.map((f) => {
+        const handle = f.profile.handle ?? "";
+        const base: Friend = {
           id: f.profile.id,
-          handle: f.profile.handle ?? "(no handle yet)",
+          handle: handle || "(no handle yet)",
           avatarUrl: f.profile.avatar_url ?? "",
           friendStatus: f.state,
-          presence: "offline" as const,
+          presence: "offline",
           agentCount: 0,
           lastSeen: null,
-        }),
-      );
+        };
+        const existing = live.get(handle);
+        return existing
+          ? { ...base, presence: existing.presence, agentCount: existing.agentCount, windowId: existing.windowId ?? base.windowId, lastSeen: existing.lastSeen }
+          : base;
+      });
     });
   }, []);
 
   useEffect(() => {
-    refreshIdFriends();
-    // Live: Supabase realtime pushes friendship changes (requests, accepts).
-    const unsubAuth = onAuthChange(() => { setUsageConsent(false); void refreshIdFriends(); });
+    void refreshIdentity();
+    const offAuth = onAuthChange(() => {
+      setUsageConsent(false);
+      void refreshIdentity();
+    });
+    // Settings → Account → Privacy changed what this account shares.
     const privacyChanged = () => {
       setUsageConsent(false);
-      void refreshIdFriends();
+      void refreshIdentity();
       if (getAblyClient()) void refreshAuthorization().catch(() => {});
     };
     window.addEventListener("flock:social-privacy-changed", privacyChanged);
-    const unsubFriendships = subscribeFriendships(() => refreshIdFriends());
-    // Fallback for when realtime isn't enabled on the project, so an incoming
-    // request never sits invisible until the next reload. The realtime
-    // subscription above is the primary path, so this is only a safety net —
-    // 60s (not 20s), paused while hidden, with a refresh on return.
-    const poll = setInterval(() => { if (isWindowActive()) refreshIdFriends(); }, 60000);
-    const unsubActive = onWindowActiveChange((active) => { if (active) refreshIdFriends(); });
-    return () => { unsubAuth(); unsubFriendships(); clearInterval(poll); unsubActive(); window.removeEventListener("flock:social-privacy-changed", privacyChanged); };
-  }, [refreshIdFriends]);
+    const offFriendships = subscribeFriendships(() => void refreshIdentity());
+    // A safety net for projects without realtime: a minute, only while the
+    // window is in use, and once more on coming back to it.
+    const poll = setInterval(() => {
+      if (isWindowActive()) void refreshIdentity();
+    }, 60_000);
+    const offActive = onWindowActiveChange((active) => {
+      if (active) void refreshIdentity();
+    });
+    return () => {
+      offAuth();
+      offFriendships();
+      clearInterval(poll);
+      offActive();
+      window.removeEventListener("flock:social-privacy-changed", privacyChanged);
+    };
+  }, [refreshIdentity]);
 
-  // Who-did-what friend notifications for the status bar (the coarse
-  // subscription above already refreshes the sidebar).
+  // A request in, or one of yours accepted: a note in the corner.
   useEffect(() => {
-    if (!idProfile?.id) return;
+    if (!idProfile?.id || !notify) return;
     return subscribeFriendEvents(idProfile.id, (e) => {
       if (e.kind === "request_in") {
-        pushNotification({ status: "info", category: "agent", priority: true, text: `@${e.from.handle ?? "someone"} sent you a friend request` });
+        notify({ status: "info", category: "agent", priority: true, text: `@${e.from.handle ?? "someone"} sent you a friend request` });
       } else {
-        pushNotification({ status: "success", category: "agent", priority: true, text: `@${e.by.handle ?? "someone"} accepted your friend request` });
+        notify({ status: "success", category: "agent", priority: true, text: `@${e.by.handle ?? "someone"} accepted your friend request` });
       }
     });
-  }, [idProfile?.id, pushNotification]);
+  }, [idProfile?.id, notify]);
 
-  // Once signed in, keep the cumulative Claude Code token/USD totals synced to
-  // flock ID so friends can see them alongside the other social stats.
-  // Torn down when the session ends — the scan is I/O-heavy and writes to the
-  // signed-in profile, so it has no business running signed-out.
+  // Usage counts sync only for an account that chose to share them.
   useEffect(() => {
     setUsageConsent(!!idProfile?.id && idProfile.usage_sharing === true);
     return () => setUsageConsent(false);
   }, [idProfile?.id, idProfile?.usage_sharing]);
 
-  const addIdFriend = useCallback(async (input: string) => {
-    const result = await addFriendOrInvite(input);
-    await refreshIdFriends();
-    return result;
-  }, [refreshIdFriends]);
+  const addFriend = useCallback(
+    async (input: string) => {
+      const result = await addFriendOrInvite(input);
+      await refreshIdentity();
+      return result;
+    },
+    [refreshIdentity],
+  );
 
-  const acceptIdFriend = useCallback(async (profileId: string) => {
-    await acceptFriendRequest(profileId);
-    await refreshIdFriends();
-  }, [refreshIdFriends]);
+  const acceptFriend = useCallback(
+    async (profileId: string) => {
+      await acceptFriendRequest(profileId);
+      await refreshIdentity();
+    },
+    [refreshIdentity],
+  );
 
-  const removeIdFriend = useCallback(async (profileId: string) => {
-    await removeFriendship(profileId);
-    await refreshIdFriends();
-  }, [refreshIdFriends]);
+  const removeFriend = useCallback(
+    async (profileId: string) => {
+      await removeFriendship(profileId);
+      await refreshIdentity();
+    },
+    [refreshIdentity],
+  );
 
-  return {
-    idProfile,
-    idChecked,
-    friends,
-    setFriends,
-    refreshIdFriends,
-    addIdFriend,
-    acceptIdFriend,
-    removeIdFriend,
-  };
+  return { idProfile, idChecked, refreshIdentity, friends, setFriends, addFriend, acceptFriend, removeFriend };
 }

@@ -1,15 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
-import { CheckIcon, XIcon } from "./friendIcons";
-import { ExternalLinkIcon, QueueIcon, ReviewIcon } from "./statusIcons";
 import { githubPrDetails, githubPrDiff, type PrDetails, type PrReviewSummary, type MergeQueueItem } from "../lib/tauri";
-import ModalCloseButton from "./ModalCloseButton";
-import IconButton from "./IconButton";
 import DiffView from "./DiffView";
 import MergeQueueView from "./MergeQueueModal";
 import PrWatchSettings from "./PrWatchSettings";
-import { useFocusTrap } from "../lib/useFocusTrap";
 import type { PullRequest } from "../types";
+import { Page, PageEmpty } from "../v2/Page";
+import { ExternalIcon, PlusIcon } from "../v2/icons";
 import "./PrManagerModal.css";
 
 export type PrHubView = "prs" | "queue" | "repos";
@@ -43,31 +40,23 @@ interface Props {
   onMergeNow: (repo: string, number: number) => Promise<void>;
   /** slug → local checkout path for open workspaces (conflict analysis). */
   resolveRepoPaths: () => Promise<Record<string, string>>;
+  /** Present while the app's sidebar is hidden. */
+  onShowSidebar?: () => void;
 }
 
-/** The shared GitHub cockpit: one modal, two tabs. PULL REQUESTS is the
- * master-detail view (list rail + checks/reviews/diff); MERGE QUEUE is the
- * queue manager (validation matrix, approvals, mergeability, reordering).
- * Cross-links switch tabs in place — a queued card's title jumps to that PR's
- * detail, and a PR's "in merge queue" chip jumps to the queue. */
+/** Pull requests, as a page of the main panel: the open PRs listed beside the
+ * one you picked (its checks, reviews, the agent's review and the diff), the
+ * merge queue, and the repos flock watches. Cross-links switch views in place:
+ * a queued PR's title opens its detail, a PR's queue place opens the queue. */
 export default function PrManagerModal({
   prs, prError, initialPr, initialView, onClose, onReview, reviewingPr, onReviewAll,
   summaries, ghUser, mergeQueue, onQueueAdd, onQueueRemove, onQueueReorder,
-  onApprove, onMergeNow, resolveRepoPaths,
+  onApprove, onMergeNow, resolveRepoPaths, onShowSidebar,
 }: Props) {
   const [view, setView] = useState<PrHubView>(initialView ?? "prs");
   const [selected, setSelected] = useState<number | null>(
     (initialPr != null && prs.some((p) => p.number === initialPr) ? initialPr : prs[0]?.number) ?? null,
   );
-  const modalRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(modalRef);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   // Keep the selection valid as the PR list refreshes underneath us (a PR can
   // merge/close while the modal is open); fall back to the first PR.
   useEffect(() => {
@@ -79,135 +68,115 @@ export default function PrManagerModal({
   const selectedPr = prs.find((p) => p.number === selected) ?? null;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal pr-manager-modal" ref={modalRef} role="dialog" aria-modal="true" aria-label="Pull requests and merge queue" onClick={(e) => e.stopPropagation()}>
-        <ModalCloseButton onClose={onClose} />
-        <div className="modal-header">
-          {/* The eyebrow doubles as the tab bar — same size and voice as the
-              step line it replaces, so switching surfaces costs no chrome. */}
-          <div className="pr-hub-tabs" role="tablist">
-            <button
-              className={`pr-hub-tab${view === "prs" ? " active" : ""}`}
-              role="tab"
-              aria-selected={view === "prs"}
-              onClick={() => setView("prs")}
-            >
-              PULL REQUESTS{prs.length > 0 && ` · ${prs.length}`}
-            </button>
-            <span className="pr-hub-tab-sep">/</span>
-            <button
-              className={`pr-hub-tab${view === "queue" ? " active" : ""}`}
-              role="tab"
-              aria-selected={view === "queue"}
-              onClick={() => setView("queue")}
-            >
-              MERGE QUEUE{mergeQueue.length > 0 && ` · ${mergeQueue.length}`}
-            </button>
-            <span className="pr-hub-tab-sep">/</span>
-            <button
-              className={`pr-hub-tab${view === "repos" ? " active" : ""}`}
-              role="tab"
-              aria-selected={view === "repos"}
-              onClick={() => setView("repos")}
-            >
-              REPOS
-            </button>
-          </div>
-          <div className="title">
-            {view === "queue" ? "Merge Queue" : view === "repos" ? "Watched Repos" : repo ?? "Pull Requests"}
-          </div>
+    <Page<PrHubView>
+      title="Pull requests"
+      meta={view === "prs" && repo ? <span className="v2-page-meta">{repo}</span> : undefined}
+      tabs={[
+        { id: "prs", label: "Open", count: prs.length },
+        { id: "queue", label: "Merge queue", count: mergeQueue.length, title: "Pull requests that merge by themselves, in order, once approved and green" },
+        { id: "repos", label: "Watched repos" },
+      ]}
+      tab={view}
+      onTab={setView}
+      onClose={onClose}
+      onShowSidebar={onShowSidebar}
+      className="v2-prs"
+    >
+      {view === "repos" ? (
+        <div className="v2-page-scroll">
+          <PrWatchSettings connected={ghUser !== null} />
         </div>
-
-        <div className="modal-body pr-manager-body">
-          {view === "repos" ? (
-            <PrWatchSettings connected={ghUser !== null} />
-          ) : view === "queue" ? (
-            <MergeQueueView
-              resolveRepoPaths={resolveRepoPaths}
-              ghUser={ghUser}
-              onApprove={onApprove}
-              onMergeNow={onMergeNow}
-              onRemove={onQueueRemove}
-              onReorder={onQueueReorder}
-              onOpenPr={(_repo, number) => { setSelected(number); setView("prs"); }}
-            />
-          ) : prs.length === 0 ? (
-            <div className="pr-manager-empty">
-              {prError ? "nothing loaded yet" : "no open pull requests on this repo"}
-            </div>
-          ) : (
-            <div className="pr-manager-split">
-              <aside className="pr-list-rail">
-                {prError && (
-                  <div className="pr-manager-error pr-list-error">couldn't refresh — {prError}</div>
-                )}
-                <div className="pr-list-scroll">
-                  {prs.map((pr) => (
-                    <PrListItem
-                      key={`${pr.repo}#${pr.number}`}
-                      pr={pr}
-                      selected={pr.number === selected}
-                      reviewing={reviewingPr === pr.number}
-                      onSelect={() => setSelected(pr.number)}
-                    />
-                  ))}
-                </div>
-                {prs.length > 1 && (
-                  <button className="btn-mint-solid pr-review-all" onClick={onReviewAll} disabled={reviewingPr !== null} aria-describedby={reviewingPr !== null ? "pr-review-startup" : undefined}>
-                    + Review all with agents
-                  </button>
-                )}
-              </aside>
-
-              <section className="pr-detail-pane">
-                {selectedPr ? (
-                  <PrDetail
-                    key={`${selectedPr.repo}#${selectedPr.number}`}
-                    pr={selectedPr}
-                    onReview={onReview}
-                    reviewing={reviewingPr === selectedPr.number}
-                    reviewingPr={reviewingPr}
-                    summary={summaries[`${selectedPr.repo}#${selectedPr.number}`]}
+      ) : view === "queue" ? (
+        <div className="v2-page-scroll">
+          <MergeQueueView
+            resolveRepoPaths={resolveRepoPaths}
+            ghUser={ghUser}
+            onApprove={onApprove}
+            onMergeNow={onMergeNow}
+            onRemove={onQueueRemove}
+            onReorder={onQueueReorder}
+            onOpenPr={(_repo, number) => { setSelected(number); setView("prs"); }}
+          />
+        </div>
+      ) : prs.length === 0 ? (
+        <PageEmpty>{prError ? `Couldn't load pull requests: ${prError}` : "No open pull requests."}</PageEmpty>
+      ) : (
+        <div className="v2-split">
+          <aside className="v2-split-list" aria-label="Open pull requests">
+            {prError && <p className="v2-note error" style={{ margin: "0.8em 1.1em 0" }}>Couldn't refresh: {prError}</p>}
+            <ul className="v2-list">
+              {prs.map((pr) => (
+                <li key={`${pr.repo}#${pr.number}`}>
+                  <PrListItem
+                    pr={pr}
                     ghUser={ghUser}
-                    queuedItem={mergeQueue.find((i) => i.repo === selectedPr.repo && i.number === selectedPr.number)}
-                    onQueueAdd={onQueueAdd}
-                    onApprove={onApprove}
-                    onOpenMergeQueue={() => setView("queue")}
+                    selected={pr.number === selected}
+                    reviewing={reviewingPr === pr.number}
+                    onSelect={() => setSelected(pr.number)}
                   />
-                ) : (
-                  <div className="pr-detail-placeholder">Select a pull request to see its diff.</div>
-                )}
-              </section>
-            </div>
-          )}
-        </div>
+                </li>
+              ))}
+            </ul>
+            {prs.length > 1 && (
+              <button
+                type="button"
+                className="v2-row v2-list-foot"
+                onClick={onReviewAll}
+                disabled={reviewingPr !== null}
+                title="Start one review agent per pull request"
+              >
+                <PlusIcon size={16} />
+                Review all with agents
+              </button>
+            )}
+          </aside>
 
-        <div className="modal-footer">
-          <span className="kbd">esc</span><span>close</span>
+          <section className="v2-split-detail">
+            {selectedPr ? (
+              <PrDetail
+                key={`${selectedPr.repo}#${selectedPr.number}`}
+                pr={selectedPr}
+                onReview={onReview}
+                reviewing={reviewingPr === selectedPr.number}
+                reviewingPr={reviewingPr}
+                summary={summaries[`${selectedPr.repo}#${selectedPr.number}`]}
+                ghUser={ghUser}
+                queuedItem={mergeQueue.find((i) => i.repo === selectedPr.repo && i.number === selectedPr.number)}
+                onQueueAdd={onQueueAdd}
+                onApprove={onApprove}
+                onOpenMergeQueue={() => setView("queue")}
+              />
+            ) : (
+              <PageEmpty>Pick a pull request.</PageEmpty>
+            )}
+          </section>
         </div>
-      </div>
-    </div>
+      )}
+    </Page>
   );
 }
 
-function PrListItem({ pr, selected, reviewing, onSelect }: {
+function PrListItem({ pr, ghUser, selected, reviewing, onSelect }: {
   pr: PullRequest;
+  ghUser: string | null;
   selected: boolean;
   reviewing: boolean;
   onSelect: () => void;
 }) {
+  const meta = [
+    `#${pr.number}`,
+    pr.author && pr.author !== ghUser ? `@${pr.author}` : null,
+    pr.head_ref || null,
+    pr.updated_at ? relativeTime(pr.updated_at) : null,
+  ].filter(Boolean).join(" · ");
   return (
-    <button className={`pr-list-item${selected ? " selected" : ""}`} onClick={onSelect}>
-      <div className="pr-list-item-top">
-        <span className="pr-number">#{pr.number}</span>
-        <span className="pr-list-item-title">{pr.title}</span>
-        {reviewing && <span className="pr-review-spinner" />}
-      </div>
-      <span className="pr-list-item-meta">
-        @{pr.author}
-        {pr.head_ref && <> · {pr.head_ref}</>}
-        {pr.updated_at && <> · {relativeTime(pr.updated_at)}</>}
+    <button type="button" className="v2-list-row" aria-current={selected || undefined} onClick={onSelect}>
+      <span />
+      <span>
+        <span className="v2-list-title">{pr.title}</span>
+        <span className="v2-list-meta">{meta}</span>
       </span>
+      {reviewing ? <span className="v2-spinner" role="status" aria-label="Review starting" /> : <span />}
     </button>
   );
 }
@@ -284,152 +253,113 @@ function PrDetail({ pr, onReview, reviewing, reviewingPr, summary, ghUser, queue
     }
   };
 
+  const checkTone = (conclusion: string | null, status: string) =>
+    conclusion === "success" ? "ok"
+      : conclusion === "failure" || conclusion === "timed_out" ? "bad"
+        : status === "in_progress" || status === "queued" ? "busy" : undefined;
+
   return (
-    <div className="pr-detail">
-      <div className="pr-detail-head">
-        <div className="pr-detail-titlerow">
-          <span className="pr-number">#{pr.number}</span>
-          <span className="pr-detail-title">{pr.title}</span>
-
-        </div>
-        <div className="pr-detail-meta">
-          @{pr.author}
-          {pr.updated_at && <> · {relativeTime(pr.updated_at)}</>}
-        </div>
-        {actionError && <div className="pr-manager-error">{actionError}</div>}
-        {(headRef || details?.base_ref) && (
-          <div className="pr-branch-flow" title="source branch → target branch">
-            <span className="pr-branch pr-branch-head">{headRef || "unknown"}</span>
-            <span className="pr-branch-arrow">→</span>
-            <span className="pr-branch pr-branch-base">{details?.base_ref || "…"}</span>
-          </div>
+    <div className="v2-detail v2-pr">
+      <h2>
+        {pr.title} <span className="v2-faint">#{pr.number}</span>
+      </h2>
+      <p className="v2-detail-sub">
+        @{pr.author}
+        {headRef && (
+          <>
+            {" "}wants to merge <code>{headRef}</code>
+            {details?.base_ref && <> into <code>{details.base_ref}</code></>}
+          </>
         )}
+        {pr.updated_at && <> · {relativeTime(pr.updated_at)}</>}
+      </p>
 
-        {detailsError ? (
-          <div className="pr-manager-error">couldn't load checks — {detailsError}</div>
-        ) : details && (details.checks.length > 0 || details.reviews.length > 0) ? (
-          <div className="pr-detail-status">
-            {details.checks.length > 0 && (
-              <div className="pr-detail-checks">
-                {details.checks.map((c, i) => (
-                  <span
-                    key={i}
-                    className={`pr-detail-check ${conclusionClass(c.conclusion, c.status)}`}
-                    title={`${c.name}: ${c.conclusion ?? c.status}`}
-                  >
-                    <span className="pr-check-dot">{conclusionIcon(c.conclusion, c.status)}</span>
-                    {c.name}
-                  </span>
-                ))}
-              </div>
-            )}
-            {details.reviews.length > 0 && (
-              <div className="pr-detail-reviews">
-                {details.reviews.map((r, i) => (
-                  <details key={i} className={`pr-detail-review pr-review-${r.state.toLowerCase()}`}>
-                    <summary>{r.state.replaceAll("_", " ").toLowerCase()} · @{r.author}</summary>
-                    <div className="pr-review-feedback">{r.body || "No written feedback."}</div>
-                  </details>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : details ? (
-          <div className="pr-action-context">No checks or reviews reported yet.</div>
-        ) : <div className="pr-action-context" role="status">Loading checks and reviews…</div>}
-        <div className="pr-action-context">
-          {ghUser ? <>GitHub actions run as <strong>@{ghUser}</strong>.</> : "GitHub account unavailable — check your connection in Settings."}
-          {" "}Agent review checks out this branch and opens a review agent.
+      {detailsError ? (
+        <p className="v2-note error">Couldn't load checks: {detailsError}</p>
+      ) : !details ? (
+        <p className="v2-note" role="status">Loading checks…</p>
+      ) : details.checks.length + details.reviews.length > 0 ? (
+        <div className="v2-chips">
+          {details.checks.map((c, i) => (
+            <span key={`c${i}`} className="v2-status-chip" data-tone={checkTone(c.conclusion, c.status)} title={`${c.name}: ${c.conclusion ?? c.status}`}>
+              {c.name}
+            </span>
+          ))}
+          {details.reviews.map((r, i) => (
+            <details key={`r${i}`} className="v2-status-chip">
+              <summary>
+                {r.state.replaceAll("_", " ").toLowerCase().replace(/^./, (ch) => ch.toUpperCase())} by @{r.author}
+              </summary>
+              <p>{r.body || "No written feedback."}</p>
+            </details>
+          ))}
         </div>
-          <div className="pr-detail-actions">
-            <button
-              className={`pr-action-btn pr-approve-btn${approving ? " loading" : ""}${alreadyApproved ? " done" : ""}`}
-              title={alreadyApproved
-                ? `Already approved as @${ghUser}`
-                : `Submit an approving review as @${ghUser ?? "the connected user"}`}
-              disabled={approving || alreadyApproved}
-              aria-busy={approving}
-              onClick={approve}
-            >
-              {approving
-                ? <><span className="pr-review-spinner" /> Approving on GitHub…</>
-                : <><CheckIcon size={11} /> {alreadyApproved ? "Approved on GitHub" : "Approve on GitHub"}</>}
-            </button>
-            {queuedItem ? (
-              <button
-                className="pr-queued-chip"
-                title="Waiting in the merge queue — click to manage it"
-                onClick={onOpenMergeQueue}
-              >
-                in merge queue · #{queuedItem.position + 1} <ExternalLinkIcon size={10} />
-              </button>
-            ) : (
-              <button
-                className={`pr-action-btn pr-queue-btn${queueing ? " loading" : ""}`}
-                title="Add to the merge queue — merges automatically once approved and green, in order"
-                disabled={queueing}
-                aria-busy={queueing}
-                aria-describedby="pr-queue-rules"
-                onClick={queueMerge}
-              >
-                {queueing ? <><span className="pr-review-spinner" /> Queueing…</> : <><QueueIcon size={11} /> Queue auto-merge</>}
-              </button>
-            )}
-            <button
-              className={`pr-review-btn${reviewing ? " loading" : ""}`}
-              title={reviewBusyMessage ?? `Check out ${headRef || `PR #${pr.number}`} and start an agent to review it`}
-              disabled={reviewingPr !== null}
-              aria-busy={reviewing}
-              aria-describedby={reviewingPr !== null ? "pr-review-startup" : undefined}
-              onClick={() => onReview(pr)}
-            >
-              {reviewing ? <><span className="pr-review-spinner" /> Starting review…</> : <><ReviewIcon size={11} /> Review with agent</>}
-            </button>
-            <IconButton
-              className="pr-manager-gh-btn"
-              icon={<ExternalLinkIcon size={13} />}
-              label="Open on GitHub"
-              onClick={() => openPath(ghUrl).catch(console.error)}
-            />
-          </div>
-        <div id="pr-queue-rules" className="pr-action-context">
-          Queued PRs merge automatically in order after approval and completed checks without failures.
-          GitHub branch rules still apply. Manage queued PRs in the Merge Queue tab.
-        </div>
-        {reviewBusyMessage && <div id="pr-review-startup" className="pr-action-context" role="status">{reviewBusyMessage}</div>}
-      </div>
-
-      {summary && (
-        <div className="pr-agent-review">
-          <div className="pr-agent-review-label">
-            AGENT REVIEW
-            <span className="pr-agent-review-time">{relativeTime(summary.updated_at)}</span>
-          </div>
-          <div className="pr-agent-review-text">{summary.summary}</div>
-        </div>
+      ) : (
+        <p className="v2-note">No checks or reviews yet.</p>
       )}
 
-      <DiffView
-        load={() => githubPrDiff(pr.repo, pr.number)}
-        externalUrl={`${ghUrl}/files`}
-        emptyMessage="This pull request has no file changes."
-      />
+      <div className="v2-detail-actions">
+        <button
+          type="button"
+          className="v2-btn primary"
+          title={reviewBusyMessage ?? `Check out ${headRef || `PR #${pr.number}`} and start an agent to review it`}
+          disabled={reviewingPr !== null}
+          aria-busy={reviewing}
+          onClick={() => onReview(pr)}
+        >
+          {reviewing ? "Starting review…" : "Review with agent"}
+        </button>
+        <button
+          type="button"
+          className="v2-btn"
+          title={alreadyApproved ? `Already approved as @${ghUser}` : `Approve on GitHub as @${ghUser ?? "your account"}`}
+          disabled={approving || alreadyApproved}
+          aria-busy={approving}
+          onClick={approve}
+        >
+          {approving ? "Approving…" : alreadyApproved ? "Approved" : "Approve"}
+        </button>
+        {queuedItem ? (
+          <button type="button" className="v2-btn" title="Waiting in the merge queue. Open the queue." onClick={onOpenMergeQueue}>
+            In merge queue · {queuedItem.position + 1}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="v2-btn"
+            title="Merges by itself, in order, once approved and with no failing checks. GitHub's branch rules still apply."
+            disabled={queueing}
+            aria-busy={queueing}
+            onClick={queueMerge}
+          >
+            {queueing ? "Adding…" : "Add to merge queue"}
+          </button>
+        )}
+        <button type="button" className="v2-icon-btn" aria-label="Open on GitHub" title="Open on GitHub" onClick={() => openPath(ghUrl).catch(console.error)}>
+          <ExternalIcon size={15} />
+        </button>
+      </div>
+      {actionError && <p className="v2-note error">{actionError}</p>}
+      {reviewBusyMessage && !reviewing && <p className="v2-note" role="status">{reviewBusyMessage}</p>}
+
+      {summary && (
+        <section className="v2-detail-section">
+          <h3>
+            Agent review <span className="v2-faint">· {relativeTime(summary.updated_at)}</span>
+          </h3>
+          <p className="v2-detail-body" style={{ marginTop: 0 }}>{summary.summary}</p>
+        </section>
+      )}
+
+      <section className="v2-detail-section v2-pr-diff">
+        <DiffView
+          load={() => githubPrDiff(pr.repo, pr.number)}
+          externalUrl={`${ghUrl}/files`}
+          emptyMessage="This pull request has no file changes."
+        />
+      </section>
     </div>
   );
-}
-
-function conclusionClass(conclusion: string | null, status: string): string {
-  if (conclusion === "success") return "check-success";
-  if (conclusion === "failure" || conclusion === "timed_out") return "check-failure";
-  if (status === "in_progress") return "check-running";
-  return "check-neutral";
-}
-
-function conclusionIcon(conclusion: string | null, status: string): ReactNode {
-  if (conclusion === "success") return <CheckIcon size={11} />;
-  if (conclusion === "failure" || conclusion === "timed_out") return <XIcon size={11} />;
-  if (status === "in_progress") return <span className="status-mark filled" />;
-  return <span className="status-mark" />;
 }
 
 function relativeTime(iso: string): string {

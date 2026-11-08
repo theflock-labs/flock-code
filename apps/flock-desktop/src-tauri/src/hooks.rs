@@ -996,7 +996,7 @@ fn notification_status(message: Option<&str>) -> flock_core::AgentStatus {
 /// last wins and they never disagree for long.
 async fn apply_event_status(app: &tauri::AppHandle, event: &Value) {
     use flock_core::AgentStatus;
-    use tauri::{Emitter, Manager};
+    use tauri::Manager;
 
     let Some(pane_id) = event.get("pane_id").and_then(|p| p.as_str()) else {
         return;
@@ -1048,13 +1048,7 @@ async fn apply_event_status(app: &tauri::AppHandle, event: &Value) {
         if let Some(rec) = &recorder {
             rec.status(new.as_str()).await;
         }
-        let _ = app.emit(
-            &format!("agent://status/{pane_id}"),
-            crate::events::AgentStatusEvent {
-                pane_id: pane_id.to_string(),
-                status: new.as_str().to_string(),
-            },
-        );
+        crate::events::emit_status(app, pane_id, new.as_str());
     }
 }
 

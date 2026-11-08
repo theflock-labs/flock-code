@@ -425,11 +425,11 @@ export default function NewWorkspaceDialog({ cwd, onConfirm, onCancel }: Props) 
 
   return (
     <div className="modal-overlay" onClick={cancel}>
-      <div className="modal sd nw" ref={modalRef} role="dialog" aria-modal="true" aria-label="New workspace" onClick={(e) => e.stopPropagation()}>
+      <div className="modal sd nw" ref={modalRef} role="dialog" aria-modal="true" aria-label="New project" onClick={(e) => e.stopPropagation()}>
         <ModalCloseButton onClose={cancel} />
 
         <div className="sd-head">
-          <h2 className="sd-title">New workspace</h2>
+          <h2 className="sd-title">New project</h2>
           <p className="nw-intro">Choose your agents. Give them a place to work.</p>
         </div>
 

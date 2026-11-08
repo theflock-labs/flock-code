@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { PanelLeftIcon } from "../v2/icons";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import ModalCloseButton from "./ModalCloseButton";
@@ -32,7 +33,7 @@ import {
 } from "../lib/uiScale";
 import { VOICE_HOTKEYS, getStoredVoiceHotkey, setStoredVoiceHotkey, getVoiceHotkeyOption, type VoiceHotkeyId } from "../lib/voiceHotkey";
 import GraphSettingsSection from "./GraphSettingsSection";
-import { getQuickActionsHidden, setQuickActionsHidden } from "./QuickActions";
+import { getAiTitles, setAiTitles } from "../v2/titles";
 import AccountSection from "./AccountSection";
 import TeamsSection from "./TeamsSection";
 import AgentUsageSection from "./AgentUsageSection";
@@ -46,7 +47,6 @@ import {
   GithubIcon, GraphIcon, TeamsIcon, PuzzleIcon, RecordIcon, ShieldIcon, InfoIcon,
 } from "./settingsIcons";
 import { getSecureByDefault, setSecureByDefault } from "../lib/secureSettings";
-import { TOAST_KIND_LABELS, onToastSuppressionChange, suppressedToasts, unsuppressToast, type ToastKind } from "../lib/toastSuppression";
 import BudgetSection from "./BudgetSection";
 import type { Budget } from "../lib/budgets";
 import type { BranchMode, GitHubStatus, Workspace } from "../types";
@@ -56,7 +56,6 @@ import "../styles/spawnDialog.css";
 import { CheckIcon } from "./friendIcons";
 import SettingsSearchResults from "./SettingsSearchResults";
 import { revealSetting, searchSettings, type SettingSearchEntry, type SettingsTab } from "../lib/settingsSearch";
-import { OPEN_FEATURE_TOUR_EVENT } from "../lib/onboarding";
 import "../styles/settingsSearch.css";
 
 const GITHUB_CLIENT_ID = "Ov23liWUykhhVLpalI4c";
@@ -78,6 +77,9 @@ const HOOK_AGENTS: { id: HookAgent; label: string; hint: string }[] = [
 
 interface Props {
   onClose: () => void;
+  /** Shown as Settings' own sidebar toggle while the app's sidebar is hidden:
+   *  Settings is a page of the main panel then, under the window's buttons. */
+  onShowSidebar?: () => void;
   /** Triggers a brief preview of the in-window voice HUD overlay. */
   onTestVoiceHud: () => void;
   /** Which tab to open on. Lets quick actions deep-link to the right place. */
@@ -129,24 +131,23 @@ const NAV_GROUPS: {
 // disappears the moment you create your first workspace, a user who missed it
 // there had no way left to learn the app had one. The globals lead now.
 const SHORTCUTS: { keys: string; desc: string }[] = [
-  { keys: "⌘K", desc: "Command bar — run anything, or type a prompt for an agent" },
-  { keys: "⌘N", desc: "New workspace" },
-  { keys: "⌘⇧P", desc: "Capture a prompt for later" },
+  { keys: "⌘K", desc: "Command bar — go anywhere, run anything, or hand an agent a prompt" },
+  { keys: "⌘N", desc: "New agent" },
+  { keys: "⌘⇧N", desc: "New project, with every option" },
+  { keys: "⌘J", desc: "Next agent waiting on you, in any project" },
+  { keys: "⌘⇧[ ⌘⇧]", desc: "Previous / next thread" },
+  { keys: "⌘1–9", desc: "Threads of this project" },
+  { keys: "⌘[ ⌘]", desc: "Previous / next agent in this thread" },
+  { keys: "⌘D", desc: "Add an agent to the right" },
+  { keys: "⌘⇧D", desc: "Add an agent below" },
+  { keys: "⌘Z", desc: "Zoom the focused agent" },
+  { keys: "⌘⇧K", desc: "Close the focused agent" },
+  { keys: "⌘⇧W", desc: "Close this thread" },
+  { keys: "⌘\\", desc: "Show or hide the sidebar" },
+  { keys: "⌘⇧P", desc: "Save a prompt for later" },
   { keys: "⌘,", desc: "Settings" },
-  { keys: "⌘D", desc: "Split pane right" },
-  { keys: "⌘⇧D", desc: "Split pane down" },
-  { keys: "⌘Z", desc: "Toggle zoom pane" },
-  { keys: "⌘⇧K", desc: "Close focused pane" },
-  { keys: "⌘[ ⌘]", desc: "Focus previous / next pane" },
-  { keys: "⌘J", desc: "Jump to next waiting agent" },
-  { keys: "⌘1–9", desc: "Switch to tab 1–9" },
-  { keys: "⌘+ ⌘-", desc: "Agent pane text bigger / smaller" },
+  { keys: "⌘+ ⌘-", desc: "Agent text bigger / smaller" },
   { keys: "⌥⌘+ ⌥⌘-", desc: "App text bigger / smaller" },
-  { keys: "⌘T", desc: "New tab" },
-  { keys: "⌘⇧W", desc: "Close focused tab" },
-  { keys: "↑↓", desc: "Navigate agents (dialog)" },
-  { keys: "↵", desc: "Confirm (dialog)" },
-  { keys: "Esc", desc: "Cancel / close dialog" },
 ];
 
 type OAuthState =
@@ -163,7 +164,7 @@ function isOAuthPending(oauth: OAuthState): boolean {
   return oauth.step === "waiting" || oauth.step === "polling";
 }
 
-export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, workspaces, onSetWorkspaceBudget }: Props) {
+export default function SettingsDialog({ onClose, onShowSidebar, onTestVoiceHud, initialTab, workspaces, onSetWorkspaceBudget }: Props) {
   const [ghStatus, setGhStatus] = useState<GitHubStatus | null>(null);
   const [oauth, setOauth] = useState<OAuthState>({ step: "idle" });
   const [saving, setSaving] = useState(false);
@@ -205,7 +206,7 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
   const [defaultBranchMode, setDefaultBranchModeState] = useState(getDefaultBranchMode());
   const [fetchBaseDefault, setFetchBaseDefaultState] = useState(getFetchBaseDefault());
   const [carryPatterns, setCarryPatternsState] = useState(getCarryPatternsText());
-  const [quickActionsHidden, setQuickActionsHiddenState] = useState(getQuickActionsHidden());
+  const [aiTitles, setAiTitlesState] = useState(getAiTitles());
   const [deleteBranchWithWorktree, setDeleteBranchWithWorktreeState] = useState(getDeleteBranchWithWorktree());
   const [worktreesBaseDir, setWorktreesBaseDirState] = useState(getWorktreesBaseDir());
   // Security tab. `restrictEgress` is the stored machine-wide policy;
@@ -214,10 +215,6 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
   const [docker, setDocker] = useState<ContainerStatus | null>(null);
   const [restrictEgress, setRestrictEgress] = useState(false);
   const [secureDefault, setSecureDefaultState] = useState(getSecureByDefault);
-  // The way back from a "Don't show again". Subscribed rather than read once,
-  // because a toast can be silenced while this dialog is open behind it.
-  const [hiddenToasts, setHiddenToasts] = useState<ToastKind[]>(suppressedToasts);
-  useEffect(() => onToastSuppressionChange(() => setHiddenToasts(suppressedToasts())), []);
   // A popped-out agent window can change the pane size while this is open.
   useEffect(() => onPaneFontSizeChange(setPaneFont), []);
   const [allowText, setAllowText] = useState("");
@@ -508,8 +505,13 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
             reads as a splash screen that forgot to dismiss. The bird still
             opens the app (Splash) and still sits in the rail's lockup, which
             is where a brand mark belongs. */}
-        <div className="modal-header">
-          <div className="title">Settings</div>
+        <div className="modal-header" data-tauri-drag-region>
+          {onShowSidebar && (
+            <button type="button" className="v2-icon-btn" aria-label="Show sidebar" title="Show sidebar (⌘\)" onClick={onShowSidebar}>
+              <PanelLeftIcon size={16} />
+            </button>
+          )}
+          <div className="title" data-tauri-drag-region>Settings</div>
         </div>
 
         <div className="settings-search-bar">
@@ -957,45 +959,24 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
               ))}
             </div>
 
-            {/* Only rendered once something has actually been silenced. An
-                empty list of things you have turned off is a row that teaches
-                nothing and asks to be read on every visit. */}
-            {hiddenToasts.length > 0 && (
-              <div style={{ marginTop: 14 }}>
-                <div className="settings-label" style={{ fontWeight: 600, color: "var(--text-hi)" }}>
-                  Hidden pop-ups
-                </div>
-                <div className="settings-hint" style={{ marginTop: 2 }}>
-                  These no longer interrupt you. They still arrive in notifications.
-                </div>
-                {hiddenToasts.map((kind) => (
-                  <div className="settings-row" key={kind}>
-                    <span className="settings-label">{TOAST_KIND_LABELS[kind]}</span>
-                    <button className="btn-ghost" onClick={() => unsuppressToast(kind)}>
-                      Show again
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* The panel's own X sets the same flag, so this doubles as the
-                way back after dismissing it from the sidebar. */}
-            <div className="settings-row" data-setting="quick-actions" style={{ marginTop: 14 }}>
+            {/* A thread is named after its first task at once, locally. This
+                asks for one short AI title per new thread on top — one
+                `claude -p`, never one per prompt as v1 did. */}
+            <div className="settings-row" data-setting="ai-titles" style={{ marginTop: 14 }}>
               <div>
-                <div className="settings-label" style={{ fontWeight: 600, color: "var(--text-hi)" }}>Quick actions</div>
+                <div className="settings-label" style={{ fontWeight: 600, color: "var(--text-hi)" }}>Name new threads with AI</div>
                 <div className="settings-hint" style={{ margin: 0 }}>
-                  Show the setup checklist at the bottom of the sidebar.
+                  One short Claude call when a thread starts. Off, a thread is named after its first task.
                 </div>
               </div>
               <button
-                role="switch" aria-checked={!quickActionsHidden} className={`voice-toggle${quickActionsHidden ? "" : " on"}`}
+                role="switch" aria-checked={aiTitles} aria-label="Name new threads with AI" className={`voice-toggle${aiTitles ? " on" : ""}`}
                 onClick={() => {
-                  const nextHidden = !quickActionsHidden;
-                  setQuickActionsHidden(nextHidden);
-                  setQuickActionsHiddenState(nextHidden);
+                  const next = !aiTitles;
+                  setAiTitles(next);
+                  setAiTitlesState(next);
                 }}
-                title={quickActionsHidden ? "Show" : "Hide"}
+                title={aiTitles ? "On" : "Off"}
               >
                 <span className="voice-toggle-knob" />
               </button>
@@ -1178,18 +1159,6 @@ export default function SettingsDialog({ onClose, onTestVoiceHud, initialTab, wo
           </div>
 
           {/* ─── Keyboard shortcuts ────────────────────────────────────── */}
-          <div className="settings-section" data-setting="feature-tour">
-            <div className="settings-section-header">Feature tour</div>
-            <div className="settings-row">
-              <span className="settings-label">Explore what you can do with your agents</span>
-              <button className="btn-ghost settings-btn" disabled={isOAuthPending(oauth)} onClick={() => {
-                if (isOAuthPending(oauth)) return;
-                onClose(); window.dispatchEvent(new Event(OPEN_FEATURE_TOUR_EVENT));
-              }}>Open feature tour</button>
-            </div>
-            {isOAuthPending(oauth) && <p className="settings-hint">Finish or cancel GitHub sign-in before opening the tour.</p>}
-          </div>
-
           <div className="settings-section" data-setting="shortcuts">
             <div className="settings-section-header">Keyboard Shortcuts</div>
             <div className="settings-shortcut-grid">

@@ -310,6 +310,9 @@ pub fn spawn_container(
     if std::env::var("TERM").is_err() {
         builder.env("TERM", "xterm-256color");
     }
+    for key in launcher_session_keys() {
+        builder.env_remove(&key);
+    }
 
     spawn_pty_child(
         builder,
@@ -318,6 +321,62 @@ pub fn spawn_container(
         None,
         Some(ContainerCleanup { docker, name }),
     )
+}
+
+/// The per-pane identity flock gives every agent, under both prefixes. Never
+/// meaningful at flock's own level: if flock's environment has one, flock was
+/// started from inside a pane, and the value names *that* pane.
+const PANE_IDENTITY_SUFFIXES: &[&str] = &[
+    "PANE_ID",
+    "WORKSPACE_ID",
+    "AGENT_NAME",
+    "PERSON_ID",
+    "PERSON_NAME",
+    "REPO_ID",
+    "REPO_NAME",
+    "ORG_ID",
+    "TEAM_ID",
+    "CLAUDE_THEME",
+];
+
+/// Variables in `env` that describe whoever started flock rather than the
+/// pane being started, and so must not reach it.
+///
+/// flock is often launched from inside an agent's terminal: a dev build run
+/// from a flock pane, or `open` from a Claude Code session (macOS hands the
+/// caller's environment to the app). Everything flock spawns inherits that
+/// environment, so without this every agent in the new instance carried the
+/// launching session's identity: Claude Code's `CLAUDE_CODE_CHILD_SESSION`
+/// turned transcript saving off (no resume, no context ring), its messaging
+/// socket pointed at the other session, and an optional `FLOCK_REPO_ID` that a
+/// pane did not set itself was the launching pane's.
+///
+/// Claude Code's variables are dropped only when flock itself runs inside a
+/// Claude Code session (`CLAUDECODE` is set), so a deliberate global setting
+/// such as `CLAUDE_CODE_USE_BEDROCK` survives an ordinary launch. Pane identity
+/// is always dropped; flock sets the pane's own after this.
+pub fn inherited_session_keys<K: AsRef<str>>(env: impl IntoIterator<Item = K>) -> Vec<String> {
+    let keys: Vec<String> = env.into_iter().map(|k| k.as_ref().to_string()).collect();
+    let inside_claude = keys.iter().any(|k| k == "CLAUDECODE");
+    keys.into_iter()
+        .filter(|k| {
+            let identity = ["FLOCK_", "CLARENCE_"].iter().any(|prefix| {
+                k.strip_prefix(prefix)
+                    .is_some_and(|rest| PANE_IDENTITY_SUFFIXES.contains(&rest))
+            });
+            let claude_session = inside_claude
+                && (k == "CLAUDECODE"
+                    || k == "CLAUDE_PID"
+                    || k == "CLAUDE_EFFORT"
+                    || k.starts_with("CLAUDE_CODE_"));
+            identity || claude_session
+        })
+        .collect()
+}
+
+/// [`inherited_session_keys`] for this process.
+pub fn launcher_session_keys() -> Vec<String> {
+    inherited_session_keys(std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()))
 }
 
 fn spawn_impl(
@@ -364,6 +423,10 @@ fn spawn_impl(
     // Pass through TERM so colors/TUI rendering work
     if std::env::var("TERM").is_err() {
         builder.env("TERM", "xterm-256color");
+    }
+    // Whoever started flock is not this pane (see `inherited_session_keys`).
+    for key in launcher_session_keys() {
+        builder.env_remove(&key);
     }
     // Identity + context env (see doc comment). Inherited by the agent CLI
     // and whatever it spawns — hook subprocesses, MCP servers.
@@ -479,6 +542,50 @@ fn spawn_pty_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flock_started_from_a_claude_session_does_not_hand_it_to_its_agents() {
+        let env = [
+            "HOME",
+            "PATH",
+            "CLAUDECODE",
+            "CLAUDE_PID",
+            "CLAUDE_EFFORT",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "FLOCK_PANE_ID",
+            "CLARENCE_PANE_ID",
+            "FLOCK_REPO_ID",
+            "FLOCK_CLAUDE_THEME",
+            "FLOCK_DATA_DIR",
+            "FLOCK_KG_URL",
+            "ANTHROPIC_API_KEY",
+        ];
+        let mut dropped = inherited_session_keys(env);
+        dropped.sort();
+        assert_eq!(
+            dropped,
+            [
+                "CLARENCE_PANE_ID",
+                "CLAUDECODE",
+                "CLAUDE_CODE_CHILD_SESSION",
+                "CLAUDE_CODE_MESSAGING_SOCKET",
+                "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_EFFORT",
+                "CLAUDE_PID",
+                "FLOCK_CLAUDE_THEME",
+                "FLOCK_PANE_ID",
+                "FLOCK_REPO_ID",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_ordinary_launch_keeps_deliberate_claude_settings() {
+        let env = ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "FLOCK_DATA_DIR", "FLOCK_AGENT_NAME"];
+        assert_eq!(inherited_session_keys(env), ["FLOCK_AGENT_NAME"]);
+    }
     use std::path::PathBuf;
     use std::time::Duration;
 

@@ -2,9 +2,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup, act, fireEvent, waitFor } from "@testing-library/react";
 
-// The cockpit had no test that ever rendered it. Everything below the mocks is
-// the real App: 4,000 lines of hooks, effects and layout, mounted the way the
-// app mounts it. It is a smoke test in the literal sense — it does not assert
+// Everything below the mocks is the real App, mounted the way the app mounts
+// it. It is a smoke test in the literal sense — it does not assert
 // on behaviour so much as prove the thing comes up, restores a workspace,
 // paints its shell, and survives a pane arriving. That is the class of break
 // that otherwise only shows up after a release.
@@ -63,7 +62,14 @@ const RESULTS: Record<string, unknown> = {
 vi.mock("./lib/tauri", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const mock: Record<string, unknown> = {};
+  // Synchronous lookups of what the backend's events said: every agent has
+  // started, and none has reported a status since its spawn.
+  const sync: Record<string, (...a: unknown[]) => unknown> = {
+    hasAgentStarted: () => true,
+    latestAgentStatus: () => undefined,
+  };
   for (const name of Object.keys(actual)) {
+    if (name in sync) { mock[name] = vi.fn(sync[name]); continue; }
     mock[name] = vi.fn(async () => {
       if (name in RESULTS) return RESULTS[name];
       if (name.startsWith("on")) return () => {};
@@ -108,17 +114,28 @@ const ID = {
     | null,
   idChecked: true,
 };
+const NO_FRIENDS: never[] = [];
 vi.mock("./lib/useFlockId", () => ({
-  useFlockId: () => ({
+  useFlockIdentity: () => ({
     get idProfile() { return ID.idProfile; },
     get idChecked() { return ID.idChecked; },
-    friends: [],
+    refreshIdentity: vi.fn(),
+    friends: NO_FRIENDS,
     setFriends: vi.fn(),
-    refreshIdFriends: vi.fn(),
-    addIdFriend: vi.fn(),
-    acceptIdFriend: vi.fn(),
-    removeIdFriend: vi.fn(),
+    addFriend: vi.fn(),
+    acceptFriend: vi.fn(),
+    removeFriend: vi.fn(),
   }),
+}));
+
+// Presence would open an Ably socket; here it is a connection that never comes.
+vi.mock("./lib/presence", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  connectPresence: () => new Promise(() => {}),
+  disconnectPresence: () => {},
+  updateAgentCount: async () => {},
+  updateFriends: () => {},
+  resyncFriendPresence: async () => {},
 }));
 
 // Signed out at the Supabase layer and never configured, so nothing here opens
@@ -139,27 +156,16 @@ vi.mock("./lib/flockId", async (importOriginal) => ({
   signOut: vi.fn(async () => {}),
 }));
 
-vi.mock("./lib/presence", () => ({
-  getAblyClient: () => null,
-  connectPresence: vi.fn(async () => {}),
-  disconnectPresence: vi.fn(),
-  updateAgentCount: vi.fn(async () => {}),
-  updateFriends: vi.fn(),
-  resyncFriendPresence: vi.fn(async () => {}),
-  MY_WINDOW_ID: "test-window",
-}));
 
 // xterm needs a real canvas and a measured DOM; neither exists in jsdom, and
 // the terminal is not what this test is about.
 vi.mock("./components/Terminal", () => ({
   default: ({ paneId }: { paneId: string }) => <div data-testid={`term-${paneId}`} />,
 }));
-vi.mock("./components/RemoteTerminal", () => ({ default: () => <div data-testid="remote-term" /> }));
 
 import App from "./App";
-import { OPEN_FEATURE_TOUR_EVENT } from "./lib/onboarding";
 import { OPEN_GRAPH_EXPLORER_EVENT } from "./lib/graphSettings";
-import { agentCliStatus, createWorkspace, gitBranchOptions, spawnPane, worktreeSetupGet } from "./lib/tauri";
+import { agentCliStatus, createWorkspace, gitBranchOptions, restoreWorkspace, spawnPane, worktreeSetupGet } from "./lib/tauri";
 
 // Node exposes its own half-implemented localStorage global that shadows
 // jsdom's, so supply a real one rather than depending on which wins.
@@ -175,8 +181,8 @@ vi.stubGlobal("localStorage", {
 
 beforeEach(() => {
   localStorage.clear();
-  // Skip the first-run dialog; it covers the shell and is its own surface.
-  localStorage.setItem("flock:onboarding-seen", "1");
+  // One AI title per thread runs `claude -p`; not what these tests are about.
+  localStorage.setItem("flock:ai-titles", "0");
   // jsdom has neither, and both are called during layout.
   window.ResizeObserver ??= class {
     observe() {}
@@ -197,6 +203,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  RESULTS.listWorkspaces = [WORKSPACE];
+  RESULTS.restoreWorkspace = SAVED_STATE;
+  delete RESULTS.graphListNodes;
 });
 
 /** Mount and let every on-mount effect and its promises settle. */
@@ -204,18 +213,58 @@ async function mount() {
   const utils = render(<App />);
   await act(async () => { await Promise.resolve(); });
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
   return utils;
 }
 
+const cmd = (key: string, over: KeyboardEventInit = {}) =>
+  act(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key, metaKey: true, bubbles: true, ...over }));
+  });
+
 describe("App smoke", () => {
-  it("launches the exact mixed lineup with each CLI's own command and session flags", async () => {
+  it("mounts the shell: a sidebar and a main panel, each a window handle", async () => {
+    const { container } = await mount();
+    expect(container.querySelector(".v2-app")).toBeTruthy();
+    // On macOS this attribute is the only thing that moves the window; the
+    // overlay title bar draws the window buttons over the sidebar's head.
+    expect(container.querySelector(".v2-side-head")?.hasAttribute("data-tauri-drag-region")).toBe(true);
+    expect(container.querySelector(".v2-main .v2-head")?.hasAttribute("data-tauri-drag-region")).toBe(true);
+  });
+
+  it("restores the saved project and lists it with its thread", async () => {
+    await mount();
+    expect(screen.getByRole("region", { name: WORKSPACE.name })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^agent one/ })).toBeTruthy();
+  });
+
+  it("re-spawns the saved pane rather than dropping it", async () => {
+    await mount();
+    expect(spawnPane).toHaveBeenCalled();
+  });
+
+  it("does not trip the error boundary", async () => {
+    const { container } = await mount();
+    expect(container.querySelector(".crash")).toBeNull();
+  });
+
+  it("survives a project with no saved state at all", async () => {
+    RESULTS.restoreWorkspace = null;
+    const { container } = await mount();
+    expect(container.querySelector(".v2-app")).toBeTruthy();
+    expect(container.querySelector(".crash")).toBeNull();
+    // Nothing to show yet, so the main panel offers a new agent.
+    expect(screen.getByRole("heading", { name: "What should we work on?" })).toBeTruthy();
+  });
+
+  it("launches the exact mixed lineup from New project with options", async () => {
     vi.mocked(agentCliStatus).mockResolvedValueOnce({ claude: true, codex: true, pi: true, grok: true, opencode: true });
     vi.mocked(gitBranchOptions).mockResolvedValueOnce({ is_repo: true, current: "main", default_ref: "main", local: [{ name: "main", worktree_path: null }], remote: [] });
     vi.mocked(worktreeSetupGet).mockResolvedValue({ unset: false, command: "", suggestion: "" });
     vi.mocked(createWorkspace).mockResolvedValueOnce({ ...WORKSPACE, id: "ws-mixed", name: "repo" });
     await mount();
-    fireEvent.keyDown(window, { key: "n", metaKey: true });
-    await screen.findByRole("dialog", { name: "New workspace" });
+    await cmd("n", { shiftKey: true });
+    await screen.findByRole("dialog", { name: "New project" });
     fireEvent.click(screen.getByRole("radio", { name: "3 agents" }));
     fireEvent.change(screen.getByLabelText("Session 2 agent"), { target: { value: "codex" } });
     fireEvent.change(screen.getByLabelText("Session 3 agent"), { target: { value: "pi" } });
@@ -230,102 +279,85 @@ describe("App smoke", () => {
     expect(launches[2].args).not.toContain("--session-id");
     expect(launches.every((input) => input.cwd === "/tmp/repo" && !input.secure)).toBe(true);
   });
-
-  it("mounts and paints the cockpit shell", async () => {
-    const { container } = await mount();
-    expect(container.querySelector(".app-shell")).toBeTruthy();
-    expect(container.querySelector(".titlebar")).toBeTruthy();
-    // The attribute IS the macOS move handle, and this assertion used to say
-    // the opposite — that CSS -webkit-app-region was the handle and the
-    // attribute a redundant second drag session. It is not: `app-region` is a
-    // Windows path (WebView2 123+; wry's own custom_titlebar example says so in
-    // a comment) and is inert under WKWebView, which is what Tauri runs on
-    // macOS. Tauri's injected drag.js keys on this attribute and nothing else.
-    // With it removed the window could not be dragged by its titlebar at all,
-    // and this test held that state in place — so it is written as the
-    // behaviour ("you can drag the window") rather than as the mechanism.
-    expect(container.querySelector(".titlebar")?.hasAttribute("data-tauri-drag-region")).toBe(true);
-    expect(container.querySelector(".app-main")).toBeTruthy();
-  });
-
-  it("restores the saved workspace and shows it in the sidebar", async () => {
-    await mount();
-    expect(screen.getByText(WORKSPACE.name)).toBeTruthy();
-  });
-
-  it("re-spawns the saved pane rather than dropping it", async () => {
-    await mount();
-    const tauri = await import("./lib/tauri");
-    expect(tauri.spawnPane).toHaveBeenCalled();
-  });
-
-  it("does not trip the error boundary", async () => {
-    const { container } = await mount();
-    // The boundary renders .crash in place of everything else, so its absence
-    // is the assertion that nothing in the tree threw during render.
-    expect(container.querySelector(".crash")).toBeNull();
-  });
-
-  it("survives a workspace with no saved state at all", async () => {
-    // The path a freshly created workspace takes before anything is persisted.
-    RESULTS.restoreWorkspace = null;
-    const { container } = await mount();
-    expect(container.querySelector(".app-shell")).toBeTruthy();
-    expect(container.querySelector(".crash")).toBeNull();
-    RESULTS.restoreWorkspace = SAVED_STATE;
-  });
 });
 
-describe("App UX entry points", () => {
-  afterEach(() => {
-    RESULTS.listWorkspaces = [WORKSPACE];
-    RESULTS.restoreWorkspace = SAVED_STATE;
-    delete RESULTS.graphListNodes;
-  });
-
-  it("takes first-run users directly from the short intro to agent setup", async () => {
-    localStorage.removeItem("flock:onboarding-seen");
-    RESULTS.listWorkspaces = [];
+describe("v2 threads", () => {
+  it("lists a sleeping project's threads before waking it, and wakes it on click", async () => {
+    const other = { ...WORKSPACE, id: "ws-2", name: "wink", repo_path: "/tmp/wink" };
+    RESULTS.listWorkspaces = [WORKSPACE, other];
+    vi.mocked(restoreWorkspace).mockImplementation(async (id: string) =>
+      id === "ws-2"
+        ? JSON.stringify({
+            agentKind: "claude",
+            tabs: [{ id: "t-docs", name: "Docs", renamed: true, layoutTree: { type: "leaf", paneId: "old-1" }, focusedPaneId: "old-1", zoomedPaneId: null }],
+            focusedTabId: "t-docs",
+            panes: [{ id: "old-1", cmd: "claude", args: [], cwd: "/tmp/wink", displayName: "Hazel" }],
+          })
+        : SAVED_STATE,
+    );
     await mount();
-    fireEvent.click(await screen.findByRole("button", { name: "Set up my first agent" }));
-    expect(await screen.findByRole("dialog", { name: "New workspace" })).toBeTruthy();
-    expect(screen.queryByRole("dialog", { name: "Welcome to flock" })).toBeNull();
-    expect(localStorage.getItem("flock:onboarding-seen")).toBe("1");
-    expect(localStorage.getItem("flock:first-agent-launched")).toBeNull();
+    // Listed from the saved state, and not started.
+    expect(vi.mocked(spawnPane).mock.calls.some(([i]) => i.workspaceId === "ws-2")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: /^Docs/ }));
+    await waitFor(() => expect(vi.mocked(spawnPane).mock.calls.some(([i]) => i.workspaceId === "ws-2")).toBe(true));
+    vi.mocked(restoreWorkspace).mockReset();
   });
 
-  it("opens the optional feature tour without replaying the first-run intro", async () => {
+  it("starts a thread from the composer, named after its task at once", async () => {
     await mount();
-    act(() => window.dispatchEvent(new Event(OPEN_FEATURE_TOUR_EVENT)));
-    expect(await screen.findByRole("dialog", { name: "Feature tour" })).toBeTruthy();
-    expect(screen.queryByText("Set up my first agent")).toBeNull();
-    expect(localStorage.getItem("flock:first-agent-launched")).toBe("1");
+    await cmd("n");
+    const box = await screen.findByRole("textbox", { name: "Task for the new agent" });
+    fireEvent.change(box, { target: { value: "fix the login redirect on safari" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(vi.mocked(spawnPane).mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(await screen.findByRole("button", { name: /^Fix the login redirect on safari/ })).toBeTruthy();
+    const last = vi.mocked(spawnPane).mock.calls.at(-1)![0];
+    expect(last.workspaceId).toBe(WORKSPACE.id);
+    expect(last.cmd).toBe("claude");
   });
 
-  it("opens knowledge in the originating workspace, including explicit all-workspace scope", async () => {
-    RESULTS.graphListNodes = [];
+  // Settings is a page of the main panel: with the sidebar hidden it sits under
+  // the window's buttons, and once had no way back to the sidebar at all.
+  it("keeps a way back to the sidebar on the settings page", async () => {
     await mount();
-    const tauri = await import("./lib/tauri");
-    act(() => window.dispatchEvent(new CustomEvent(OPEN_GRAPH_EXPLORER_EVENT, { detail: { workspaceId: "origin-workspace" } })));
-    await waitFor(() => expect(tauri.graphListNodes).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: "origin-workspace" }), expect.any(String)));
-    // Escape closes the explorer; its next opening must use that event's
-    // explicit null rather than silently falling back to the focused repo.
-    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-    act(() => window.dispatchEvent(new CustomEvent(OPEN_GRAPH_EXPLORER_EVENT, { detail: { workspaceId: null } })));
-    await waitFor(() => expect(tauri.graphListNodes).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId: null }), expect.any(String)));
+    await cmd("\\");
+    await cmd(",");
+    fireEvent.click(await screen.findByRole("button", { name: "Show sidebar" }));
+    expect(await screen.findByRole("button", { name: "Hide sidebar" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Show sidebar" })).toBeNull();
   });
 
-  it("restores the user's pinned attention preference and lets them unpin it", async () => {
-    localStorage.setItem("flock:attention-pinned", "1");
+  // The composer shows two chips, where and who. Model and effort are one
+  // step into the agent's menu (the menus used to throw on click), the chip
+  // names them once chosen, the choices reach the agent as its own flags, and
+  // the task rides on the command line after `--` instead of being typed into
+  // whatever the agent shows first — a typed Enter once answered Claude Code's
+  // "trust this folder?" with "No".
+  it("starts an agent with the chosen model and effort, and its task on the command line", async () => {
     await mount();
-    expect(screen.getByRole("region", { name: "Pinned attention list" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Unpin list" }));
-    expect(screen.queryByRole("region", { name: "Pinned attention list" })).toBeNull();
-    expect(localStorage.getItem("flock:attention-pinned")).toBe("0");
+    await cmd("n");
+    const box = await screen.findByRole("textbox", { name: "Task for the new agent" });
+    const agent = () => screen.getByRole("button", { name: /^Agent:/ });
+    expect(agent().getAttribute("aria-label")).toBe("Agent: Claude Code");
+    expect(screen.queryByRole("button", { name: /^Model/ })).toBeNull();
+    fireEvent.click(agent());
+    expect(await screen.findByRole("menu", { name: "Agent" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Model/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^Opus/ }));
+    fireEvent.click(agent());
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Effort/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^High/ }));
+    expect(agent().getAttribute("aria-label")).toBe("Agent: Claude Code · Opus · High");
+    fireEvent.change(box, { target: { value: "make the docs page searchable" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(vi.mocked(spawnPane).mock.calls.length).toBeGreaterThanOrEqual(2));
+    const args = vi.mocked(spawnPane).mock.calls.at(-1)![0].args;
+    expect(args).toEqual(expect.arrayContaining(["--model", "opus", "--effort", "high"]));
+    expect(args.slice(-2)).toEqual(["--", "make the docs page searchable"]);
+    expect(args.indexOf("--model")).toBeLessThan(args.indexOf("--"));
   });
 
-  it("reveals a waiting agent when another pane is zoomed before acknowledging it", async () => {
-    localStorage.setItem("flock:attention-pinned", "1");
+  it("opens a waiting agent hidden behind a zoomed one, and acknowledges it", async () => {
     RESULTS.restoreWorkspace = JSON.stringify({
       agentKind: "claude", focusedPaneId: "pane-a", zoomedPaneId: "pane-a",
       layoutTree: { type: "split", dir: "horizontal", ratio: 0.5,
@@ -335,45 +367,81 @@ describe("App UX entry points", () => {
         { id: "pane-b", cmd: "claude", args: [], cwd: "/tmp/repo", displayName: "Hazel", intent: "Fix checkout validation" },
       ],
     });
-    const tauri = await import("./lib/tauri");
-    vi.mocked(tauri.spawnPane)
+    vi.mocked(spawnPane)
       .mockResolvedValueOnce({ id: "live-a", workspace_id: WORKSPACE.id, kind: "claude", status: "working", rows: 24, cols: 80 })
       .mockResolvedValueOnce({ id: "live-b", workspace_id: WORKSPACE.id, kind: "claude", status: "awaiting_input", rows: 24, cols: 80 });
     const geometry = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
       x: 0, y: 0, top: 0, left: 0, right: 900, bottom: 700, width: 900, height: 700, toJSON: () => ({}),
     });
+    const tauri = await import("./lib/tauri");
     try {
       await mount();
-      expect(screen.getByTestId("term-live-a")).toBeTruthy();
+      await waitFor(() => expect(screen.getByTestId("term-live-a")).toBeTruthy());
       expect(screen.queryByTestId("term-live-b")).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: /Fix checkout validation.*Hazel/ }));
+      // The sidebar says someone is waiting; following it lands on them.
+      fireEvent.click(screen.getByRole("button", { name: /Waiting on you/ }));
       await waitFor(() => expect(screen.getByTestId("term-live-b")).toBeTruthy());
       expect(screen.queryByTestId("term-live-a")).toBeNull();
       expect(tauri.ackPaneAttention).toHaveBeenCalledWith("live-b");
-      expect(screen.getByRole("button", { name: "Unzoom Pane" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Show all agents" })).toBeTruthy();
     } finally {
       geometry.mockRestore();
     }
   });
+
+  // The performance property v2 is built on: a thread you are not looking at
+  // has no terminal in the webview — no xterm, no output stream, nothing to
+  // repaint — however many agents it runs. Switching mounts the new thread's
+  // terminals and lets the old ones go.
+  it("mounts terminals only for the thread on screen", async () => {
+    RESULTS.restoreWorkspace = JSON.stringify({
+      agentKind: "claude",
+      focusedTabId: "t-a",
+      tabs: [
+        { id: "t-a", name: "Alpha", renamed: true, layoutTree: { type: "leaf", paneId: "pane-a" }, focusedPaneId: "pane-a", zoomedPaneId: null },
+        { id: "t-b", name: "Beta", renamed: true, layoutTree: { type: "leaf", paneId: "pane-b" }, focusedPaneId: "pane-b", zoomedPaneId: null },
+      ],
+      panes: [
+        { id: "pane-a", cmd: "claude", args: [], cwd: "/tmp/repo", displayName: "Pluto" },
+        { id: "pane-b", cmd: "claude", args: [], cwd: "/tmp/repo", displayName: "Hazel" },
+      ],
+    });
+    vi.mocked(spawnPane)
+      .mockResolvedValueOnce({ id: "live-a", workspace_id: WORKSPACE.id, kind: "claude", status: "idle", rows: 24, cols: 80 })
+      .mockResolvedValueOnce({ id: "live-b", workspace_id: WORKSPACE.id, kind: "claude", status: "idle", rows: 24, cols: 80 });
+    const geometry = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, top: 0, left: 0, right: 900, bottom: 700, width: 900, height: 700, toJSON: () => ({}),
+    });
+    try {
+      await mount();
+      await waitFor(() => expect(screen.getByTestId("term-live-a")).toBeTruthy());
+      expect(screen.queryByTestId("term-live-b")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /^Beta/ }));
+      await waitFor(() => expect(screen.getByTestId("term-live-b")).toBeTruthy());
+      expect(screen.queryByTestId("term-live-a")).toBeNull();
+      expect(document.querySelectorAll("[data-testid^='term-']")).toHaveLength(1);
+    } finally {
+      geometry.mockRestore();
+    }
+  });
+
+  it("opens knowledge in the originating workspace, including explicit all-workspace scope", async () => {
+    RESULTS.graphListNodes = [];
+    await mount();
+    const tauri = await import("./lib/tauri");
+    act(() => window.dispatchEvent(new CustomEvent(OPEN_GRAPH_EXPLORER_EVENT, { detail: { workspaceId: "origin-workspace" } })));
+    await waitFor(() => expect(tauri.graphListNodes).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: "origin-workspace" }), expect.any(String)));
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    act(() => window.dispatchEvent(new CustomEvent(OPEN_GRAPH_EXPLORER_EVENT, { detail: { workspaceId: null } })));
+    await waitFor(() => expect(tauri.graphListNodes).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId: null }), expect.any(String)));
+  });
 });
 
 // ─── The command bar's reach ─────────────────────────────────────────────────
-//
-// These drive the real capture-phase handler in App, because every one of them
-// is a claim about *when* ⌘K works rather than about what the palette renders,
-// and CommandBar's own tests cannot see the guard that used to switch it off.
-
-const cmd = (key: string, over: KeyboardEventInit = {}) =>
-  act(() => {
-    window.dispatchEvent(new KeyboardEvent("keydown", { key, metaKey: true, bubbles: true, ...over }));
-  });
 
 const palette = () => document.querySelector(".cmdk-panel");
 
-/** Dialogs are lazy chunks (`lazyModal`) behind `Suspense fallback={null}`, so
- *  a keypress that opens one paints nothing until its dynamic import resolves.
- *  ⌘⇧P because the queue-capture overlay is the cheapest dialog for the
- *  harness to open — which dialog it is does not matter to these tests. */
+/** ⌘⇧P opens the cheapest dialog for the harness; which one does not matter. */
 const openADialog = async () => {
   await cmd("p", { shiftKey: true });
   await waitFor(() => expect(document.querySelector(".modal-overlay")).toBeTruthy());
@@ -388,59 +456,40 @@ describe("App ⌘K", () => {
     expect(palette()).toBeNull();
   });
 
-  /* The regression this replaces: the handler returned early whenever any of
-   * the nineteen DialogState kinds was open, so the app's command surface
-   * could be switched off by any modal — including ones it opened itself. */
   it("opens over an already-open dialog, replacing it", async () => {
     await mount();
     await openADialog();
     await cmd("k");
     expect(palette()).toBeTruthy();
-    // The dialog goes rather than stacking behind it, so Escape is unambiguous.
     expect(document.querySelector(".modal-overlay")).toBeNull();
   });
 
-  /* Nothing bound ⌘, — the palette printed it as the Settings row's shortcut
-   * and pressing it did nothing, which is worse than printing none. */
-  it("binds ⌘, to Settings", async () => {
+  it("binds ⌘, to Settings, as a page of the main panel", async () => {
     await mount();
     await cmd(",");
-    await waitFor(() => expect(document.querySelector(".modal-overlay")).toBeTruthy());
-  });
-
-  /* The empty-workspace screen names ⌘K once and then disappears forever on
-   * the first workspace, and there is no menu bar. This cue is what is left. */
-  it("keeps a permanent ⌘K cue in the status bar", async () => {
-    const { container } = await mount();
-    expect(container.querySelector(".cmdk-cue")?.textContent).toBe("⌘K");
+    await waitFor(() => expect(document.querySelector(".v2-main > .modal-overlay .settings-modal")).toBeTruthy());
   });
 });
 
 describe("App hook order", () => {
   afterEach(() => { ID.idChecked = true; ID.idProfile = { id: "p1", handle: "tester", display_name: "Tester", avatar_url: null }; });
 
-  /* The sign-in gate is an early `return` in the middle of a component with
-   * ~200 hooks, and anything declared below it runs on the signed-in pass and
-   * not on the signed-out one. A block of ~30 useEventCallback calls landed
-   * there, and React threw "Rendered more hooks than during the previous
-   * render" on the transition — on every cold launch that has to check the
-   * session, which is all of them. The signed-out → signed-in transition is
-   * the only render pair that can catch it, so it is worth a test of its own. */
+  /* The sign-in gate is an early return in a component with a great many
+   * hooks; the signed-out → signed-in transition is the only render pair that
+   * catches a hook declared below it. */
   it("survives the signed-out to signed-in transition", async () => {
     ID.idChecked = false;
     ID.idProfile = null;
     const { container, rerender } = render(<App />);
     await act(async () => { await Promise.resolve(); });
-    expect(container.querySelector(".app-shell")).toBeNull();
+    expect(container.querySelector(".v2-app")).toBeNull();
 
     ID.idChecked = true;
     ID.idProfile = { id: "p1", handle: "tester", display_name: "Tester", avatar_url: null };
     await act(async () => { rerender(<App />); await Promise.resolve(); });
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
-    expect(container.querySelector(".app-shell")).toBeTruthy();
-    // The boundary renders .crash in place of everything else, so its absence
-    // is the assertion that the render did not throw.
+    expect(container.querySelector(".v2-app")).toBeTruthy();
     expect(container.querySelector(".crash")).toBeNull();
   });
 });

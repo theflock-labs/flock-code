@@ -1,5 +1,6 @@
 mod agent_session;
 mod auth_callback;
+mod boot;
 mod bundle;
 mod claude_code_usage;
 mod claude_context;

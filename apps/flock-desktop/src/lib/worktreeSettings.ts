@@ -26,6 +26,16 @@ export function getDefaultBranchMode(): BranchMode {
   return legacy === "false" ? "current" : "new";
 }
 
+/** Branch mode for a project started from the composer: whatever you chose
+ *  in Settings, else your own checkout. Unlike the New project dialog, the
+ *  composer does not show the choice, so it does not default to cutting a
+ *  worktree you did not ask for. */
+export function getComposerBranchMode(): BranchMode {
+  const v = localStorage.getItem(MODE_KEY);
+  if (v && (MODES as string[]).includes(v)) return v as BranchMode;
+  return localStorage.getItem(LEGACY_DEFAULT_KEY) === "true" ? "new" : "current";
+}
+
 export function setDefaultBranchMode(mode: BranchMode) {
   localStorage.setItem(MODE_KEY, mode);
 }
