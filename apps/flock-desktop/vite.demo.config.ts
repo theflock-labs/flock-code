@@ -10,12 +10,16 @@ const dev = (f: string) => fileURLToPath(new URL(`./src/dev/${f}`, import.meta.u
 
 export default defineConfig({
   plugins: [react()],
-  base: "./",
+  // Served from theflock.sh/demo, which Vercel answers without the trailing
+  // slash (trailingSlash: false): relative asset URLs would resolve against
+  // the site root there, so they are absolute.
+  base: "/demo/",
   resolve: {
     alias: [
       { find: /^\.\/lib\/useFlockId$/, replacement: dev("demoIdentity.ts") },
       { find: /^\.\.\/lib\/flockId$/, replacement: dev("fakeFlockId.ts") },
       { find: /^(\.\/|\.\.\/)(lib\/)?presence$/, replacement: dev("fakePresence.ts") },
+      { find: /^\.\/lib\/agentNames$/, replacement: dev("demoAgentNames.ts") },
     ],
   },
   define: {
