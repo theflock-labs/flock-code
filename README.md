@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/goose-firstlight.svg" width="300" alt="the flock goose">
+  <img src="docs/assets/goose.svg" width="300" alt="the flock goose">
 </p>
 
 <p align="center">
@@ -48,10 +48,20 @@ ID) is required to use the app.
 
 ## What you get
 
-- **Tiled agent panes.** Workspaces and tabs over a BSP split layout with grid
-  presets (1/2/4/6/8/12 panes). Panes zoom, pop out to their own window, and
-  can receive broadcast input across a tab. Each pane shows the agent's live
-  status, and the titlebar counts the agents that are blocked waiting on you.
+- **One list of everything you are running.** The sidebar lists your projects
+  and, under each, its threads: one task each, usually one agent, named after
+  the task you gave it. A dot says which are working, which are waiting on you
+  (⌘J jumps to the next one, in any project) and which have not been started
+  yet this launch. Start one from the composer (⌘N): say what it should do,
+  pick the project and the agent, Enter.
+- **Tiled agents when you want them.** A thread can hold a grid of agents (a
+  BSP split layout, up to twelve): add one beside the other (⌘D), zoom,
+  type into all of them at once, or pop one out into its own window.
+- **Light on the machine.** Only the thread on screen has live terminals in
+  the window. Every other agent keeps running at full speed, with its status,
+  boot state and output kept by the backend, and its terminal is rebuilt from
+  that output when you open its thread again. Twenty agents across five
+  projects cost the window what the one thread you are looking at costs.
 - **Races across git worktrees.** Fan out N agents on the same prompt, each in
   its own worktree cut from one commit. Compare every contender's diff against
   that commit side by side, merge the winner, and discard the rest, with the
@@ -71,9 +81,8 @@ ID) is required to use the app.
   by a hook. Its metrics are windowed and able to fall (coverage, silent
   passes, recall volume), and the app says on screen what has not been
   measured.
-- **Per-pane context meters.** A live bar per Claude Code and Grok pane
-  showing how full that conversation's context window is, read from the
-  pane's own transcript.
+- **Context ring.** How full the agent's context window is, as a ring in the
+  thread's header (Claude Code and Grok), read from its own transcript.
 - **Budgets and cost attribution.** Spend is attributed per session id, rolled
   up to workspaces and repos, with per-workspace and machine-wide daily
   ceilings that alert as they are approached. Token counts are exact; dollar
@@ -82,10 +91,11 @@ ID) is required to use the app.
   where, for how long, how many prompts, what it cost), exportable as CSV or
   JSON. Prompt text, agent output, and diffs are never stored, and there is no
   flag that turns them on.
-- **And the rest.** GitHub integration (PR list, checks, one-click review
-  agents), on-device voice dictation, per-workspace accent colors, a ⌘K
-  command bar, signed auto-updates, and a Ratatui TUI (`flock-cli`) sharing
-  the same core engine.
+- **And the rest.** GitHub integration (pull requests, checks, one-click
+  review agents, a merge queue), a changes panel beside each thread (branches,
+  worktrees, diffs), on-device voice dictation, a ⌘K command bar that reaches
+  everything, signed auto-updates, and a Ratatui TUI (`flock-cli`) sharing the
+  same core engine.
 
 ## In motion
 
@@ -146,6 +156,16 @@ npm run tauri dev      # development, with hot reload
 npm run build          # production bundle
 ```
 
+To work on the interface without the desktop shell, run the UI harness: the
+real app in a browser, with Tauri's IPC mocked and a signed-in identity, seeded
+with projects, threads in every state and agents that paint a terminal screen.
+
+```bash
+cd apps/flock-desktop
+npm run ui:harness     # http://localhost:1430/harness.html
+                       # ?theme=light|dark  ?view=new|settings|palette  ?changes=1
+```
+
 The TUI needs only Rust:
 
 ```bash
@@ -155,13 +175,15 @@ cargo run -p flock-cli
 ### First run
 
 1. **Sign in with Google.** flock requires a flock ID; the app gates on it.
-2. **Create a workspace.** Point it at a git repository, pick a pane layout,
-   and choose an agent kind. If Docker is running, secure mode is on by
-   default. Leave it on.
-3. **Spawn agents.** Each pane launches the agent CLI you chose. The agent
-   CLIs are not bundled: `claude`, `grok`, `opencode`, `codex`, or `pi` must
-   be installed on your machine and signed in to their own accounts. flock
-   never handles your model credentials beyond passing them to the agent.
+2. **Start an agent.** The composer asks what it should work on: pick a
+   folder (it becomes a project), the agent, and press Enter. If Docker is
+   running and secure mode is on in Settings, the agent runs jailed. More
+   options (branch strategy, several agents, mixed lineups) are one click
+   away, or ⌘⇧N.
+3. **The agent CLIs are not bundled.** `claude`, `grok`, `opencode`, `codex`,
+   or `pi` must be installed on your machine and signed in to their own
+   accounts. flock never handles your model credentials beyond passing them to
+   the agent.
 
 ### Optional pieces
 
@@ -253,10 +275,15 @@ flowchart LR
     kg --> pg
 ```
 
-The frontend renders each pane with xterm.js and talks to the Rust backend
-over Tauri commands. `flock-pty` spawns each agent CLI under a PTY (on the
-host, or inside a Docker container in secure mode) and streams output back as
-events; the same byte stream feeds per-agent status detection. `flock-core`
+The frontend renders the panes of the thread on screen with xterm.js and talks
+to the Rust backend over Tauri commands. `flock-pty` spawns each agent CLI
+under a PTY (on the host, or inside a Docker container in secure mode). The
+backend reads every byte of every agent whether or not it is on screen: it
+detects status and the agent's first paint (`boot.rs`), keeps a replay ring
+per pane, and emits only the transitions. A terminal subscribes to its pane's
+output over a binary channel when its thread is opened, starting from the ring,
+and lets go when it closes, so the window's cost follows what you look at, not
+how many agents run. `flock-core`
 owns persistence: workspaces, layouts, and the provenance record in SQLite
 under `~/.flock`. The knowledge graph is a separate opt-in engine (Postgres
 with pgvector in Docker) that agents reach through the `flock-mcp` server.
