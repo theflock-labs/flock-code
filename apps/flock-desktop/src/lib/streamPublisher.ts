@@ -1,19 +1,21 @@
 import type Ably from "ably";
 import { getStreamGrant, onRealtimeContext } from "./presence";
-import { resizePty, sendInput } from "./tauri";
+import { resizePty, sendInput, subscribePaneOutput } from "./tauri";
 import { noteInjectedInput } from "./terminalRegistry";
 
 interface StreamState {
   channel: Ably.RealtimeChannel;
   buffer: Uint8Array[];
   bufferedBytes: number;
-  flushTimer: number | null;
+  flushTimer: ReturnType<typeof setTimeout> | null;
   paneId: string;
   lastCols: number;
   lastRows: number;
   unsubReady?: () => void;
   unsubInput?: () => void;
   unsubAuthorization?: () => void;
+  /** The pane's own output, from the backend. */
+  unsubOutput?: () => void;
   streamId: string;
   grantId: string;
 }
@@ -66,6 +68,9 @@ export interface StartStreamOptions {
    * the actual co-pilot partner — anyone else who learned the channel name is
    * ignored. Required for input to be honored at all. */
   allowedInputFrom?: string;
+  /** The PTY's size when the stream starts, used until the pane's terminal
+   *  (only mounted while its thread is on screen) reports its own. */
+  dims?: { cols: number; rows: number };
 }
 
 /** Publish dims + clear + a SIGWINCH-forced redraw so a (re)joining viewer
@@ -116,6 +121,16 @@ export function startStream(paneId: string, channel: Ably.RealtimeChannel, opts:
     lastCols: 0, lastRows: 0, streamId: opts.streamId, grantId: opts.grantId,
   };
   activeStreams.set(paneId, state);
+  if (opts.dims && !knownDims.has(paneId)) knownDims.set(paneId, opts.dims);
+  // v2 mounts a terminal only for the thread on screen, so the stream reads
+  // the pane's output from the backend itself (a pane takes any number of
+  // subscribers): sharing keeps going while you look at another thread.
+  void subscribePaneOutput(paneId, (bytes) => publishBytes(paneId, bytes), false)
+    .then((unsub) => {
+      if (activeStreams.get(paneId) === state) state.unsubOutput = unsub;
+      else unsub();
+    })
+    .catch(() => stopStream(paneId));
   state.unsubAuthorization = onRealtimeContext(() => {
     if (getStreamGrant(opts.streamId)?.grant_id !== opts.grantId) stopStream(paneId);
   });
@@ -172,13 +187,14 @@ export function stopStream(paneId: string) {
   if (s.flushTimer !== null) clearTimeout(s.flushTimer);
   // Drop buffered bytes on revoke/end.
   s.unsubAuthorization?.();
+  s.unsubOutput?.();
   s.unsubReady?.();
   s.unsubInput?.();
   s.channel.detach().catch(() => {});
   activeStreams.delete(paneId);
 }
 
-/** Called by Terminal.tsx on every PTY output event. Batches into ~60ms windows. */
+/** Fed from the pane's output subscription. Batches into ~60ms windows. */
 export function publishBytes(paneId: string, bytes: Uint8Array) {
   const s = activeStreams.get(paneId);
   if (!s) return;
@@ -191,7 +207,7 @@ export function publishBytes(paneId: string, bytes: Uint8Array) {
   }
   // Otherwise schedule a flush
   if (s.flushTimer === null) {
-    s.flushTimer = window.setTimeout(() => flush(paneId), FLUSH_INTERVAL_MS);
+    s.flushTimer = setTimeout(() => flush(paneId), FLUSH_INTERVAL_MS);
   }
 }
 

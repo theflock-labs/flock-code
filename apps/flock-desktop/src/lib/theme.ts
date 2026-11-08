@@ -12,11 +12,12 @@
 
 export type ThemeId = "dark" | "light" | "graphite" | "high-contrast";
 
+/** What Settings and ⌘K offer. "graphite" is still a valid stored value (v1's
+ *  default) and reads as Dark, which is what v2's dark palette grew out of. */
 export const THEMES: { id: ThemeId; label: string }[] = [
-  { id: "dark", label: "Nightfall" },
-  { id: "light", label: "Daybreak" },
-  { id: "graphite", label: "Graphite" },
-  { id: "high-contrast", label: "High Contrast" },
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" },
+  { id: "high-contrast", label: "High contrast" },
 ];
 
 const STORAGE_KEY = "flock:theme";
@@ -40,17 +41,20 @@ const LEGACY_FOLLOW_KEY = "clarence:theme-follow-system";
  *  Nothing is stored until the swatch row is used, so this also changes the
  *  appearance of every existing install that never picked a theme. That is the
  *  point of moving it, but it is worth knowing it is not only new users. */
-const DEFAULT_THEME: ThemeId = "graphite";
+const DEFAULT_THEME: ThemeId = "dark";
 
 /** The user's explicit theme pick — what the swatch row highlights. */
 export function getStoredTheme(): ThemeId {
   const v = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
+  if (v === "graphite") return "dark";
   return THEMES.some((t) => t.id === v) ? (v as ThemeId) : DEFAULT_THEME;
 }
 
 /** Whether the app mirrors the OS light/dark appearance instead of the pick. */
 export function getFollowSystem(): boolean {
-  return (localStorage.getItem(FOLLOW_KEY) ?? localStorage.getItem(LEGACY_FOLLOW_KEY)) === "1";
+  // Unset means nobody has picked yet: follow the Mac, as lucy-chat does.
+  // Picking a theme writes "0", so an explicit choice always wins.
+  return (localStorage.getItem(FOLLOW_KEY) ?? localStorage.getItem(LEGACY_FOLLOW_KEY) ?? "1") === "1";
 }
 
 /** The OS appearance, mapped onto our two base themes. Dark resolves to
@@ -116,71 +120,37 @@ export function getXtermTheme(theme: ThemeId) {
 export const TERMINAL_FONT_FAMILY =
   'ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
 
+// v2 palettes. The background is the panel's own paper, so a terminal reads as
+// the panel's content rather than a rectangle laid on it; the ANSI slots keep
+// their roles (red/green/yellow carry status) at contrast that holds at 12px.
+const DARK_TERM: Record<string, string> = {
+  background: "#16181d",
+  foreground: "#eceef1",
+  cursor: "#eceef1",
+  cursorAccent: "#16181d",
+  selectionBackground: "#b8c1cc40",
+  black: "#1f2228",
+  red: "#ff7b72",
+  green: "#56d394",
+  yellow: "#e3b85c",
+  blue: "#79aef2",
+  magenta: "#d9a0e6",
+  cyan: "#6fd1d9",
+  white: "#d6d9de",
+  brightBlack: "#7c828b",
+  brightRed: "#ffa198",
+  brightGreen: "#7ee3ad",
+  brightYellow: "#f0cd85",
+  brightBlue: "#a3c8f7",
+  brightMagenta: "#e8bff0",
+  brightCyan: "#9be3e8",
+  brightWhite: "#ffffff",
+};
+
 const XTERM_THEMES: Record<ThemeId, Record<string, string>> = {
-  // Nightfall — the brand's night palette: paper as the ground, ink as the
-  // foreground and the cursor, and the ANSI slots mapped onto the status and
-  // crest colours (bad/ok/warn/action/rose) so a terminal reads as part of
-  // the same app rather than a rectangle of somebody else's palette. Every
-  // slot below clears 4.5:1 against the background except `black`, which is
-  // the recessed paper tone by ANSI convention and is a fill, not a text
-  // colour — see the header note on that slot.
-  dark: {
-    background: "#0b1524",
-    foreground: "#ece9e2",
-    cursor: "#ece9e2",
-    cursorAccent: "#0b1524",
-    selectionBackground: "#7fb4f033",
-    black: "#0f1b2e",
-    red: "#ff8f84",
-    green: "#4fffb0",
-    yellow: "#ffc48a",
-    blue: "#5b8cff",
-    magenta: "#f6c6d8",
-    cyan: "#8fdde8",
-    white: "#ece9e2",
-    brightBlack: "#7e8aa0",
-    brightRed: "#ffb3ab",
-    brightGreen: "#93ffcd",
-    brightYellow: "#ffe0b8",
-    brightBlue: "#93b4ff",
-    brightMagenta: "#ffd9e8",
-    brightCyan: "#b3ecf4",
-    brightWhite: "#ffffff",
-  },
-  // Graphite — neutral greys, no hue spent on chrome. The ANSI slots keep the
-  // same *roles* as Nightfall (red/green/yellow are the status trio, magenta
-  // and cyan are crest-adjacent) but `blue` is the one that has to change
-  // meaning: there is no interaction blue in this theme, so the slot takes the
-  // ink tone rather than inventing a hue the palette doesn't contain. A program
-  // that colours its output blue reads as plain text here, which is the correct
-  // reading of a theme whose whole position is that chrome carries no hue.
-  // Mirror any edits into the [data-theme="graphite"] block in global.css.
-  graphite: {
-    background: "#121212",
-    foreground: "#f2f1ee",
-    cursor: "#f2f1ee",
-    cursorAccent: "#121212",
-    selectionBackground: "#f2f1ee29",
-    black: "#191919",
-    red: "#f08c80",
-    green: "#7dd6a4",
-    yellow: "#e8c07a",
-    blue: "#c6c5c1",
-    magenta: "#f6c6d8",
-    cyan: "#8fdde8",
-    white: "#f2f1ee",
-    brightBlack: "#8b8a86",
-    brightRed: "#f6afa6",
-    brightGreen: "#a3e5c0",
-    brightYellow: "#f2d5a4",
-    brightBlue: "#e2e1de",
-    brightMagenta: "#ffd9e8",
-    brightCyan: "#b3ecf4",
-    brightWhite: "#ffffff",
-  },
-  // High Contrast — pure black canvas, pure white ink, saturated ANSI for
-  // maximum legibility. Mirror any edits into the [data-theme="high-contrast"]
-  // token block in global.css.
+  dark: DARK_TERM,
+  graphite: DARK_TERM,
+  // High Contrast — pure black canvas, pure white ink, saturated ANSI.
   "high-contrast": {
     background: "#000000",
     foreground: "#ffffff",
@@ -204,36 +174,31 @@ const XTERM_THEMES: Record<ThemeId, Record<string, string>> = {
     brightCyan: "#a6faff",
     brightWhite: "#ffffff",
   },
-  // Daybreak — ink on paper, the same slot-for-slot mapping as Nightfall.
-  // The bright* row goes *deeper* than its base rather than lighter: on paper
-  // a lighter variant is a quieter one, and the old cut of this theme had
-  // bright red/green/magenta/cyan sitting at 3–3.5:1, i.e. unreadable at the
-  // sizes a terminal actually uses. Deepened until each hue clears 7:1.
-  // brightBlack is the exception and stays a mid grey at 4.8:1 — it is the
-  // dim-text slot, so making it AAA would defeat what programs use it for.
-  // `black` is the paper tone here, inverted like `white`; see the note in
-  // the header about that pairing.
+  // Light — ink on white. Like v1's Daybreak, `white` is ink and `black` the
+  // paper tone, so a program that prints "white" text stays legible on a light
+  // ground; bright* go deeper rather than lighter, because on paper a lighter
+  // colour is a quieter one.
   light: {
-    background: "#fcfbf8",
-    foreground: "#0b1b33",
-    cursor: "#0b1b33",
-    cursorAccent: "#fcfbf8",
-    selectionBackground: "#7fb4f04d",
-    black: "#f4f2ec",
-    red: "#b4483f",
-    green: "#1d7a4e",
-    yellow: "#9a6231",
-    blue: "#1e5eff",
-    magenta: "#a4457e",
-    cyan: "#0e7d94",
-    white: "#0b1b33",
-    brightBlack: "#61708a",
-    brightRed: "#8f3931",
-    brightGreen: "#14603c",
-    brightYellow: "#7a4a22",
-    brightBlue: "#1849c9",
-    brightMagenta: "#7e2f5c",
-    brightCyan: "#0a5d6e",
-    brightWhite: "#060f1e",
+    background: "#ffffff",
+    foreground: "#111318",
+    cursor: "#111318",
+    cursorAccent: "#ffffff",
+    selectionBackground: "#4d596633",
+    black: "#f3f4f6",
+    red: "#c21f2d",
+    green: "#1f7a43",
+    yellow: "#8a5a00",
+    blue: "#1f5fbf",
+    magenta: "#9b3a8a",
+    cyan: "#0b7285",
+    white: "#111318",
+    brightBlack: "#676c75",
+    brightRed: "#a01622",
+    brightGreen: "#155c32",
+    brightYellow: "#6b4500",
+    brightBlue: "#174a96",
+    brightMagenta: "#7a2d6c",
+    brightCyan: "#085766",
+    brightWhite: "#000000",
   },
 };

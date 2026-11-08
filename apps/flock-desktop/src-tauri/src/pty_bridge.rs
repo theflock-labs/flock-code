@@ -1,4 +1,5 @@
-use crate::events::{AgentStatusEvent, PtyExitEvent};
+use crate::boot::{BootScanner, BootSignal, PAINT_GRACE};
+use crate::events::{emit_started, emit_status, PtyExitEvent};
 use crate::state::PaneOutput;
 use bytes::{Bytes, BytesMut};
 use flock_core::{status::detector_for, AgentStatus};
@@ -54,9 +55,22 @@ pub fn spawn_output_loop(
     // than looked up per event: the loop outlives the PaneEntry (it is what
     // removes it), so it has to hold the handle it needs to close the row.
     provenance: Option<crate::provenance::Recorder>,
+    // Shared with the PaneEntry: flipped once the agent has painted (see
+    // boot.rs), so a late `list_panes` can answer without the event.
+    started: Arc<std::sync::atomic::AtomicBool>,
 ) {
     tokio::spawn(async move {
         let detector = detector_for(&kind);
+        let mut boot = BootScanner::new();
+        // When the marker was seen, for the grace clock. Checked on every tick
+        // and batch: the case it covers is an agent that then says nothing.
+        let mut armed_at: Option<Instant> = None;
+        let mark_started = |boot: &mut BootScanner| {
+            if boot.force_start() || !started.load(std::sync::atomic::Ordering::Relaxed) {
+                started.store(true, std::sync::atomic::Ordering::Relaxed);
+                emit_started(&app, &pane_id);
+            }
+        };
         let mut line_buf = String::new();
         let mut spinner_last: Option<Instant> = None;
         let mut ticker = interval(Duration::from_millis(500));
@@ -104,6 +118,20 @@ pub fn spawn_output_loop(
                                 }
                             }
                             let batch = batch.freeze();
+
+                            // Boot card: the agent's first paint lifts it. Cheap
+                            // after the start (feed returns at once), and before it
+                            // the batches are a shell's few lines.
+                            if !boot.is_done() {
+                                match boot.feed(&batch) {
+                                    BootSignal::Start => {
+                                        started.store(true, std::sync::atomic::Ordering::Relaxed);
+                                        emit_started(&app, &pane_id);
+                                    }
+                                    BootSignal::Armed => armed_at = Some(Instant::now()),
+                                    BootSignal::None => {}
+                                }
+                            }
 
                             let text = String::from_utf8_lossy(&batch);
                             for ch in text.chars() {
@@ -155,6 +183,16 @@ pub fn spawn_output_loop(
                 }
 
                 _ = ticker.tick() => {
+                    // A launched agent that has painted nothing for the grace
+                    // period gets its terminal shown anyway.
+                    if let Some(at) = armed_at {
+                        if !boot.is_done() && at.elapsed() >= PAINT_GRACE {
+                            mark_started(&mut boot);
+                        }
+                        if boot.is_done() {
+                            armed_at = None;
+                        }
+                    }
                     // Spinner timeout: if Working for 3+ seconds with no new
                     // spinner, the turn is over. That lands the pane at Idle,
                     // not AwaitingInput — a silent agent has stopped, it has
@@ -189,13 +227,9 @@ pub fn spawn_output_loop(
             let mut s = status.write().await;
             *s = exit_status;
         }
-        let _ = app.emit(
-            &format!("agent://status/{}", pane_id),
-            AgentStatusEvent {
-                pane_id: pane_id.clone(),
-                status: exit_status.as_str().to_string(),
-            },
-        );
+        emit_status(&app, &pane_id, exit_status.as_str());
+        // Whatever it died of, the user needs to see it, not a boot card.
+        mark_started(&mut boot);
         let _ = app.emit(
             &format!("pty://exit/{}", pane_id),
             PtyExitEvent {
@@ -258,12 +292,6 @@ async fn apply_status(
         if let Some(rec) = provenance {
             rec.status(new.as_str()).await;
         }
-        let _ = app.emit(
-            &format!("agent://status/{}", pane_id),
-            AgentStatusEvent {
-                pane_id: pane_id.to_string(),
-                status: new.as_str().to_string(),
-            },
-        );
+        emit_status(app, pane_id, new.as_str());
     }
 }

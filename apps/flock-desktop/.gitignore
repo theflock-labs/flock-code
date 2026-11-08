@@ -12,3 +12,4 @@ src-tauri/Cargo.lock
 
 # Local env (flock ID keys live here in dev)
 .env.local
+dist-demo

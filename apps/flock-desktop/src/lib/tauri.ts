@@ -563,6 +563,39 @@ export const onAgentStatus = (
     handler(e.payload.status);
   });
 
+/** Every pane's status transitions on one topic. The main window keeps a
+ *  single listener for all of them (v2 mounts terminals only for the thread on
+ *  screen, but the sidebar shows every agent's status). */
+export const onAnyAgentStatus = (
+  handler: (paneId: string, status: AgentStatusPayload["status"]) => void,
+): Promise<UnlistenFn> =>
+  listen<AgentStatusPayload>("agent://status", (e) => {
+    lastStatus.set(e.payload.pane_id, e.payload.status);
+    handler(e.payload.pane_id, e.payload.status);
+  });
+
+/** The last status each pane announced, for a pane that enters React state
+ *  after its first transitions (restore inserts a whole batch at once). */
+const lastStatus = new Map<string, AgentStatusPayload["status"]>();
+
+export const latestAgentStatus = (paneId: string): AgentStatusPayload["status"] | undefined => lastStatus.get(paneId);
+
+/** Panes whose agent has taken the terminal over (see src-tauri/src/boot.rs).
+ *  Remembered for the life of the window, because the event can arrive before
+ *  the pane it names is in React state (a restore spawns a whole batch before
+ *  inserting any of it). */
+const startedPanes = new Set<string>();
+
+/** Whether this pane's agent has already announced itself. */
+export const hasAgentStarted = (paneId: string): boolean => startedPanes.has(paneId);
+
+/** Once per pane: the agent painted, the grace ran out, or it exited. */
+export const onAnyAgentStarted = (handler: (paneId: string) => void): Promise<UnlistenFn> =>
+  listen<{ pane_id: string }>("agent://started", (e) => {
+    startedPanes.add(e.payload.pane_id);
+    handler(e.payload.pane_id);
+  });
+
 // ─── Menu ──────────────────────────────────────────────────────────────────
 
 export const onOpenSettings = (handler: () => void): Promise<UnlistenFn> =>

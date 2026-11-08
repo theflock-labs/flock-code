@@ -4,9 +4,13 @@ import type { Friend } from "../types";
 interface Props {
   friend: Friend;
   onClose: () => void;
+  onShowSidebar?: () => void;
+  /** What you can do with this friend (watch, co-pilot, a task), at the foot. */
+  actions?: React.ReactNode;
 }
 
-export default function FriendStatsModal({ friend, onClose }: Props) {
+/** A friend's stats and achievements, as a page of the main panel. */
+export default function FriendStatsModal({ friend, onClose, onShowSidebar, actions }: Props) {
   return (
     <StatsModal
       profileId={friend.id}
@@ -21,6 +25,9 @@ export default function FriendStatsModal({ friend, onClose }: Props) {
       }
       errorText={`Stats aren't available for @${friend.handle} yet.`}
       onClose={onClose}
+      title={`@${friend.handle}`}
+      onShowSidebar={onShowSidebar}
+      footer={actions}
     />
   );
 }

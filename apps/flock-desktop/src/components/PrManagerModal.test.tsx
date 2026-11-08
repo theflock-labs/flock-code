@@ -26,15 +26,16 @@ beforeEach(() => { api.details.mockReset().mockResolvedValue(details); });
 afterEach(cleanup);
 
 describe("PR action intent", () => {
+  // v2 keeps the page quiet: who acts and what queueing does are on the
+  // buttons themselves (their tooltips), not in paragraphs around them.
   it("shows the actor, merge consequences, checks and expandable reviewer feedback beside explicit actions", async () => {
     await act(async () => { render(<PrManagerModal {...props()} />); });
     expect(screen.getByRole("button", { name: "Review with agent" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Approve on GitHub" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Queue auto-merge" })).toBeTruthy();
-    expect(screen.getByText("@remi")).toBeTruthy();
-    expect(screen.getByText(/Queued PRs merge automatically in order/)).toBeTruthy();
-    expect(screen.getByText("Unit tests")).toBeTruthy();
-    const feedback = screen.getByText("changes requested · @teammate");
+    expect(screen.getByRole("button", { name: "Approve" }).getAttribute("title")).toContain("@remi");
+    expect(screen.getByRole("button", { name: "Add to merge queue" }).getAttribute("title")).toMatch(/in order, once approved/);
+    const check = screen.getByText("Unit tests");
+    expect(check.getAttribute("data-tone")).toBe("bad");
+    const feedback = screen.getByText("Changes requested by @teammate");
     expect(feedback.tagName).toBe("SUMMARY");
     expect(screen.getByText("Handle the offline case.")).toBeTruthy();
   });
@@ -61,18 +62,18 @@ describe("PR action intent", () => {
     const review = screen.getByRole("button", { name: "Starting review…" });
     expect(review.getAttribute("aria-busy")).toBe("true");
     expect((review as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText("Starting an agent for PR #1…")).toBeTruthy();
+    expect(review.getAttribute("title")).toBe("Starting an agent for PR #1…");
   });
 
   it("dispatches approval and queue actions independently and reports an approval failure", async () => {
     const p = props();
     p.onApprove = vi.fn().mockRejectedValue(new Error("GitHub is unavailable"));
     await act(async () => { render(<PrManagerModal {...p} />); });
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Approve on GitHub" })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Approve" })); });
     expect(p.onApprove).toHaveBeenCalledWith("team/repo", 1);
     expect(screen.getByText("GitHub is unavailable")).toBeTruthy();
     expect(p.onQueueAdd).not.toHaveBeenCalled();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Queue auto-merge" })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Add to merge queue" })); });
     expect(p.onQueueAdd).toHaveBeenCalledWith(p.prs[0]);
     expect(p.onReview).not.toHaveBeenCalled();
   });

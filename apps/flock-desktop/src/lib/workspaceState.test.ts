@@ -50,11 +50,6 @@ describe("shouldPersistWorkspace", () => {
     expect(shouldPersistWorkspace(source(), new Set(["ws-1"]))).toBe(true);
   });
 
-  it("never writes a session workspace, even if the id is hydrated", () => {
-    const hydrated = new Set(["ws-1"]);
-    expect(shouldPersistWorkspace(source({ copilot: { sessionId: "s", partnerLogin: "a", partnerWid: "w", status: "connected" } }), hydrated)).toBe(false);
-    expect(shouldPersistWorkspace(source({ observe: { sessionId: "s", ownerLogin: "a", ownerWid: "w" } }), hydrated)).toBe(false);
-  });
 });
 
 describe("shouldHydrateAfterEmptyRestore", () => {

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "flock",
-  "version": "0.7.50",
+  "version": "0.8.0",
   "identifier": "app.flock.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -20,14 +20,14 @@
         "minHeight": 560,
         "decorations": true,
         "transparent": false,
-        "backgroundColor": "#121212",
+        "backgroundColor": "#0b0c0f",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "fullscreen": false,
         "resizable": true,
         "trafficLightPosition": {
-          "x": 14,
-          "y": 18
+          "x": 22,
+          "y": 35
         }
       }
     ],

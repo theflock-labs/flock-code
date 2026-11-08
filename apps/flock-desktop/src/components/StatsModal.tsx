@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import ModalCloseButton from "./ModalCloseButton";
+import { useEffect, useState, type ReactNode } from "react";
 import { Avatar } from "./Avatar";
-import { useFocusTrap } from "../lib/useFocusTrap";
+import { Page } from "../v2/Page";
+import "../styles/stats.css";
 import { getUsageSeries, getUserStats, type UsageDailyPoint, type UserStats } from "../lib/flockId";
 import { graphOverview, type GraphOverview } from "../lib/tauri";
 import { getGraphEnabled, getGraphUrl } from "../lib/graphSettings";
@@ -29,6 +29,10 @@ interface Props {
   showGraph?: boolean;
   footer?: ReactNode;
   onClose: () => void;
+  /** The page's name: "You", or the friend's handle. */
+  title?: string;
+  /** Present while the app's sidebar is hidden. */
+  onShowSidebar?: () => void;
 }
 
 const SOCIAL_TILES: { key: keyof Omit<UserStats, "member_since">; label: string; hint: string }[] = [
@@ -53,22 +57,13 @@ function formatMemberSince(iso: string | null): string | null {
 }
 
 export default function StatsModal({
-  profileId, handle, avatarUrl, ariaLabel, presenceClass, presenceText, errorText, showGraph, footer, onClose,
+  profileId, handle, avatarUrl, ariaLabel, presenceClass, presenceText, errorText, showGraph, footer, onClose, title, onShowSidebar,
 }: Props) {
-  const modalRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(modalRef);
-
   const [stats, setStats] = useState<UserStats | null>(null);
   const [statsError, setStatsError] = useState(false);
   const [graph, setGraph] = useState<GraphStats | null>(null);
   const [series, setSeries] = useState<UsageDailyPoint[] | null>(null);
   const [seriesLoading, setSeriesLoading] = useState(true);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   useEffect(() => {
     let alive = true;
@@ -116,9 +111,9 @@ export default function StatsModal({
   const achievements = achStats ? resolveAll(achStats, !!graph) : [];
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal stats-modal" ref={modalRef} role="dialog" aria-modal="true" aria-label={ariaLabel} onClick={(e) => e.stopPropagation()}>
-        <ModalCloseButton onClose={onClose} />
+    <Page title={title ?? ariaLabel} onClose={onClose} onShowSidebar={onShowSidebar} className="v2-stats">
+      <div className="v2-page-scroll">
+      <div className="stats-modal">
 
         <div className="stats-hero">
           <Avatar
@@ -191,6 +186,7 @@ export default function StatsModal({
           {footer}
         </div>
       </div>
-    </div>
+      </div>
+    </Page>
   );
 }

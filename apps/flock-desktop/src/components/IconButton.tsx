@@ -37,7 +37,7 @@ export default function IconButton({
   icon, label, onClick, onMouseDown, onContextMenu, className, disabled,
 }: Props) {
   const ref = useRef<HTMLButtonElement>(null);
-  const [tip, setTip] = useState<{ x: number; y: number; side: "top" | "bottom" } | null>(null);
+  const [tip, setTip] = useState<{ x: number; y: number; side: "top" | "bottom"; edge: "center" | "end" } | null>(null);
 
   const show = () => {
     if (disabled) return;
@@ -46,10 +46,14 @@ export default function IconButton({
     const zoom = rectZoomFactor(ref.current!);
     const bottom = rect.bottom * zoom;
     const side = bottom + 34 > window.innerHeight ? "top" : "bottom";
+    // Near the window's right edge a centred tip would run off it, so it
+    // hangs from the button's right edge instead.
+    const edge = rect.right * zoom > window.innerWidth - 96 ? "end" : "center";
     setTip({
-      x: (rect.left + rect.width / 2) * zoom,
+      x: edge === "end" ? rect.right * zoom : (rect.left + rect.width / 2) * zoom,
       y: side === "bottom" ? bottom + 7 : rect.top * zoom - 7,
       side,
+      edge,
     });
   };
   const hide = () => setTip(null);
@@ -79,7 +83,7 @@ export default function IconButton({
       {tip && createPortal(
         <div
           role="tooltip"
-          className={`icon-tooltip icon-tooltip-${tip.side}`}
+          className={`icon-tooltip icon-tooltip-${tip.side}${tip.edge === "end" ? " icon-tooltip-end" : ""}`}
           style={{ left: tip.x, top: tip.y }}
         >
           {label}

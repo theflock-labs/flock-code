@@ -38,62 +38,82 @@ struct CallbackPayload {
 // binary, decoded once at startup). Nothing else on this page is allowed to
 // ask for a face that isn't one of the three.
 
-// The goose, both wingbeat frames — the HD sprite, kept in sync with
-// GooseMark.tsx's UPSTROKE / DOWNSTROKE grids. One bird, every theme: the
-// `firstlight` palette, and only the eye (`K`) follows the page background.
-const UPSTROKE: [&str; 16] = [
-    "..........B.B.B.....................",
-    "..........BBBBBB....................",
-    "..........BBBBBBB...................",
-    "..........BBBBBBBB........MMMM......",
-    "..........DBBBBBBBB......MMMMMM.....",
-    "..........DDBBBBBBBB.....MMMMKM.....",
-    "...........DDBBBBBBBB...MMMMMMMYYYY.",
-    "..MMM.......DDBBBBBBB..MMMMMMMYYYZ..",
-    "..MMMMMMMMMMMMMDBBBBBMMMMMMMMM......",
-    "..TTMMMMMMMMMMMMMMMMMMMMMMMM........",
-    "...TTMMMMMMMMMMMMMMMMMMMMM..........",
-    "....TTTMMMMMMMMMMMMMMMMMM...........",
-    "......TTTTMMMMMMMMMMMMM.............",
-    "........TTTTTMMMMMMMM...............",
-    "....................................",
-    "....................................",
+// The goose, both wingbeat frames, kept in sync with GooseMark.tsx's UPSTROKE
+// and DOWNSTROKE (tests below read that file and compare). One bird, every
+// theme: the palette is GooseMark's PALETTE, as the page's g-* classes.
+const UPSTROKE: [&str; 23] = [
+    "...........w.w........................",
+    "...........wwww.......................",
+    ".........s.cwwww......................",
+    ".........scccwwww.....................",
+    ".........wccccwwww....................",
+    ".........ssccccwwww........nhhhh......",
+    ".........wwcccccwww.......nmgllhh.....",
+    ".........sccccccwwww......dmgdkdh.....",
+    "..........uusscccwwww.....dmgdkdlg....",
+    "h..........sscccccwwww...nndmmgllppqqq",
+    "lhh.........uuusssswww..dmnddddmooooo.",
+    "mmlhhhhlldddnnnuuuucwwgmmmmnnnnnbbbb..",
+    "nmmmllggggmdddddddlllggmmmmmd.........",
+    ".dddmmmmlllllllllllllggmmmmln.........",
+    "..nnnmmmmmggglllllllgggmwww...........",
+    "...nnndmmmmmggggggggggwwww............",
+    "....nnnndmmmmmmmmmmmlwwwww............",
+    ".....nnnnndmmmmmmmmmwwwww.............",
+    ".......nnnndddmmmmmccccc..............",
+    ".........nbboumnnuussss...............",
+    "..........bor..uuuuu..................",
+    ".........brpr.........................",
+    "........oopp..........................",
 ];
 
-const DOWNSTROKE: [&str; 16] = [
-    "....................................",
-    "....................................",
-    "....................................",
-    "..........................MMMM......",
-    ".........................MMMMMM.....",
-    ".........................MMMMKM.....",
-    "........................MMMMMMMYYYY.",
-    "..MMM..................MMMMMMMYYYZ..",
-    "..MMMMMMMMMMMMMMMMMMMMMMMMMMMM......",
-    "..TTMMMMMMMMBBBBBBBBMMMMMMMM........",
-    "...TTMMMMMMMBBBBBBBBBMMMMM..........",
-    "....TTTMMMMMBBBBBBBBBMMMM...........",
-    "......TTTTMMMDBBBBBBBMM.............",
-    "........TTTTTMMDDBBBB...............",
-    ".................DDBB...............",
-    "...................D................",
+const DOWNSTROKE: [&str; 23] = [
+    "......................................",
+    "......................................",
+    "......................................",
+    "......................................",
+    "......................................",
+    "...........................nhhhh......",
+    "...........s.wwwww........nmgllhh.....",
+    "...........scccwwwww......dmgdkdh.....",
+    "..........ssccccwwww......dmgdkdlg....",
+    "h.........sccccccwwww....nndmmgllppqqq",
+    "lhh........sscccccwwww..dmnddddmooooo.",
+    "mmlhhhhlldddnnnuuuucwwgmmmmnnnnnbbbb..",
+    "nmmmllggggmdddddddlllggmmmmmd.........",
+    ".dddmmmmlllllllllllllggmmmmln.........",
+    "..nnnmmmmmggglllllllgggmwww...........",
+    "...nnndmmmmmggggggggggwwww............",
+    "....nnnndmmmmmmmmmmmlwwwww............",
+    ".....nnnnndmmmmmmmmmwwwww.............",
+    ".......nnnndddmmmmmccccc..............",
+    ".........nbboumnnuussss...............",
+    "..........bor..uuuuu..................",
+    ".........brpr.........................",
+    "........oopp..........................",
+];
+
+// The logotype, kept in sync with Wordmark.tsx's WORD: '#' is ink, '1'..'4'
+// the crest's segments, top to bottom.
+const WORD: [&str; 12] = [
+    "..####.11................##.....",
+    ".#####.11................##.....",
+    ".##....11................##.....",
+    ".##....22................##.....",
+    "#####..22...###.....####.##...##",
+    "#####..22..#####...#####.##..##.",
+    ".##....33.##...##.##.....##.##..",
+    ".##....33.##...##.##.....####...",
+    ".##....33.##...##.##.....####...",
+    ".##....44.##...##.##.....##.##..",
+    ".##....44..#####...#####.##..##.",
+    ".##....44...###.....####.##...##",
 ];
 
 /// Build one wingbeat frame as an inline SVG of 10px pixel cells
-/// (viewBox 360×160). Fills are CSS classes (g-m, g-t, …) so the eye can
-/// resolve to the page background per color scheme.
-fn goose_svg(grid: &[&str; 16], frame_class: &str) -> String {
+/// (viewBox 380x230). Fills are CSS classes, g- plus the palette letter.
+fn goose_svg(grid: &[&str; 23], frame_class: &str) -> String {
     const CELL: u32 = 10;
-    let class = |c: char| match c {
-        'M' => "g-m",
-        'T' => "g-t",
-        'B' => "g-b",
-        'D' => "g-d",
-        'Y' => "g-y",
-        'Z' => "g-z",
-        'K' => "g-k",
-        _ => "g-m",
-    };
     let mut rects = String::new();
     for (y, row) in grid.iter().enumerate() {
         for (x, c) in row.chars().enumerate() {
@@ -101,16 +121,39 @@ fn goose_svg(grid: &[&str; 16], frame_class: &str) -> String {
                 continue;
             }
             rects.push_str(&format!(
-                "<rect x=\"{}\" y=\"{}\" width=\"{CELL}\" height=\"{CELL}\" class=\"{}\"/>",
+                "<rect x=\"{}\" y=\"{}\" width=\"{CELL}\" height=\"{CELL}\" class=\"g-{c}\"/>",
                 x as u32 * CELL,
                 y as u32 * CELL,
-                class(c),
             ));
         }
     }
-    // 92px wide is the exact width SignInGate renders its GooseMark at.
+    // 95px wide: the sprite's 38 cells at 2.5px, as SignInGate draws it.
     format!(
-        "<svg class=\"{frame_class}\" width=\"92\" height=\"40.9\" viewBox=\"0 0 360 160\" shape-rendering=\"crispEdges\" xmlns=\"http://www.w3.org/2000/svg\">{rects}</svg>"
+        "<svg class=\"{frame_class}\" width=\"95\" height=\"57.5\" viewBox=\"0 0 380 230\" shape-rendering=\"crispEdges\" xmlns=\"http://www.w3.org/2000/svg\">{rects}</svg>"
+    )
+}
+
+/// The logotype as an inline SVG, one unit a cell, at 3.5px a cell (Wordmark's
+/// size 54): ink letters in currentColor, the l's four segments in the crest.
+fn wordmark_svg() -> String {
+    let (cols, rows) = (WORD[0].len(), WORD.len());
+    let mut ink = String::new();
+    let mut crest = String::new();
+    for (y, row) in WORD.iter().enumerate() {
+        for (x, c) in row.chars().enumerate() {
+            match c {
+                '#' => ink.push_str(&format!("<rect x=\"{x}\" y=\"{y}\" width=\"1\" height=\"1\"/>")),
+                '1'..='4' => crest.push_str(&format!(
+                    "<rect class=\"wm-c wm-c{c}\" x=\"{x}\" y=\"{y}\" width=\"1\" height=\"1\"/>"
+                )),
+                _ => {}
+            }
+        }
+    }
+    format!(
+        "<svg width=\"{}\" height=\"{}\" viewBox=\"0 0 {cols} {rows}\" shape-rendering=\"crispEdges\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\"><g fill=\"currentColor\">{ink}</g>{crest}</svg>",
+        cols as f32 * 3.5,
+        rows as f32 * 3.5,
     )
 }
 
@@ -177,13 +220,12 @@ __FONTS__
        left that says "interactive". Here it is only a light source. */
     --action:     #ffffff;
     --bad:        #f08c80;
-    /* The crest's three hues. Sky, rose and the goose's own wing. Not
-       redefined per theme — one palette on every ground, per Wordmark.tsx's
-       CREST, which these are identical to. On this ground they measure 7.9,
-       10.0 and 11.2 to one, so the stem carries itself unaided. */
-    --crest-1:    #62ACFF;
-    --crest-2:    #F2A8C4;
-    --crest-3:    #FDB89B;
+    /* The crest: the l's four segments, top to bottom, in the goose's own
+       colours (Wordmark.tsx's --wm-1 to --wm-4). Lighter on this ground. */
+    --wm-1: #eaae86;
+    --wm-2: #fcd0af;
+    --wm-3: #a1bfef;
+    --wm-4: #6282bb;
   }
   @media (prefers-color-scheme: light) {
     :root {
@@ -195,30 +237,18 @@ __FONTS__
       --text-ghost: #61708a;
       --action:     #1e5eff;
       --bad:        #b4483f;
-      /* No crest override: one palette on every ground, per brand.css. On this
-         paper the three measure 2.06, 1.43 and 1.62 to one, so the l reads
-         because the four ink letters around it complete the word rather than
-         because the stem holds its own. A deeper cut was tried and rejected —
-         it turns peach to rust. */
+      /* Cut deeper on paper so the l holds its own beside the ink letters,
+         as v2.css does for the app's light theme. */
+      --wm-1: #d3885a;
+      --wm-2: #e9a273;
+      --wm-3: #6282bb;
+      --wm-4: #3b5178;
     }
   }
-  /* The `firstlight` bird — sky body, apricot wing, gold bill — byte-for-byte
-     PALETTES.firstlight in GooseMark.tsx, which is the mark everywhere else in
-     the app and on the site.
-
-     This page shipped the blue-and-pink pair that firstlight replaced on
-     2026-07-28, and kept it for the reason stale copies always survive: it
-     looked fine on the one ground it was written against. It was not fine. The
-     wing is drawn on top of the body, so the two are each other's background,
-     and blue-on-pink sat 1.09:1 apart — the wing vanished in greyscale, at
-     favicon size, and under protanopia and deuteranopia. firstlight is 2.17:1.
-     Six values, and they must stay identical to GooseMark.tsx's and to
-     flock-website/scripts/generate-goose.py's.
-     Only the eye follows the page, the way GooseMark punches `K` through to
-     --bg-window. */
-  .g-m{fill:#4f89c9} .g-t{fill:#3a6aa7} .g-b{fill:#fdb89b}
-  .g-d{fill:#e1957a} .g-y{fill:#e8a962} .g-z{fill:#cb8747}
-  .g-k{fill:var(--bg-window)}
+  /* The bird, in GooseMark.tsx's PALETTE: five blues for the body, four
+     creams for the wing and breast, the bill and feet's oranges, a dark eye.
+     The tests below read GooseMark.tsx and fail if a value drifts. */
+  .g-h{fill:#a1bfef} .g-l{fill:#7da1db} .g-g{fill:#6282bb} .g-m{fill:#5171a5} .g-d{fill:#3b5178} .g-n{fill:#23324b} .g-w{fill:#f7ede4} .g-c{fill:#decdbd} .g-s{fill:#c1b09f} .g-u{fill:#aa9a8a} .g-q{fill:#fcd0af} .g-p{fill:#eaae86} .g-o{fill:#d3885a} .g-r{fill:#a05f3c} .g-b{fill:#613925} .g-k{fill:#0e1117}
   * { box-sizing:border-box; }
   html, body { margin:0; height:100%; background:var(--bg-window); }
   body { display:flex; align-items:center; justify-content:center; overflow:hidden;
@@ -237,7 +267,7 @@ __FONTS__
   @keyframes enter { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
   /* Two sprite frames stacked, swapped on the 260ms beat GooseMark flaps at,
      riding a slower bob. Same bird the gate shows while it waits for this tab. */
-  .goose { position:relative; width:92px; height:41px; margin:0 auto 18px;
+  .goose { position:relative; width:95px; height:57.5px; margin:0 auto 18px;
            animation:bob 2.6s ease-in-out infinite; }
   .goose svg { position:absolute; top:0; left:0; }
   .goose .up   { animation:wing-up 0.52s steps(1,end) infinite; }
@@ -245,54 +275,22 @@ __FONTS__
   @keyframes wing-up   { 0%,49.9% { opacity:1 } 50%,100% { opacity:0 } }
   @keyframes wing-down { 0%,49.9% { opacity:0 } 50%,100% { opacity:1 } }
   @keyframes bob { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-5px); } }
-  /* The logotype, straight from Wordmark.tsx: Outfit 500, lowercase-committed,
-     every letter drawn rather than set, and the `l` doubling as the crest's
-     stem. Geometry and timing below are that component's, to the em and to the
-     frame — the mark is one mark, and this is the copy of it that lives
-     outside React.
-
-     Drawn rather than set for two reasons. The f is no longer Outfit's f as
-     shipped: its curl is translated down 10 so the terminal lands on 720, the
-     ascender line the l and the k already share. And once one letter is drawn
-     the rest must be too — a masked box and a hinted glyph do not land on the
-     same baseline at every size, which cost the f a pixel against the k.
-
-     The box spans -10 to 720, not 0 to 720: o and c are round and overshoot
-     the baseline, and a mask clips rather than overflowing, so a box starting
-     at 0 slices both of them flat. Hence 0.73em and the -0.01em pull. */
-  .wm { font-family:"Outfit",sans-serif; font-weight:500; font-size:54px;
-        line-height:1; letter-spacing:-0.018em; text-transform:none;
-        color:var(--text-hi); white-space:nowrap; margin-bottom:40px; }
-  .wm-word { display:inline-block; vertical-align:-0.01em; position:relative;
-        width:2.095em; height:0.73em;
-        --wm-word:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 -720 2095 730'><path transform='scale(1,-1)' d='M127 0V523Q127 575 151.9 619.9Q177.1 665 223.4 692.4Q270 720 333 720V617Q285 617 261 589.5Q237 562 237 524V0ZM12 380V480H463V380ZM851 -10Q781 -10 724 23.5Q667 57 633.5 114Q600 171 600 241Q600 311 633.5 367Q667 423 724 456.5Q781 490 851 490Q922 490 979 457Q1036 424 1069.5 367.5Q1103 311 1103 241Q1103 171 1069.5 114Q1036 57 979 23.5Q922 -10 851 -10ZM851 96Q892 96 923.5 114.5Q955 133 972.5 166Q990 199 990 241Q990 283 972 315Q954 347 923 365.5Q892 384 851 384Q811 384 779.5 365.5Q748 347 730.5 315Q713 283 713 241Q713 199 730.5 166Q748 133 779.5 114.5Q811 96 851 96ZM1397 -10Q1326 -10 1268.5 23Q1211 56 1178 113Q1145 170 1145 240Q1145 311 1178 367.5Q1211 424 1268.5 457Q1326 490 1397 490Q1453 490 1501.5 468.5Q1550 447 1584 407L1512 334Q1491 359 1461.5 371.5Q1432 384 1397 384Q1356 384 1324.5 365.5Q1293 347 1275.5 315Q1258 283 1258 240Q1258 198 1275.5 165.5Q1293 133 1324.5 114.5Q1356 96 1397 96Q1432 96 1461.5 108.5Q1491 121 1512 146L1584 73Q1550 33 1501.5 11.5Q1453 -10 1397 -10ZM1950 0 1747 245 1949 480H2080L1848 216L1853 279L2090 0ZM1645 0V720H1755V0Z' fill='%23fff'/></svg>");
-        --wm-stem:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 -720 2095 730'><path transform='scale(1,-1)' d='M417 0V720H527V0Z' fill='%23fff'/></svg>"); }
-  .wm-word::before, .wm-word::after { content:""; position:absolute; inset:0;
-        -webkit-mask-size:100% 100%; mask-size:100% 100%;
-        -webkit-mask-repeat:no-repeat; mask-repeat:no-repeat; }
-  .wm-word::before { background:currentColor;
-        -webkit-mask-image:var(--wm-word); mask-image:var(--wm-word); }
-  /* One paint, one gradient, tiled and always moving — never four stacked
-     boxes, and never four stops changing colour in place. Sky, rose, peach
-     and back to sky, two stem-heights per tile, drifting up forever. First
-     stop and last stop are the same hue and the animation translates by
-     exactly one tile (1.44em, being 200% of the 0.72em box), so the loop has
-     no seam; linear because any easing would slow the drift at the wrap and
-     tick once a cycle. No ink in the gradient at all, so the hues carry
-     legibility themselves — see --crest-* and the Daybreak override. */
-  .wm-word::after { background-image:linear-gradient(to bottom,
-          var(--crest-1) 0%, var(--crest-2) 33.33%,
-          var(--crest-3) 66.67%, var(--crest-1) 100%);
-        background-size:100% 200%; background-repeat:repeat;
-        -webkit-mask-image:var(--wm-stem); mask-image:var(--wm-stem);
-        animation:crest 14s linear infinite; }
-  /* Sky above rose above peach and a negative translation, so the image
-     slides up: a fixed point on the stem meets sky first. The crest rises. */
+  /* The logotype, from Wordmark.tsx: the word drawn in pixels on the goose's
+     grid, ink letters and the l's four crest segments, drifting slowly up
+     (segment n starts n - 1 quarters into the cycle, as in the app). */
+  .wm { color:var(--text-hi); line-height:0; margin-bottom:40px; }
+  .wm-c { animation:crest 14s ease-in-out infinite; }
+  .wm-c1 { fill:var(--wm-1); animation-delay:0s; }
+  .wm-c2 { fill:var(--wm-2); animation-delay:-3.5s; }
+  .wm-c3 { fill:var(--wm-3); animation-delay:-7s; }
+  .wm-c4 { fill:var(--wm-4); animation-delay:-10.5s; }
   @keyframes crest {
-    from { background-position:0 0; }
-    to   { background-position:0 -1.46em; }
+    0%, 100% { fill:var(--wm-1); }
+    25% { fill:var(--wm-2); }
+    50% { fill:var(--wm-3); }
+    75% { fill:var(--wm-4); }
   }
-  @media (prefers-reduced-motion: reduce) { .wm-word::after { animation:none; } }
+  @media (prefers-reduced-motion: reduce) { .wm-c { animation:none; } }
   /* The splash voice, one notch up for a full page: tracked mono eyebrow,
      display serif headline set lowercase, sans sub. */
   .eyebrow { font-family:"IBM Plex Mono",monospace; font-weight:600; font-size:9px;
@@ -317,7 +315,7 @@ __FONTS__
   <div class="glow" aria-hidden="true"></div>
   <div class="stage">
     <div class="goose" aria-hidden="true">__GOOSE_UP____GOOSE_DOWN__</div>
-    <div class="wm" role="img" aria-label="flock"><span class="wm-word" aria-hidden="true"></span></div>
+    <div class="wm" role="img" aria-label="flock">__WORDMARK__</div>
     <div class="eyebrow" id="eyebrow">Signed in</div>
     <h1 id="title">you’re in</h1>
     <p id="sub">flock has the controls. You can close this tab.</p>
@@ -344,6 +342,7 @@ fn success_page() -> &'static str {
             .replace("__FONTS__", &font_faces())
             .replace("__GOOSE_UP__", &goose_svg(&UPSTROKE, "up"))
             .replace("__GOOSE_DOWN__", &goose_svg(&DOWNSTROKE, "down"))
+            .replace("__WORDMARK__", &wordmark_svg())
     })
 }
 
@@ -417,39 +416,64 @@ mod tests {
     /// frontend, because a loopback HTTP response cannot import a React
     /// component or read a stylesheet. Hand-copies rot, and this one did: it
     /// served the retired blue-and-pink goose and Nightfall's navy for weeks
-    /// after the app had moved to `firstlight` and defaulted to Graphite, and
+    /// after the app had moved on to a new bird and defaulted to Graphite, and
     /// nothing failed — the page renders, it is just the wrong brand. So the
     /// copies are pinned against their sources by reading the real files.
     const GOOSE_SRC: &str = include_str!("../../src/components/GooseMark.tsx");
     const WORDMARK_SRC: &str = include_str!("../../src/components/Wordmark.tsx");
     const CSS_SRC: &str = include_str!("../../src/styles/global.css");
 
+    /// The quoted rows of a `const NAME = [ ... ];` grid in a TS source.
+    fn ts_grid(src: &str, name: &str) -> Vec<String> {
+        let start = src.find(&format!("const {name} = [")).unwrap_or_else(|| panic!("no {name} grid"));
+        let body = &src[start..];
+        let body = &body[..body.find("];").expect("unterminated grid")];
+        body.lines()
+            .filter_map(|l| l.trim().strip_prefix('"').and_then(|r| r.split('"').next()))
+            .map(str::to_string)
+            .collect()
+    }
+
     #[test]
-    fn the_goose_is_the_apps_own_firstlight_palette() {
-        // PALETTES.firstlight in GooseMark.tsx, as the page's CSS classes.
-        let line = GOOSE_SRC
-            .lines()
-            .find(|l| l.trim_start().starts_with("firstlight:"))
-            .expect("GooseMark.tsx no longer declares a `firstlight` palette");
+    fn the_goose_is_the_apps_own_palette() {
+        // GooseMark.tsx's PALETTE, one `x: "#rrggbb",` line a colour, as the
+        // page's CSS classes.
+        let block = GOOSE_SRC
+            .split("const PALETTE")
+            .nth(1)
+            .and_then(|r| r.split("};").next())
+            .expect("GooseMark.tsx no longer declares a PALETTE");
         let page = success_page();
-        for key in ['M', 'T', 'B', 'D', 'Y', 'Z'] {
-            let hex = line
-                .split(&format!("{key}: \""))
-                .nth(1)
-                .and_then(|rest| rest.split('"').next())
-                .unwrap_or_else(|| panic!("no {key} in firstlight"));
-            let class = format!(".g-{}{{fill:{hex}}}", key.to_ascii_lowercase());
-            assert!(
-                page.contains(&class),
-                "the callback page's goose has drifted from GooseMark.tsx: expected {class}"
-            );
+        let mut n = 0;
+        for line in block.lines() {
+            let Some((key, rest)) = line.trim().split_once(": \"") else { continue };
+            let hex = rest.split('"').next().unwrap();
+            let class = format!(".g-{key}{{fill:{hex}}}");
+            assert!(page.contains(&class), "the callback page's goose has drifted from GooseMark.tsx: expected {class}");
+            n += 1;
         }
+        assert!(n >= 10, "read only {n} colours from GooseMark.tsx");
+    }
+
+    #[test]
+    fn the_goose_is_the_apps_own_drawing() {
+        assert_eq!(ts_grid(GOOSE_SRC, "UPSTROKE"), UPSTROKE.to_vec(), "UPSTROKE drifted from GooseMark.tsx");
+        assert_eq!(ts_grid(GOOSE_SRC, "DOWNSTROKE"), DOWNSTROKE.to_vec(), "DOWNSTROKE drifted from GooseMark.tsx");
+    }
+
+    #[test]
+    fn the_wordmark_is_the_apps_own_drawing() {
+        assert_eq!(ts_grid(WORDMARK_SRC, "WORD"), WORD.to_vec(), "WORD drifted from Wordmark.tsx");
+        // The l is always there: four crest segments, every row of the stem.
+        let stem: usize = WORD.iter().map(|r| r.chars().filter(|c| ('1'..='4').contains(c)).count()).sum();
+        assert_eq!(stem, 2 * WORD.len(), "the l lost cells");
     }
 
     /// The wing is drawn over the body, so those two are each other's
     /// background. Blue-on-pink was 1.09:1 and disappeared in greyscale, at
     /// favicon size, and for the two commonest colour deficiencies — which is
-    /// why `firstlight` exists. A future palette edit must not undo that.
+    /// why the wing became apricot, and now cream. A future palette edit must
+    /// not undo that.
     #[test]
     fn the_wing_is_visible_against_the_body() {
         let hex = |c: &str| {
@@ -477,22 +501,26 @@ mod tests {
                 .unwrap()
                 .to_string()
         };
-        let r = ratio(&fill("m"), &fill("b"));
+        let r = ratio(&fill("m"), &fill("c"));
         assert!(r > 1.8, "body/wing contrast fell back to {r:.2}:1 (blue+pink was 1.09)");
     }
 
-    /// One crest, every ground — Wordmark.tsx owns the three hues.
+    /// The crest is Wordmark.tsx's: its --wm-1..4 defaults (the dark ground)
+    /// are the page's own.
     #[test]
     fn the_crest_matches_the_wordmark() {
-        let line = WORDMARK_SRC
-            .lines()
-            .find(|l| l.contains("const CREST"))
-            .expect("Wordmark.tsx no longer declares CREST");
+        let block = WORDMARK_SRC
+            .split(".flock-wordmark {")
+            .nth(1)
+            .and_then(|r| r.split('}').next())
+            .expect("Wordmark.tsx no longer styles .flock-wordmark");
         let page = success_page();
-        for (i, hex) in line.split('"').filter(|s| s.starts_with('#')).enumerate() {
-            let decl = format!("--crest-{}:    {hex};", i + 1);
-            assert!(page.contains(&decl), "crest drifted from Wordmark.tsx: expected {decl}");
+        let mut n = 0;
+        for line in block.lines().map(str::trim).filter(|l| l.starts_with("--wm-")) {
+            assert!(page.contains(line), "crest drifted from Wordmark.tsx: expected {line}");
+            n += 1;
         }
+        assert_eq!(n, 4, "expected four crest colours in Wordmark.tsx");
     }
 
     /// The page cannot read the app's stored theme, so it mirrors what
@@ -538,10 +566,15 @@ mod tests {
     /// Both wingbeat frames render, and the eye stays punched through to the
     /// page rather than being painted a colour.
     #[test]
-    fn both_frames_render_with_a_knocked_out_eye() {
+    fn both_frames_and_the_word_render() {
         let page = success_page();
         assert!(page.contains("class=\"up\"") && page.contains("class=\"down\""));
-        assert!(page.contains(".g-k{fill:var(--bg-window)}"));
-        assert!(!page.contains("__GOOSE_UP__") && !page.contains("__FONTS__"));
+        // The eye is drawn, dark, as in the bird's reference drawing; it no
+        // longer punches through to the page.
+        assert!(page.contains(".g-k{fill:#0e1117}"));
+        assert!(page.contains("class=\"wm-c wm-c1\""), "the wordmark's crest is missing");
+        for slot in ["__GOOSE_UP__", "__GOOSE_DOWN__", "__WORDMARK__", "__FONTS__"] {
+            assert!(!page.contains(slot), "{slot} was never filled in");
+        }
     }
 }

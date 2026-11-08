@@ -20,7 +20,6 @@ vi.mock("../lib/graphSettings", () => ({
   getGraphUrl: () => "postgresql://local",
   getGraphEnabled: () => true,
 }));
-import MoatReadout from "./MoatReadout";
 import InsightsPanel from "./InsightsPanel";
 
 const summary = (recall: Partial<InsightsSummary["recall"]> = {}): InsightsSummary => ({
@@ -52,47 +51,6 @@ async function show(node: React.ReactElement, data: InsightsSummary) {
 
 beforeEach(() => insights.mockReset());
 afterEach(cleanup);
-
-describe("MoatReadout", () => {
-  it("reports coverage, not a cumulative count of injected lines", async () => {
-    // The shape of the stress run that scored 300: one fact, fed over and over.
-    // Coverage says 1 of 20, which is the truth about this graph.
-    await show(<MoatReadout />, summary({
-      ground_passes: 300,
-      passes_with_facts: 300,
-      facts_injected: 300,
-      facts_recalled: 1,
-      knowledge_total: 20,
-    }));
-
-    expect(screen.getByText("5%")).toBeTruthy();
-    expect(screen.queryByText(/rediscover/i)).toBeNull();
-    expect(screen.queryByText("300")).toBeNull();
-  });
-
-  it("shows the share of passes that surfaced nothing", async () => {
-    await show(<MoatReadout />, summary({
-      ground_passes: 10,
-      passes_with_facts: 3,
-      silent_passes: 7,
-      facts_injected: 3,
-      facts_recalled: 3,
-      knowledge_total: 6,
-    }));
-
-    expect(screen.getByText("70% passes empty")).toBeTruthy();
-  });
-
-  it("says nothing rather than 0% when there is nothing to measure", async () => {
-    // A graph with no recorded knowledge has no coverage. Printing 0% would
-    // read as "recall is failing" when the truth is that nobody has written
-    // anything down.
-    await show(<MoatReadout />, summary({ ground_passes: 4 }));
-
-    expect(screen.getByText("not enough data yet")).toBeTruthy();
-    expect(screen.queryByText("0%")).toBeNull();
-  });
-});
 
 describe("InsightsPanel", () => {
   it("leads with coverage and keeps the empty passes visible", async () => {

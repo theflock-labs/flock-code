@@ -24,10 +24,11 @@ interface Props {
 }
 
 /**
- * Inline git overview that expands underneath a workspace card in the sidebar.
+ * The changes panel beside a thread (the "Changes" button in its head).
  * Top: the agent-to-branch map (every checkout of the repo and which agent
  * owns it) plus orphaned worktrees. Below: working-tree changes and recent
- * commits for the focused agent's checkout.
+ * commits for the focused agent's checkout. Mounted only while open, so its
+ * poll runs only while you are looking at it.
  */
 export default function GitPanel({ repoPath, workspace, repoMap, overviewPath, onSelectPane, onAdoptWorktree, onPruneWorktree, onSendPrompt }: Props) {
   const [data, setData] = useState<GitOverview | null>(null);
@@ -83,7 +84,7 @@ export default function GitPanel({ repoPath, workspace, repoMap, overviewPath, o
       {repoMap?.is_repo && (
         <>
           <div className="git-section-label">
-            Agents<span className="git-count">{workspace.panes.filter((p) => !p.streamId).length}</span>
+            Agents<span className="git-count">{workspace.panes.length}</span>
           </div>
           <div className="git-agents">
             {mainWt && (

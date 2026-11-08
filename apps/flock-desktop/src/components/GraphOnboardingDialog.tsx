@@ -4,15 +4,16 @@ import { graphStatus, graphUp, type GraphStatus } from "../lib/tauri";
 import { copyText } from "../lib/clipboard";
 import { getGraphEnabled, setGraphEnabled, getGraphUrl, isTeamGraph } from "../lib/graphSettings";
 import { graphSnippets, type AgentTool } from "../lib/graphSnippets";
-import ModalCloseButton from "./ModalCloseButton";
-import { useFocusTrap } from "../lib/useFocusTrap";
 import { CheckIcon } from "./friendIcons";
+import { Page } from "../v2/Page";
 
 interface Props {
   onClose: () => void;
+  /** Present while the app's sidebar is hidden. */
+  onShowSidebar?: () => void;
 }
 
-const STEP_LABELS = ["WHY", "ENGINE", "CONNECT", "READY"] as const;
+const STEP_LABELS = ["Why", "Engine", "Connect", "Check"] as const;
 
 const DOCKER_INSTALL_URL = "https://www.docker.com/products/docker-desktop/";
 
@@ -29,7 +30,7 @@ const DOCKER_INSTALL_URL = "https://www.docker.com/products/docker-desktop/";
  * running — which is exactly every machine that got this far. A setup guide
  * that ends before either of those is checked is a guide that congratulates
  * the user on a graph nothing is writing to. */
-export default function GraphOnboardingDialog({ onClose }: Props) {
+export default function GraphOnboardingDialog({ onClose, onShowSidebar }: Props) {
   const [step, setStep] = useState(0);
   const [enabled, setEnabled] = useState(getGraphEnabled());
   const [status, setStatus] = useState<GraphStatus | null>(null);
@@ -44,8 +45,6 @@ export default function GraphOnboardingDialog({ onClose }: Props) {
   const [tool, setTool] = useState<AgentTool>("claude");
   const [copied, setCopied] = useState<string | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const modalRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(modalRef);
 
   // Live status while the engine steps are visible — the pills flip green
   // on their own as Docker comes up, no manual refresh.
@@ -67,11 +66,6 @@ export default function GraphOnboardingDialog({ onClose }: Props) {
     return () => clearInterval(id);
   }, [starting]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const enable = () => { setGraphEnabled(true); setEnabled(true); setStep(1); };
 
@@ -117,46 +111,36 @@ export default function GraphOnboardingDialog({ onClose }: Props) {
   const snippets = graphSnippets(mcpPath, kgUrl);
 
   return (
-    <div className="modal-overlay">
-      <div className="modal onboarding-modal graph-modal" ref={modalRef} role="dialog" aria-modal="true" aria-label="flock Graph setup">
-        <ModalCloseButton onClose={onClose} />
-        <div className="modal-header">
-          <div className="onboarding-eyebrow-row">
-            <span className="onboarding-accent-bar" style={{ background: "var(--mint)" }} />
-            <div className="step">flock graph · {STEP_LABELS[step]}</div>
-          </div>
-          <div className="title">
-            {step === 0 && "Agents that share understanding"}
+    <Page
+      title="Set up the graph"
+      meta={<span className="v2-page-meta">{step + 1} of {STEP_LABELS.length} · {STEP_LABELS[step]}</span>}
+      onClose={onClose}
+      onShowSidebar={onShowSidebar}
+      className="v2-graph-setup"
+    >
+      <div className="v2-page-scroll">
+        <div className="v2-setup">
+          <h2 className="v2-setup-title">
+            {step === 0 && "A memory your agents share"}
             {step === 1 && (team ? "Point at the team graph" : "Start the engine")}
             {step === 2 && "Give your agents the tools"}
-            {step === 3 && "Check it actually works"}
-          </div>
-        </div>
-
+            {step === 3 && "Check that it works"}
+          </h2>
         <div className="modal-body">
           {step === 0 && (
             <>
               <p className="onboarding-body">
-                Graph is a knowledge graph your agents write to and read from:
-                decisions made, approaches tried and failed, which agent owns which
-                file. Agent B picks up where Agent A left off — without rediscovering
-                the same ground.
+                Your agents write down what they decide and what they tried, and read it
+                before they start, so none of them begins from zero.
               </p>
               <ul className="onboarding-bullets">
-                <li><span className="onboarding-bullet-mark" style={{ color: "var(--mint)" }}>›</span><span><strong>Decisions persist.</strong> "Chose Zustand for auth state" is recorded once, read by every agent after.</span></li>
-                <li><span className="onboarding-bullet-mark" style={{ color: "var(--mint)" }}>›</span><span><strong>Failed attempts stay failed.</strong> No agent retries an approach another already burned.</span></li>
-                <li><span className="onboarding-bullet-mark" style={{ color: "var(--mint)" }}>›</span><span><strong>MCP native.</strong> Claude Code, opencode, Codex — anything that speaks MCP can join.</span></li>
-                <li><span className="onboarding-bullet-mark" style={{ color: "var(--mint)" }}>›</span><span><strong>Local first.</strong> Postgres + pgvector in Docker on this machine. Nothing leaves.</span></li>
+                <li><span><strong>Decisions stay decided.</strong> One agent records it; every agent after reads it.</span></li>
+                <li><span><strong>Dead ends stay dead.</strong> Nobody retries what another agent already tried.</span></li>
+                <li><span><strong>On this Mac.</strong> Postgres with pgvector in Docker. Nothing leaves it.</span></li>
               </ul>
-              <p className="onboarding-body">
-                Three steps, about five minutes: start the engine (Docker does the
-                work), open one new pane, then confirm an agent can see it. What it
-                costs you: one Postgres container, a ~400 MB image pulled once, and a
-                Docker volume that grows with what your agents record.
-              </p>
               <p className="onboarding-body graph-optin-note">
-                Strictly opt-in: nothing runs until you enable it, and you can turn it
-                off (or tear the engine down) any time in Settings → Graph.
+                A few minutes and one Docker container (a ~400 MB image). Turn it off any
+                time in Settings, Graph.
               </p>
             </>
           )}
@@ -396,39 +380,35 @@ export default function GraphOnboardingDialog({ onClose }: Props) {
           )}
         </div>
 
-        <div className="modal-footer onboarding-footer">
-          <div className="onboarding-dots">
-            {STEP_LABELS.map((_, i) => (
-              <span key={i} className={`onboarding-dot${i === step ? " active" : ""}`} />
-            ))}
-          </div>
-          <span className="onboarding-counter">{step + 1} / {STEP_LABELS.length}</span>
-          <div style={{ flex: 1 }} />
-          <button className="btn-ghost settings-btn" onClick={onClose}>
-            {step === 3 ? "Close" : "Later"}
-          </button>
-          {step > 0 && (
-            <button className="btn-ghost settings-btn" onClick={() => setStep((s) => s - 1)}>Back</button>
-          )}
+        <div className="v2-detail-actions v2-setup-actions">
           {step === 0 && (
-            <button className="btn-mint-solid" onClick={enable}>
-              {enabled ? "Continue" : "Enable Graph"}
+            <button type="button" className="v2-btn primary" onClick={enable}>
+              {enabled ? "Continue" : "Turn on the graph"}
             </button>
           )}
           {step === 1 && (
-            <button className="btn-mint-solid" onClick={() => setStep(2)}>
-              {ready ? "Next" : "Next (engine can finish in the background)"}
+            <button type="button" className="v2-btn primary" onClick={() => setStep(2)} title={ready ? undefined : "The engine can finish starting in the background"}>
+              Next
             </button>
           )}
           {step === 2 && (
-            <button className="btn-mint-solid" onClick={() => setStep(3)}>Next</button>
+            <button type="button" className="v2-btn primary" onClick={() => setStep(3)}>Next</button>
           )}
           {step === 3 && (
-            <button className="btn-mint-solid" onClick={onClose}>Done</button>
+            <button type="button" className="v2-btn primary" onClick={onClose}>Done</button>
+          )}
+          {step > 0 && (
+            <button type="button" className="v2-btn" onClick={() => setStep((s) => s - 1)}>Back</button>
+          )}
+          {step < 3 && (
+            <button type="button" className="v2-link" style={{ marginLeft: "0.6em" }} onClick={onClose}>
+              Later
+            </button>
           )}
         </div>
+        </div>
       </div>
-    </div>
+    </Page>
   );
 }
 

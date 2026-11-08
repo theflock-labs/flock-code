@@ -16,15 +16,17 @@ export const OPEN_GRAPH_EXPLORER_EVENT = "flock:open-graph-explorer";
 /** Preserve the workspace that initiated navigation. Explicit null opens all
  * workspaces; a plain Event lets App use its currently focused workspace. */
 export interface GraphExplorerOpenDetail {
-  workspaceId: string | null;
+  workspaceId?: string | null;
+  /** Open on this view (⌘K → Graph insights opens on "insights"). */
+  view?: GraphExplorerView;
 }
 
-export type GraphExplorerView = "list" | "graph" | "recall";
+export type GraphExplorerView = "list" | "graph" | "recall" | "insights";
 const VIEW_KEY = "flock:graph-explorer-view";
 
 export function getGraphExplorerView(): GraphExplorerView {
   const value = localStorage.getItem(VIEW_KEY);
-  return value === "graph" || value === "recall" ? value : "list";
+  return value === "graph" || value === "recall" || value === "insights" ? value : "list";
 }
 
 export function setGraphExplorerView(view: GraphExplorerView): void {

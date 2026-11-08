@@ -1,10 +1,11 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { graphListNodes, graphNodeNeighbors, graphSubgraph, graphRecall, type GraphKgNode, type GraphNeighbor, type GraphSubgraph, type RecallReport } from "../lib/tauri";
-import { getGraphUrl, getGraphExplorerView, setGraphExplorerView, type GraphExplorerView } from "../lib/graphSettings";
-import ModalCloseButton from "./ModalCloseButton";
+import { OPEN_GRAPH_SETUP_EVENT, getGraphUrl, getGraphExplorerView, setGraphExplorerView, type GraphExplorerView } from "../lib/graphSettings";
 import GraphRecallView from "./GraphRecallView";
-import { useFocusTrap } from "../lib/useFocusTrap";
-import { DiamondIcon } from "./statusIcons";
+import InsightsPanel from "./InsightsPanel";
+import { Page, PageEmpty } from "../v2/Page";
+import { Menu, useMenu, type MenuEntry } from "../v2/Menu";
+import { ChevronDownIcon, FolderIcon, SearchIcon } from "../v2/icons";
 import "./GraphExplorer.css";
 
 // The 3D graph pulls in three.js (~1.4MB). Load it only when the graph view is
@@ -16,6 +17,10 @@ interface Props {
   workspaceId: string | null;
   workspaceName?: string | null;
   onClose: () => void;
+  /** Present while the app's sidebar is hidden. */
+  onShowSidebar?: () => void;
+  /** Open on this view instead of the last one used. */
+  initialView?: GraphExplorerView;
 }
 
 // Every node kind, ordered as they matter to a person reading the graph, each
@@ -32,13 +37,33 @@ const KIND_COLOR: Record<string, string> = {
 };
 const colorFor = (kind: string) => KIND_COLOR[kind] ?? "var(--text-mid)";
 
+/** How each edge type reads from the record you are on. */
+function edgeLabel(edge: string, dir: string): string {
+  const out = dir === "out";
+  switch (edge) {
+    case "ABOUT":
+      return out ? "About" : "Written about it";
+    case "RELATES_TO":
+      return "Related";
+    case "SUPERSEDES":
+      return out ? "Replaces" : "Replaced by";
+    case "CLAIMS":
+      return out ? "Claims" : "Claimed by";
+    default: {
+      const words = edge.toLowerCase().replaceAll("_", " ");
+      return `${words.charAt(0).toUpperCase()}${words.slice(1)}${out ? "" : " (from)"}`;
+    }
+  }
+}
+
 /**
- * Browse recent knowledge, search it, and follow the selected record's
- * connections and actual recall evidence. List ordering comes from the graph:
+ * The graph, as a page of the main panel: browse recent knowledge and search
+ * it, see it as a map, see what grounding put in front of your agents (Recall)
+ * and the windowed figures (Insights). List ordering comes from the graph:
  * recency for browsing and hybrid search order for queries.
  */
-export default function GraphExplorer({ workspaceId, workspaceName, onClose }: Props) {
-  const [view, setViewState] = useState<GraphExplorerView>(getGraphExplorerView);
+export default function GraphExplorer({ workspaceId, workspaceName, onClose, onShowSidebar, initialView }: Props) {
+  const [view, setViewState] = useState<GraphExplorerView>(() => initialView ?? getGraphExplorerView());
   const setView = (next: GraphExplorerView) => { setViewState(next); setGraphExplorerView(next); };
   const [scopeToWs, setScopeToWs] = useState<boolean>(workspaceId !== null);
   const [retry, setRetry] = useState(0);
@@ -56,14 +81,8 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
   const neighborRequest = useRef(0);
   const [neighborStatus, setNeighborStatus] = useState<"loading" | "ready" | "error">("ready");
   const scopeId = scopeToWs ? workspaceId : null;
-  const modalRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(modalRef);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const scopeMenu = useMenu();
+  const kindMenu = useMenu();
 
   useEffect(() => {
     if (view !== "list") return;
@@ -127,156 +146,167 @@ export default function GraphExplorer({ workspaceId, workspaceName, onClose }: P
     return () => { neighborRequest.current += 1; };
   }, [scopeId, closeNode]);
 
-  const offlineMessage = <div className="gx-empty" role="status">
-    The graph engine is offline.<br />Start it from the sidebar to explore.
-    <button className="gx-retry" onClick={() => setRetry((n) => n + 1)}>Try again</button>
-  </div>;
+  const offlineMessage = (
+    <PageEmpty>
+      <span>
+        The graph engine isn't answering.
+        <br />
+        <span className="v2-detail-actions" style={{ justifyContent: "center" }}>
+          <button type="button" className="v2-btn" onClick={() => setRetry((n) => n + 1)}>Try again</button>
+          <button type="button" className="v2-btn" onClick={() => window.dispatchEvent(new Event(OPEN_GRAPH_SETUP_EVENT))}>Graph setup</button>
+        </span>
+      </span>
+    </PageEmpty>
+  );
+
+  const scopeName = workspaceName || "This project";
+  const scopeEntries: MenuEntry[] = [
+    { label: scopeName, hint: "and shared knowledge", checked: scopeToWs, onSelect: () => setScopeToWs(true) },
+    { label: "All projects", checked: !scopeToWs, onSelect: () => setScopeToWs(false) },
+  ];
+  const kindEntries: MenuEntry[] = [
+    { label: "All kinds", checked: kind === null, onSelect: () => setKind(null) },
+    ...KINDS.map<MenuEntry>((k) => ({
+      label: k,
+      icon: <span className="v2-kind-dot" style={{ "--kind": colorFor(k) } as CSSProperties} />,
+      checked: kind === k,
+      onSelect: () => setKind(k),
+    })),
+  ];
+
+  const tools = (
+    <div className="v2-split-tools">
+      <div className="v2-search" role="search">
+        <SearchIcon size={14} />
+        <input
+          type="search"
+          aria-label="Search the graph"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={view === "graph" ? "Highlight" : "Search"}
+          autoComplete="off"
+          spellCheck={false}
+          autoFocus
+        />
+      </div>
+      <button type="button" className="v2-chip" aria-haspopup="menu" aria-expanded={kindMenu.open} aria-label={`Kind: ${kind ?? "all"}`} onClick={kindMenu.toggle}>
+        {kind && <span className="v2-kind-dot" style={{ "--kind": colorFor(kind) } as CSSProperties} />}
+        <span>{kind ?? "All kinds"}</span>
+        <ChevronDownIcon size={13} />
+      </button>
+    </div>
+  );
+
+  const detail = (
+    <section className="v2-split-detail" aria-label="Record">
+      {!selected ? (
+        <PageEmpty>{view === "graph" ? "Click a node to read it." : "Pick something to read it and follow its connections."}</PageEmpty>
+      ) : (
+        <NodeDetail node={selected} neighbors={neighbors} neighborStatus={neighborStatus} onOpen={openNode} workspaceId={scopeId}
+          onRecall={() => { setRecallFact({ id: selected.id, label: selected.label }); setView("recall"); }} />
+      )}
+    </section>
+  );
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal graph-modal" ref={modalRef} role="dialog" aria-modal="true" aria-label="Graph explorer" onClick={(e) => e.stopPropagation()}>
-        <ModalCloseButton onClose={onClose} />
-
-        <div className="modal-header gx-head">
-          <div className="step">Graph</div>
-          <div className="title">Graph Explorer</div>
-          <div className="gx-subtitle">The shared memory your agents write as they work.</div>
-          <div className="gx-scope-label">Scope: <strong>{scopeId ? workspaceName || "This workspace" : "All workspaces"}</strong>{scopeId && view !== "recall" && " + shared knowledge"}</div>
-        </div>
-
-        <div className="gx-controls">
-          <div className="gx-view-toggle">
-            <button className={`gx-view-opt${view === "list" ? " active" : ""}`} onClick={() => { setRecallFact(null); setView("list"); }} aria-pressed={view === "list"} title="Recent knowledge">
-              <ListIcon /> List
-            </button>
-            <button className={`gx-view-opt${view === "graph" ? " active" : ""}`} onClick={() => { setRecallFact(null); setView("graph"); }} aria-pressed={view === "graph"} title="Force-directed map">
-              <MapIcon /> Graph
-            </button>
-            {/* The read side. List and Graph both show what has been written;
-                only this one shows whether any of it came back out. */}
-            <button className={`gx-view-opt${view === "recall" ? " active" : ""}`} onClick={() => { setRecallFact(null); setView("recall"); }} aria-pressed={view === "recall"} title="What grounding surfaced to your agents">
-              <RecallIcon /> Recall
-            </button>
-          </div>
-          {/* Recall is a log, not a catalog: neither the text filter nor the
-              kind chips below have anything to act on there. */}
-          <div className="gx-search-wrap" hidden={view === "recall"}>
-            <SearchIcon />
-            <input
-              className="gx-search"
-              aria-label="Search shared memory"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={view === "graph" ? "Highlight nodes…" : "Search decisions, attempts, files, notes…"}
-              autoComplete="off"
-              spellCheck={false}
-              autoFocus
-            />
-          </div>
-          {workspaceId && (
-            <div className="gx-scope-toggle">
-              <button className={`gx-scope-opt${scopeToWs ? " active" : ""}`} onClick={() => setScopeToWs(true)} aria-pressed={scopeToWs} title={workspaceName || "This workspace"}>
-                {workspaceName || "This workspace"}
-              </button>
-              <button className={`gx-scope-opt${!scopeToWs ? " active" : ""}`} onClick={() => setScopeToWs(false)} aria-pressed={!scopeToWs}>
-                All workspaces
-              </button>
-            </div>
-          )}
-        </div>
-
-        <div className="gx-kinds" hidden={view === "recall"}>
-          <button className={`gx-kind-chip${kind === null ? " active" : ""}`} onClick={() => setKind(null)}>
-            All
+    <Page<GraphExplorerView>
+      title="Graph"
+      meta={
+        workspaceId ? (
+          <button type="button" className="v2-chip" aria-haspopup="menu" aria-expanded={scopeMenu.open} aria-label={`Scope: ${scopeToWs ? scopeName : "all projects"}`} onClick={scopeMenu.toggle}>
+            <FolderIcon size={14} />
+            <span>{scopeToWs ? scopeName : "All projects"}</span>
+            <ChevronDownIcon size={13} />
           </button>
-          {KINDS.map((k) => (
-            <button
-              key={k}
-              className={`gx-kind-chip${kind === k ? " active" : ""}`}
-              style={{ ["--k" as never]: colorFor(k) }}
-              onClick={() => setKind(kind === k ? null : k)}
-            >
-              <span className="gx-kind-dot" /> {k}
-            </button>
-          ))}
+        ) : undefined
+      }
+      tabs={[
+        { id: "list", label: "Knowledge", title: "What your agents wrote down, newest first" },
+        { id: "graph", label: "Map", title: "Everything and how it connects" },
+        { id: "recall", label: "Recall", title: "What grounding put in front of your agents" },
+        { id: "insights", label: "Insights", title: "Reads, writes and coverage over time" },
+      ]}
+      tab={view}
+      onTab={(v) => { setRecallFact(null); setView(v); }}
+      onClose={onClose}
+      onShowSidebar={onShowSidebar}
+      className="v2-graph"
+    >
+      {view === "insights" ? (
+        <div className="v2-page-scroll">
+          <InsightsPanel inline onClose={onClose} />
         </div>
-
-        {view === "recall" ? (
-          <div className="gx-body gx-body-recall">
-            <GraphRecallView workspaceId={scopeId} fact={recallFact} onClearFact={() => setRecallFact(null)} />
+      ) : view === "recall" ? (
+        <div className="v2-page-scroll">
+          <GraphRecallView workspaceId={scopeId} fact={recallFact} onClearFact={() => setRecallFact(null)} />
+        </div>
+      ) : view === "graph" ? (
+        <div className="v2-split lead">
+          <div className="v2-split-list" style={{ borderRight: 0 }}>
+            {tools}
+            <div className="gx-canvas-host">
+              {offline ? (
+                offlineMessage
+              ) : !graph ? (
+                <PageEmpty>Laying out the graph…</PageEmpty>
+              ) : graph.nodes.length === 0 ? (
+                <PageEmpty>Nothing recorded yet. Agents write here as they work.</PageEmpty>
+              ) : (
+                <Suspense fallback={<PageEmpty>Drawing the map…</PageEmpty>}>
+                  <GraphCanvas
+                    nodes={graph.nodes}
+                    edges={graph.edges}
+                    selectedId={selectedId}
+                    onSelect={openNode}
+                    onDeselect={closeNode}
+                    colorFor={colorFor}
+                    activeKind={kind}
+                    query={query}
+                  />
+                </Suspense>
+              )}
+            </div>
           </div>
-        ) : (
-        <div className={`gx-body${view === "graph" ? " graph" : ""}`}>
-          {view === "graph" ? (
-            offline ? (
-              <div className="gx-canvas-wrap">{offlineMessage}</div>
-            ) : !graph ? (
-              <div className="gx-canvas-wrap"><div className="gx-empty">Laying out the graph…</div></div>
-            ) : graph.nodes.length === 0 ? (
-              <div className="gx-canvas-wrap"><div className="gx-empty">Nothing recorded yet.<br />Agents write here as they work.</div></div>
-            ) : (
-              <Suspense fallback={<div className="gx-canvas-wrap"><div className="gx-empty">Warming up the 3D engine…</div></div>}>
-                <GraphCanvas
-                  nodes={graph.nodes}
-                  edges={graph.edges}
-                  selectedId={selectedId}
-                  onSelect={openNode}
-                  onDeselect={closeNode}
-                  colorFor={colorFor}
-                  activeKind={kind}
-                  query={query}
-                />
-              </Suspense>
-            )
-          ) : (
-          <div className="gx-catalog" aria-busy={loading}>
+          {detail}
+        </div>
+      ) : (
+        <div className="v2-split">
+          <aside className="v2-split-list" aria-label="Knowledge" aria-busy={loading}>
+            {tools}
             {offline ? (
               offlineMessage
             ) : loading && nodes.length === 0 ? (
-              <div className="gx-empty">Loading…</div>
+              <PageEmpty>Loading…</PageEmpty>
             ) : nodes.length === 0 ? (
-              <div className="gx-empty">
-                {query ? <>No matches for “{query}”.</> : <>Nothing recorded yet.<br />Agents write here as they work.</>}
-              </div>
+              <PageEmpty>{query ? <>Nothing matches “{query}”.</> : <>Nothing recorded yet. Agents write here as they work.</>}</PageEmpty>
             ) : (
-              <>
-                <div className="gx-catalog-label">{query.trim() ? "Search results" : "Recently updated"} · {nodes.length}{nodes.length === 250 ? "+" : ""}</div>
+              <ul className="v2-list">
+                <li className="v2-list-label">
+                  {query.trim() ? "Matches" : "Recently updated"} · {nodes.length}{nodes.length === 250 ? "+" : ""}
+                </li>
                 {nodes.map((n) => (
-                  <button
-                    key={n.id}
-                    className={`gx-row${selectedId === n.id ? " active" : ""}`}
-                    onClick={() => openNode(n.id)}
-                    aria-pressed={selectedId === n.id}
-                  >
-                    <span className="gx-row-rail" style={{ background: colorFor(n.kind) }} />
-                    <span className="gx-row-main">
-                      <span className="gx-row-label">{n.label}</span>
-                      <span className="gx-row-meta">
-                        {n.kind} · {n.created_by_agent ? `${n.created_by_agent} · ` : ""}{relTime(n.updated_at)}
+                  <li key={n.id}>
+                    <button type="button" className="v2-list-row" aria-current={selectedId === n.id || undefined} onClick={() => openNode(n.id)}>
+                      <span className="v2-kind-dot" style={{ "--kind": colorFor(n.kind) } as CSSProperties} />
+                      <span>
+                        <span className="v2-list-title">{n.label}</span>
+                        <span className="v2-list-meta">
+                          {n.kind}{n.created_by_agent ? ` · ${n.created_by_agent}` : ""} · {relTime(n.updated_at)}
+                        </span>
                       </span>
-                    </span>
-                  </button>
+                      <span />
+                    </button>
+                  </li>
                 ))}
-              </>
+              </ul>
             )}
-          </div>
-          )}
-
-          <div className="gx-detail">
-            {!selected ? (
-              <div className="gx-detail-placeholder">
-                <div className="gx-detail-placeholder-mark"><DiamondIcon size={20} /></div>
-                {view === "graph" ? "Click a node to read it and walk its connections." : "Select a node to read it and walk its connections."}
-              </div>
-            ) : (
-              <NodeDetail node={selected} neighbors={neighbors} neighborStatus={neighborStatus} onOpen={openNode} workspaceId={scopeId}
-                onRecall={() => { setRecallFact({ id: selected.id, label: selected.label }); setView("recall"); }} />
-            )}
-          </div>
+          </aside>
+          {detail}
         </div>
-        )}
-      </div>
-    </div>
+      )}
+      {scopeMenu.anchor && <Menu anchor={scopeMenu.anchor} entries={scopeEntries} onClose={scopeMenu.close} label="Scope" />}
+      {kindMenu.anchor && <Menu anchor={kindMenu.anchor} entries={kindEntries} onClose={kindMenu.close} label="Kind" />}
+    </Page>
   );
 }
 
@@ -298,76 +328,55 @@ function NodeDetail({ node, neighbors, neighborStatus, onOpen, workspaceId, onRe
   }, [neighbors]);
 
   return (
-    <div className="gx-record">
-      <div className="gx-record-head">
-        <span className="gx-record-kind" style={{ color: colorFor(node.kind), borderColor: colorFor(node.kind) }}>
-          {node.kind}
-        </span>
-        <h2 className="gx-record-label">{node.label}</h2>
+    <div className="v2-detail">
+      <div className="v2-detail-kicker">
+        <span className="v2-kind-dot" style={{ "--kind": colorFor(node.kind) } as CSSProperties} />
+        {node.kind}
+        {node.outcome && <span className="v2-faint">· {node.outcome}</span>}
       </div>
+      <h2>{node.label}</h2>
+      <p className="v2-detail-sub">
+        {node.created_by_agent || "An agent"} · {new Date(node.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+        {node.shipped_in && <> · shipped in {node.shipped_in}</>}
+      </p>
+      {node.body && <p className="v2-detail-body">{node.body}</p>}
 
-      <dl className="gx-meta-grid">
-        <div className="gx-meta-cell">
-          <dt>Author</dt>
-          <dd>{node.created_by_agent || "—"}</dd>
-        </div>
-        <div className="gx-meta-cell">
-          <dt>Recorded</dt>
-          <dd>{new Date(node.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}</dd>
-        </div>
-        {node.workspace_id && (
-          <div className="gx-meta-cell">
-            <dt>Workspace</dt>
-            <dd className="gx-mono">{node.workspace_id.slice(0, 8)}</dd>
-          </div>
+      <section className="v2-detail-section">
+        <h3>
+          Connections {neighbors.length > 0 && <span className="v2-faint">{neighbors.length}</span>}
+        </h3>
+        {neighborStatus === "loading" ? (
+          <p className="v2-note" role="status">Loading…</p>
+        ) : neighborStatus === "error" ? (
+          <p className="v2-note">Connections are unavailable; the graph engine may be offline.</p>
+        ) : neighbors.length === 0 ? (
+          <p className="v2-note">Nothing links to this yet.</p>
+        ) : (
+          groups.map(([key, list]) => {
+            const [dir, edge] = key.split(":");
+            return (
+              <div key={key} className="gx-group">
+                <div className="v2-list-label" style={{ paddingLeft: 0 }}>{edgeLabel(edge, dir)}</div>
+                {list.map((nb) => (
+                  <button
+                    key={nb.node.id + key}
+                    type="button"
+                    className="v2-list-row"
+                    onClick={() => onOpen(nb.node.id)}
+                    title={nb.node.body ?? nb.node.label}
+                  >
+                    <span className="v2-kind-dot" style={{ "--kind": colorFor(nb.node.kind) } as CSSProperties} />
+                    <span className="v2-list-title">{nb.node.label}</span>
+                    <span />
+                  </button>
+                ))}
+              </div>
+            );
+          })
         )}
-      </dl>
-
-      {node.body && (
-        <div className="gx-record-section">
-          <div className="gx-section-label">Detail</div>
-          <div className="gx-record-body">{node.body}</div>
-        </div>
-      )}
+      </section>
 
       <NodeRecallEvidence nodeId={node.id} workspaceId={workspaceId} onRecall={onRecall} />
-
-      <div className="gx-record-section">
-        <div className="gx-section-label">
-          Connections{neighbors.length > 0 && <span className="gx-section-count">{neighbors.length}</span>}
-        </div>
-        {neighborStatus === "loading" ? <div className="gx-none" role="status">Loading connections…</div>
-        : neighborStatus === "error" ? <div className="gx-none">Connections unavailable. The graph engine may be offline.</div>
-        : neighbors.length === 0 ? (
-          <div className="gx-none">No edges recorded for this node.</div>
-        ) : (
-          <div className="gx-edges">
-            {groups.map(([key, list]) => {
-              const [dir, edge] = key.split(":");
-              return (
-                <div className="gx-edge-row" key={key}>
-                  <span className={`gx-edge-tag ${dir === "out" ? "out" : "in"}`}>
-                    {dir === "out" ? "→" : "←"} {edge}
-                  </span>
-                  <div className="gx-edge-nodes">
-                    {list.map((nb) => (
-                      <button
-                        key={nb.node.id + key}
-                        className="gx-neighbor"
-                        onClick={() => onOpen(nb.node.id)}
-                        title={nb.node.body ?? nb.node.label}
-                      >
-                        <span className="gx-neighbor-dot" style={{ background: colorFor(nb.node.kind) }} />
-                        <span className="gx-neighbor-label">{nb.node.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -389,50 +398,18 @@ function NodeRecallEvidence({ nodeId, workspaceId, onRecall }: { nodeId: string;
   const matches = report?.passes.filter((pass) => Date.parse(pass.ts) >= since && pass.facts.some((fact) => fact.id === nodeId)) ?? [];
   const latest = matches[0];
   return (
-    <div className="gx-record-section gx-recall-evidence">
-      <div className="gx-section-label">Recall evidence · last 30 days</div>
-      <div className="gx-none">
-        {error ? "Recall evidence unavailable. The graph engine may be offline."
-          : !report ? "Checking the recent recall log…"
-          : latest ? <>Surfaced to {latest.agent_id || "an unnamed agent"} · {relTime(latest.ts)}. Found in {matches.length} of the recent recorded recalls.</>
-          : "No matching entry in the recent recall log. Older recalls may be outside this limited log."}
-      </div>
-      <button className="gx-recall-link" onClick={onRecall}>View recall evidence for this record →</button>
-    </div>
-  );
-}
-
-function SearchIcon() {
-  return (
-    <svg className="gx-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="11" cy="11" r="7" />
-      <path d="m21 21-4.3-4.3" />
-    </svg>
-  );
-}
-
-function ListIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
-    </svg>
-  );
-}
-
-function RecallIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /><path d="M12 8v4l3 2" />
-    </svg>
-  );
-}
-
-function MapIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="9" r="2.5" /><circle cx="9" cy="18" r="2.5" />
-      <path d="M8 7.3 15.6 8.4M8.2 16 16.2 10.6" />
-    </svg>
+    <section className="v2-detail-section">
+      <h3>Recall <span className="v2-faint">· last 30 days</span></h3>
+      <p className="v2-note" style={{ marginTop: 0 }}>
+        {error ? "Recall is unavailable; the graph engine may be offline."
+          : !report ? "Checking…"
+          : latest ? <>Shown to {latest.agent_id || "an agent"} {relTime(latest.ts)}, in {matches.length} of the recent grounding passes.</>
+          : "Not shown to an agent in the recent passes."}
+      </p>
+      <p className="v2-note">
+        <button type="button" className="v2-link" onClick={onRecall}>See every time it was recalled</button>
+      </p>
+    </section>
   );
 }
 

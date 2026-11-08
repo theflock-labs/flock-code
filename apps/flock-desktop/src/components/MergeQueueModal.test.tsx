@@ -20,8 +20,7 @@ describe("merge queue action context", () => {
     const onApprove = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
     const onMerge = vi.fn(async () => {});
     await act(async () => { render(<MergeQueueView resolveRepoPaths={async () => ({})} ghUser="remi" onApprove={onApprove} onMergeNow={onMerge} onRemove={async () => {}} onReorder={async () => {}} onOpenPr={vi.fn()} />); });
-    expect(screen.getByText("@remi")).toBeTruthy();
-    expect(screen.getByText(/Queued PRs merge automatically in order/)).toBeTruthy();
+    expect(screen.getByText(/Merges in order/).textContent).toContain("@remi");
     fireEvent.click(screen.getByRole("button", { name: "Approve on GitHub" }));
     const busy = screen.getByRole("button", { name: "Approving on GitHub…" }) as HTMLButtonElement;
     expect(busy.disabled).toBe(true);

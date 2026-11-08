@@ -6,9 +6,13 @@ interface Props {
   avatarUrl: string | null;
   onSignOut: () => void;
   onClose: () => void;
+  onShowSidebar?: () => void;
+  /** Settings → Account, from the page's foot. */
+  onAccount?: () => void;
 }
 
-export default function MyInfoModal({ profileId, handle, avatarUrl, onSignOut, onClose }: Props) {
+/** "You": your stats, usage and achievements, as a page of the main panel. */
+export default function MyInfoModal({ profileId, handle, avatarUrl, onSignOut, onClose, onShowSidebar, onAccount }: Props) {
   return (
     <StatsModal
       profileId={profileId}
@@ -20,7 +24,15 @@ export default function MyInfoModal({ profileId, handle, avatarUrl, onSignOut, o
       errorText="Your stats aren't available right now."
       showGraph
       onClose={onClose}
+      title="You"
+      onShowSidebar={onShowSidebar}
       footer={
+        <div className="v2-detail-actions">
+        {onAccount && (
+          <button type="button" className="v2-btn" onClick={onAccount}>
+            Account and privacy
+          </button>
+        )}
         <button type="button" className="stats-signout" onClick={onSignOut}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -29,6 +41,7 @@ export default function MyInfoModal({ profileId, handle, avatarUrl, onSignOut, o
           </svg>
           Sign out
         </button>
+        </div>
       }
     />
   );

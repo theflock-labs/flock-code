@@ -1,0 +1,528 @@
+/* Stats, usage chart and achievements (StatsModal, UsageChart, AchievementWall),
+   as v1 shipped them; v2's page overrides are at the end of v2.css. */
+
+/* ─── Friend stats ─────────────────────────────────────────────────────────
+   A friend row is clickable to open their usage stats; the action buttons on
+   the right stopPropagation so they still work independently. */
+.friend-row.openable { cursor: pointer; }
+.friend-row.openable:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--action) 40%, transparent);
+  outline-offset: -1px;
+  border-radius: var(--radius-row);
+}
+
+.stats-modal { width: 468px; max-width: 94vw; max-height: calc(100vh - 72px); display: flex; flex-direction: column; }
+
+/* Tightened once the boxes came out. Padding that was holding cards apart is
+   now holding text apart, and text needs less of it: the frames were carrying
+   13px of their own inner padding on top of the 16px between them. */
+.stats-hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 20px 13px;
+  border-bottom: 1px solid var(--rule-faint);
+}
+.stats-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.stats-avatar-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--action) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--action) 20%, transparent);
+  color: var(--action);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xl);
+  font-weight: var(--weight-strong);
+}
+.stats-identity { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+/* A handle is an identifier, so it reads in mono — same voice as the avatar
+   placeholder beside it. */
+.stats-handle {
+  font-family: var(--font-mono);
+  font-weight: var(--weight-strong);
+  letter-spacing: var(--tracking-tight);
+  font-size: var(--fs-xl);
+  color: var(--text-hi);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stats-at { color: var(--text-ghost); }
+.stats-presence {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--text-mid);
+  min-width: 0;
+}
+.stats-presence-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-ghost);
+  flex-shrink: 0;
+}
+.stats-presence.online .stats-presence-dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+/* Member-since folded into the identity line as a dimmed tail, so it earns no
+   extra row at the bottom of the card. */
+.stats-since-inline {
+  color: var(--text-ghost);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stats-since-inline::before { content: "·"; margin: 0 5px; color: var(--text-ghost); }
+
+.stats-body {
+  padding: 14px 20px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  /* Cap to the modal and scroll, so a tall stack (achievements + graph) never
+     pushes the footer/sign-out past the screen edge. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* Each section keeps its intrinsic height — the body scrolls instead of flex
+   shrinking a card (the usage band's overflow:hidden otherwise lets it collapse
+   and clip its numbers). */
+.stats-body > * { flex-shrink: 0; }
+
+/* Headline usage — the two numbers the card exists to show. One shared card,
+   split down the middle, full-ink numerals: the visual anchor everything else
+   defers to. */
+/* THE STATS DIALOG HAD FOUR NESTED LEVELS OF BOX.
+ *
+ * The modal is a box; inside it a tinted bordered band held two figures split
+ * by a vertical rule; below that a bordered card held the chart; below that
+ * three more bordered cards held three more figures; and the footer was a
+ * fourth bordered box holding one word. Seven visible rectangles to present
+ * nine numbers, in three different grouping idioms (one box split by a rule,
+ * one box on its own, three boxes side by side) for content of the same kind.
+ *
+ * All of it is now figures on the dialog's own ground, grouped by space and
+ * separated, where a separation is real, by a single hairline. A number set
+ * large in mono is already a strong shape; putting a frame around it does not
+ * make it more legible, it makes it one of several frames competing to be
+ * looked at first.
+ *
+ * The headline pair keeps a rule between its two halves because they are two
+ * different measures of the same thing (tokens and what they cost) and the
+ * rule is what says "these two, not those three below". */
+.stats-usage-band {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: none;
+  border-radius: 0;
+  background: none;
+  overflow: hidden;
+}
+.stats-usage-cell + .stats-usage-cell {
+  border-left: 1px solid var(--rule-faint);
+}
+.stats-usage-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 16px 6px 0;
+}
+.stats-usage-cell + .stats-usage-cell { padding-left: 20px; padding-right: 0; }
+.stats-usage-cell + .stats-usage-cell {
+  border-left: 1px solid color-mix(in srgb, var(--action) 16%, transparent);
+}
+/* No tabular-nums on the standalone display figures. Equal-width digits are
+   for numbers that align vertically down a column (axis ticks, table rows); on
+   a 25px hero they only add gaps inside the number. The axis ticks keep it. */
+.stats-usage-number {
+  font-family: var(--font-mono);
+  font-size: var(--fs-3xl);
+  font-weight: var(--weight-strong);
+  line-height: 1;
+  color: var(--text-hi);
+}
+.stats-usage-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--text-hi);
+  margin-top: 5px;
+}
+.stats-usage-sub { font-size: var(--fs-xs); color: var(--text-ghost); }
+
+/* Secondary counts — compact cells grouped under a quiet label. Numerals a
+   tier down from the headline's so they read as supporting detail. */
+.stats-group { display: flex; flex-direction: column; gap: 8px; }
+.stats-group-head {
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  letter-spacing: var(--tracking-normal);
+  text-transform: none;
+  color: var(--text-ghost);
+}
+.stats-cells { display: grid; gap: 8px; }
+.stats-cells-3 { grid-template-columns: repeat(3, 1fr); }
+.stats-cells-4 { grid-template-columns: repeat(4, 1fr); }
+/* Left-aligned, not centred. Centring three figures in three boxes was the
+   boxes' logic, not the numbers': read as a row they should share a baseline
+   grid and a left edge with the section head above them, which is how a table
+   of figures is read. */
+.stats-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 2px 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+.stats-cell-number {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xl);
+  font-weight: var(--weight-strong);
+  line-height: 1;
+  color: var(--text-hi);
+}
+.stats-cells-4 .stats-cell-number { font-size: var(--fs-xl); }
+.stats-cell-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-mid);
+}
+.stats-empty {
+  padding: 18px 4px;
+  text-align: center;
+  font-size: var(--fs-base);
+  color: var(--text-mid);
+}
+
+/* ─── Usage-over-time chart (shadcn-style, flock-skinned) ───────────────── */
+/* The chart loses its card too. A plotted line on the dialog's ground is
+   already a distinct object; the frame around it was only there because
+   everything else had one. The hairline above it is the group separator that
+   replaces all of them. */
+.usage-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: none;
+  border-top: 1px solid var(--rule-faint);
+  border-radius: 0;
+  padding: 16px 0 4px;
+  background: none;
+}
+.usage-chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.usage-chart-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.usage-chart-total {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  font-weight: var(--weight-strong);
+  line-height: 1;
+  color: var(--text-hi);
+}
+.usage-chart-total-sub { color: var(--text-ghost); font-size: var(--fs-sm); font-weight: var(--weight-normal); }
+
+/* THE APP HAS ONE SEGMENTED CONTROL, AND THIS IS IT.
+ *
+ * There were two. The sidebar's Home/Friends pair is a hairline track with the
+ * chosen segment raised on --elev; this one was a filled track with the chosen
+ * segment painted solid --action-fill and the label knocked out in the window
+ * colour. Two answers to "which of these two am I on", and the solid-fill one
+ * shouts: a white block with dark text inside a dialog of soft greys is the
+ * highest-contrast object on the screen, spent on a chart's units toggle.
+ *
+ * Now identical to .sidebar-tabs / .sidebar-tab. If that pair changes, change
+ * both; the whole point is that there is one shape for this idea. */
+.usage-chart-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--radius-control);
+  background: transparent;
+  border: none;
+  box-shadow: inset 0 0 0 1px var(--rule-faint);
+}
+.usage-chart-seg {
+  padding: 3px 11px;
+  border: none;
+  border-radius: calc(var(--radius-control) - 2px);
+  background: none;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  font-weight: var(--weight-normal);
+  letter-spacing: var(--tracking-normal);
+  color: var(--text-low);
+  transition: color 0.12s ease-out, background 0.12s ease-out;
+}
+.usage-chart-seg:hover { color: var(--text-mid); }
+.usage-chart-seg.active {
+  color: var(--text-hi);
+  background: var(--elev);
+  box-shadow: var(--lift-1);
+  font-weight: var(--weight-medium);
+}
+
+/* Mean and peak, as a sentence rather than as two more stat tiles. Text tokens
+   only: the numbers are emphasised by weight, never by the series colour, so
+   nothing here competes with the marks for "this is the accent". */
+.usage-chart-context {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: -4px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  color: var(--text-ghost);
+}
+.usage-chart-context b {
+  font-family: var(--font-mono);
+  font-weight: var(--weight-strong);
+  color: var(--text-mid);
+}
+.usage-chart-context-sep {
+  width: 1px;
+  height: 10px;
+  background: var(--rule-faint);
+}
+
+/* 132px of plot plus the x-axis band inside the same box, so the axis labels
+   are never the thing that gets clipped or forces a nested scrollbar. */
+.usage-chart-canvas { width: 100%; height: 148px; }
+.usage-chart-empty {
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 20px;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-ghost);
+}
+
+/* Recharts axis text inherits the app's mono via the tick fontFamily; this
+   just kills the focus outline Recharts leaves on the SVG surface. */
+.usage-chart .recharts-surface:focus { outline: none; }
+
+/* Dark mono tooltip — matches the app's card chrome rather than Recharts'
+   default white box. */
+.usage-chart-tip {
+  background: var(--bg-card, #0e131b);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-row);
+  padding: 7px 10px;
+  box-shadow: var(--lift-1);
+}
+.usage-chart-tip-day {
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--tracking-normal);
+  text-transform: none;
+  color: var(--text-ghost);
+  margin-bottom: 3px;
+}
+.usage-chart-tip-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  font-weight: var(--weight-strong);
+  color: var(--text-hi);
+  font-variant-numeric: tabular-nums;
+}
+.usage-chart-tip-unit { color: var(--text-low); font-size: var(--fs-xs); font-weight: var(--weight-normal); margin-left: 5px; }
+
+.info-clickable { cursor: pointer; }
+/* A quiet row, not a full-width outlined button. Sign out is the one
+   destructive-ish action in this dialog and it is also the one nobody came
+   here to do; an outlined box across the footer gives it the weight of a
+   primary action. It gets its ground on hover, like every other text button
+   in the app now. */
+.stats-signout {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  margin-top: 2px;
+  padding: 8px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  color: var(--text-low);
+  transition: color 0.12s ease-out, background 0.12s ease-out;
+}
+/* Orange on hover was already right and is kept: this is the one action here
+   that ends the session. It moves from the border (which the button no longer
+   has) into a tinted ground, so the signal survives the frame's removal. */
+.stats-signout:hover {
+  color: var(--orange);
+  background: color-mix(in srgb, var(--orange) 11%, transparent);
+}
+
+.profile-footer .avatar-img {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+.profile-footer .avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--action) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--action) 20%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: var(--weight-medium);
+  color: var(--action);
+  flex-shrink: 0;
+}
+
+/* Presence status light on the profile avatar: green = live on the presence
+   channel, orange = connecting/retrying, red = failed to connect (e.g. the
+   presence service rejected our token). The red state is the one that used to
+   be invisible — a bad token just looked like every friend being offline. */
+.profile-footer .avatar-wrap {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+}
+.presence-light {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-window);
+  box-sizing: content-box;
+}
+.presence-light.connected {
+  background: var(--ok);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--ok) 70%, transparent);
+}
+.presence-light.connecting {
+  background: var(--orange);
+  animation: presence-pulse 1.2s ease-in-out infinite;
+}
+/* --bad, not a literal: the sibling rules above already track the theme, and a
+   fixed iOS red reads as neon against Graphite's neutral ground. */
+.presence-light.failed {
+  background: var(--bad);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--bad) 65%, transparent);
+}
+@keyframes presence-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
+}
+
+.profile-footer .info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.profile-footer .display-name {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  font-weight: var(--weight-strong);
+  color: var(--text-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "connected" under the handle. The JSX writes it lowercase and this rule was
+   shouting it: 9px mono at 1.5px tracking, in caps, in the quietest corner of
+   the app, for a status that is true almost always. */
+.profile-footer .tier {
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--tracking-normal);
+  text-transform: none;
+  color: var(--text-low);
+}
+
+
+/* ── Achievements wall (StatsModal) ─────────────────────────────────────── */
+.ach-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.ach-count {
+  font-family: var(--font-mono, "SF Mono", ui-monospace, Menlo, monospace);
+  font-size: var(--fs-sm); color: var(--text-low); letter-spacing: var(--tracking-wide);
+  font-variant-numeric: tabular-nums; text-transform: none;
+}
+/* Compact seal row — one line collapsed, wraps to a full grid when expanded.
+   Details live in the caption strip, not the tiles. */
+.ach-grid {
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 4px; margin-top: 10px;
+}
+.ach-grid.expanded { flex-wrap: wrap; }
+.ach-seal { padding: 1px; }
+/* "+N" / "Less" toggle — a seal-sized pill that ends the row. */
+.ach-more {
+  flex: none; appearance: none; cursor: pointer;
+  min-width: 34px; height: 34px; padding: 0 8px; margin-left: 2px;
+  border-radius: var(--radius-surface); border: 1px dashed var(--border-hover); background: var(--bg-hover);
+  color: var(--text-mid); font-family: var(--font-mono, "SF Mono", ui-monospace, Menlo, monospace);
+  font-size: var(--fs-sm); font-weight: var(--weight-strong); letter-spacing: var(--tracking-wide);
+  transition: color .18s, border-color .18s, background .18s;
+}
+.ach-more:hover, .ach-more:focus-visible { color: var(--text-hi); border-color: var(--text-mid); background: color-mix(in srgb, var(--text-mid) 12%, transparent); }
+.ach-more:focus-visible { outline: 2px solid var(--text-mid); outline-offset: 2px; }
+.ach-seal {
+  --h: var(--yellow); --locked: var(--text-ghost); --locked-field: var(--bg-chrome);
+  appearance: none; border: 0; background: none; padding: 2px; margin: 0;
+  line-height: 0; cursor: pointer; border-radius: var(--radius-surface);
+  transition: transform .18s cubic-bezier(.2,.8,.2,1), filter .18s;
+}
+.ach-seal.locked { filter: saturate(.85) opacity(.9); }
+.ach-seal:hover, .ach-seal:focus-visible { transform: translateY(-2px) scale(1.06); }
+.ach-seal:focus-visible { outline: 2px solid var(--h); outline-offset: 2px; }
+.ach-seal .ach-medal { display: block; }
+/* Hover/focus caption — one reserved strip, so no tooltip can clip or shift. */
+.ach-detail {
+  display: flex; flex-wrap: wrap; align-items: baseline; align-content: flex-start; gap: 3px 10px;
+  /* Fixed height (fits name+status line + a description line) so hovering
+     between seals never changes the strip's size — which would re-center the
+     modal and make the whole thing jump. */
+  height: 40px; box-sizing: content-box; overflow: hidden;
+  margin-top: 10px; padding-top: 9px;
+  border-top: 1px solid var(--rule-faint);
+}
+.ach-detail-name { font-size: var(--fs-base); font-weight: var(--weight-strong); color: var(--text-hi); letter-spacing: var(--tracking-tight); }
+.ach-detail-status {
+  font-family: var(--font-mono, "SF Mono", ui-monospace, Menlo, monospace);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--tracking-normal);
+  text-transform: none;
+  color: var(--text-mid); font-variant-numeric: tabular-nums;
+}
+.ach-detail-desc { flex-basis: 100%; font-size: var(--fs-sm); line-height: 1.35; color: var(--text-low); }
+.ach-detail-hint { font-size: var(--fs-sm); color: var(--text-ghost); font-style: normal; }
+@media (prefers-reduced-motion: reduce) {
+  .ach-seal, .ach-seal:hover, .ach-seal:focus-visible { transition: none; transform: none; }
+}

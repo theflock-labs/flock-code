@@ -5,6 +5,8 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import PoppedPaneWindow from "./components/PoppedPaneWindow";
 import "@xterm/xterm/css/xterm.css";
 import "./styles/global.css";
+// v2 shell and palette, after global.css so its tokens win.
+import "./styles/v2.css";
 import { initTheme } from "./lib/theme";
 import { debugLog } from "./lib/tauri";
 import { applyPaneFontSize, applyUiScale, getStoredPaneFontSize, getStoredUiScale } from "./lib/uiScale";

@@ -100,13 +100,17 @@ pub fn write_into_build_context(ctx: &Path) -> io::Result<()> {
 
 /// Map a flock app theme id (as persisted by the frontend: `dark`,
 /// `light`, `high-contrast`) to the Claude Code theme preference string that
-/// selects the matching bundled theme. Unknown ids fall back to Nightfall.
+/// selects the matching bundled theme.
+///
+/// v2's dark ground is a neutral near-black (`#16181d`), which is what the
+/// Graphite theme was drawn for; Nightfall's navy-tuned overrides would sit
+/// on it as a second palette. Nightfall stays installed for anyone who picked
+/// it by hand through `/theme`.
 pub fn theme_pref_for(app_theme: &str) -> &'static str {
     match app_theme {
         "light" => "custom:flock-daybreak",
-        "graphite" => "custom:flock-graphite",
         "high-contrast" => "custom:flock-high-contrast",
-        _ => "custom:flock-nightfall",
+        _ => "custom:flock-graphite",
     }
 }
 

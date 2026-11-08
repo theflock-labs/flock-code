@@ -1,9 +1,40 @@
-import type { BorrowedRef } from "./lib/borrowedPanes";
-
 // Types shared with the Rust backend. Must stay in sync with
 // src-tauri/src/events.rs.
 
 import type { Budget } from "./lib/budgets";
+
+export type FriendPresence = "online" | "offline";
+export type FriendStatus = "pending_out" | "pending_in" | "accepted";
+
+/** A flock ID friendship, with live presence laid over it (Ably, wired in App). */
+export interface CopilotInfo {
+  sessionId: string;
+  partnerLogin: string;
+  partnerWid: string;
+  partnerAvatar?: string;
+  /** "pending" from the moment you invite until the partner joins; "connected"
+   *  once they've accepted. The guest side is "connected" from the start — they
+   *  create the workspace by accepting the invite. */
+  status: "pending" | "connected";
+}
+
+export interface ObserveInfo {
+  sessionId: string;
+  ownerLogin: string;
+  ownerWid: string;
+  ownerAvatar?: string;
+}
+
+export interface Friend {
+  id: string;
+  handle: string;
+  avatarUrl: string;
+  friendStatus: FriendStatus;
+  presence: FriendPresence;
+  agentCount: number;
+  lastSeen: number | null;
+  windowId?: string; // Ably window_id — unique per running app instance
+}
 
 export interface WorkspaceInfo {
   id: string;
@@ -20,6 +51,8 @@ export interface PaneInfo {
   status: AgentStatusStr;
   rows: number;
   cols: number;
+  /** Whether the agent has taken the terminal over (src-tauri/src/boot.rs). */
+  started?: boolean;
 }
 
 export type AgentStatusStr =
@@ -41,20 +74,6 @@ export interface AgentStatusPayload {
 }
 
 export type AgentKind = "opencode" | "codex" | "claude" | "pi" | "grok";
-
-export type FriendPresence = "online" | "offline";
-export type FriendStatus = "pending_out" | "pending_in" | "accepted";
-
-export interface Friend {
-  id: string;
-  handle: string;
-  avatarUrl: string;
-  friendStatus: FriendStatus;
-  presence: FriendPresence;
-  agentCount: number;
-  lastSeen: number | null;
-  windowId?: string; // Ably window_id — unique per running app instance
-}
 
 export type WindowLayout = "single" | "split" | "quad" | "six" | "eight" | "twelve";
 
@@ -129,12 +148,6 @@ export interface WorkspaceTab {
    * base commit, and contenders. Its presence is what turns the header's Race
    * button into Compare. */
   race?: RaceState;
-  /** Panes laid out in this tab that belong to ANOTHER workspace. The tab
-   * displays them; it never owns them. Recorded separately from `layoutTree`
-   * because the tree holds bare pane ids and so cannot say who owns one, and
-   * because on restore this list is what tells us which other workspace has to
-   * come up before these leaves can resolve. See lib/borrowedPanes.ts. */
-  borrowed?: BorrowedRef[];
 }
 
 // Front-end-only workspace state with extra display data.
@@ -161,8 +174,6 @@ export interface Workspace extends WorkspaceInfo {
    * or credentials — making the full-permission launch flags safe. Set at
    * creation time in NewWorkspaceDialog; applies to later spawns/splits. */
   secure?: boolean;
-  copilot?: CopilotInfo; // when set, this is a co-pilot workspace
-  observe?: ObserveInfo; // when set, this is an observe workspace (single read-only pane)
   /** When true, this workspace was created by the PR-review flow (reviewPr /
    * the auto-review watcher): a dedicated worktree with a PR branch checked
    * out and a review agent inside. PR-review workspaces get the violet
@@ -178,6 +189,10 @@ export interface Workspace extends WorkspaceInfo {
    * living in a machine preference that a restore would not bring back.
    * Absent = no ceiling. Priced from a local table — see `lib/budgets.ts`. */
   budget?: Budget;
+  /** A co-pilot session with a friend: your agents and theirs side by side. */
+  copilot?: CopilotInfo;
+  /** Watching one of a friend's agents: a single read-only pane. */
+  observe?: ObserveInfo;
 }
 
 /** Where a workspace's agents do their work.
@@ -211,24 +226,6 @@ export interface WorkspaceLaunch {
   secure: boolean;
 }
 
-export interface CopilotInfo {
-  sessionId: string;
-  partnerLogin: string;
-  partnerWid: string;
-  partnerAvatar?: string;
-  /** "pending" from the moment you invite until the partner joins; "connected"
-   *  once they've accepted. The guest side is "connected" from the start — they
-   *  create the workspace by accepting the invite. */
-  status: "pending" | "connected";
-}
-
-export interface ObserveInfo {
-  sessionId: string;
-  ownerLogin: string;
-  ownerWid: string;
-  ownerAvatar?: string;
-}
-
 export interface Pane {
   id: string;
   workspaceId: string;
@@ -252,15 +249,9 @@ export interface Pane {
   /** Claude only: the per-pane session id passed via `--session-id`, so the
    * exact conversation can be resumed (`--resume`) after an app restart. */
   sessionId?: string;
-  /** When set, render via RemoteTerminal subscribing to flock:stream:{streamId}. */
-  streamId?: string;
-  /** What this agent is currently working on, sniffed from keystrokes on
-   * every Enter — a plain-language reminder shown in the pane topbar and the
-   * sidebar Agents list. Starts as the raw prompt, then upgrades to a short
-   * LLM-summarized task label derived from the pane's recent prompt history
-   * once `claude -p` returns, so it tracks where the task has moved on to
-   * rather than freezing on the first thing typed. Persisted with the
-   * workspace so it survives restarts. */
+  /** What this agent's thread is about: its first real task, cut to a line
+   * (v2/titles.ts), or one short AI title of it. The thread's name in the
+   * sidebar unless you renamed the thread. Persisted with the workspace. */
   intent?: string;
   /** The recent raw prompts this pane's `intent` was derived from (joined
    * for display), kept alongside the (possibly summarized) `intent` so the
@@ -271,6 +262,10 @@ export interface Pane {
    * you can re-send. Distinct from `intentRaw`, which is a joined display
    * string of just the last few. */
   promptHistory?: string[];
+  /** The model and effort the agent was started with (the composer's
+   * chips), re-applied when the pane is restored. Distinct from `model`,
+   * which is what a later `/model` switched it to. Persisted. */
+  launch?: { model?: string; effort?: string };
   /** The model this pane is running, as last selected via a `/model <name>`
    * command sniffed from the user's keystrokes (e.g. "opus", "sonnet"). Shown
    * as a chip next to the sidebar intent so you can tell at a glance which
@@ -292,6 +287,9 @@ export interface Pane {
   /** What flock is doing for this pane while it is spawning or booting, shown
    * on the card. Absent means "starting the agent". Never persisted. */
   phase?: PanePhase;
+  /** A friend's pane, drawn from their stream (RemoteTerminal) instead of a
+   *  local PTY: flock:stream:{streamId}. */
+  streamId?: string;
 }
 
 /** A step of getting a pane ready, in the order they happen. Each one is work

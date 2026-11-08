@@ -21,6 +21,8 @@ export interface SavedPane {
   promptHistory?: string[];
   model?: string;
   displayName?: string;
+  /** Model and effort the agent was started with; see Pane.launch. */
+  launch?: { model?: string; effort?: string };
 }
 
 export interface WorkspaceStateBlob {
@@ -108,10 +110,12 @@ function paneToSaved(p: Pane): SavedPane {
     promptHistory: p.promptHistory,
     model: p.model,
     displayName: p.displayName,
+    launch: p.launch,
   };
 }
 
-/** Session workspaces are ephemeral; unrestored shells must not overwrite the blob. */
+/** Session workspaces (co-pilot, watching a friend) are ephemeral, and
+ *  unrestored shells must not overwrite the blob. */
 export function shouldPersistWorkspace(
   ws: Pick<WorkspaceStateSource, "id" | "copilot" | "observe">,
   hydratedIds: ReadonlySet<string>,

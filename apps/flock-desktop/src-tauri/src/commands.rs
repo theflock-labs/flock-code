@@ -186,6 +186,7 @@ pub async fn list_panes(state: State<'_, AppState>) -> Result<Vec<PaneInfo>, Str
             status: status.as_str().to_string(),
             rows: entry.rows,
             cols: entry.cols,
+            started: entry.started.load(std::sync::atomic::Ordering::Relaxed),
         });
     }
     Ok(out)
@@ -196,6 +197,22 @@ pub async fn list_panes(state: State<'_, AppState>) -> Result<Vec<PaneInfo>, Str
 /// Only these binaries may be spawned via `spawn_pane`. The frontend hardcodes
 /// these via `agentCommand()`, but the backend enforces the list independently
 /// so an XSS or compromised webview cannot execute arbitrary commands.
+/// A helper process flock runs on its own behalf (`claude -p` for titles)
+/// must not inherit the session that launched flock either; see
+/// `flock_pty::inherited_session_keys`.
+trait WithoutLauncherSession {
+    fn without_launcher_session(&mut self) -> &mut Self;
+}
+
+impl WithoutLauncherSession for tokio::process::Command {
+    fn without_launcher_session(&mut self) -> &mut Self {
+        for key in flock_pty::launcher_session_keys() {
+            self.env_remove(key);
+        }
+        self
+    }
+}
+
 const ALLOWED_SPAWN_CMDS: &[&str] = &["claude", "opencode", "codex", "pi", "grok"];
 
 /// Environment variables that must never be forwarded to a spawned PTY process.
@@ -699,6 +716,8 @@ pub async fn spawn_pane(
     )
     .await;
 
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // Insert before the loop starts. The loop removes this entry on EOF; if
     // it runs first it can drain, emit pty://exit, and remove a key that is
     // not there yet — then this insert lands a dead pane the frontend never
@@ -713,6 +732,7 @@ pub async fn spawn_pane(
         cols,
         output: Arc::clone(&output),
         provenance: recorder.clone(),
+        started: Arc::clone(&started),
     };
     state.panes.write().await.insert(pane_id.clone(), entry);
 
@@ -726,6 +746,7 @@ pub async fn spawn_pane(
         Arc::clone(&status),
         output,
         recorder,
+        started,
     );
 
     drop(launch_guard);
@@ -737,6 +758,7 @@ pub async fn spawn_pane(
         status: "idle".to_string(),
         rows,
         cols,
+        started: false,
     })
 }
 
@@ -814,7 +836,6 @@ pub async fn ack_pane_attention(
     pane_id: String,
 ) -> Result<(), String> {
     use flock_core::AgentStatus;
-    use tauri::Emitter;
 
     let panes = state.panes.read().await;
     let Some(entry) = panes.get(&pane_id) else {
@@ -823,13 +844,7 @@ pub async fn ack_pane_attention(
     let mut s = entry.status.write().await;
     if *s == AgentStatus::AwaitingInput {
         *s = AgentStatus::Idle;
-        let _ = app.emit(
-            &format!("agent://status/{pane_id}"),
-            crate::events::AgentStatusEvent {
-                pane_id: pane_id.clone(),
-                status: AgentStatus::Idle.as_str().to_string(),
-            },
-        );
+        crate::events::emit_status(&app, &pane_id, AgentStatus::Idle.as_str());
     }
     Ok(())
 }
@@ -1779,7 +1794,8 @@ pub async fn summarize_review(text: String) -> Result<Option<String>, String> {
     );
 
     let mut child = match tokio::process::Command::new(&shell)
-        .args(["-lc", "claude -p --model claude-haiku-4-5"])
+        .args(["-lc", "claude -p --model haiku"])
+        .without_launcher_session()
         // Run from HOME, not a repo, so no project CLAUDE.md or MCP servers
         // get dragged in — pure text call, keep it fast.
         .current_dir(if home.is_empty() { ".".into() } else { PathBuf::from(&home) })
@@ -2360,7 +2376,8 @@ pub async fn summarize_intent(text: String) -> Result<Option<String>, String> {
     );
 
     let mut child = tokio::process::Command::new(&shell)
-        .args(["-lc", "claude -p --model claude-haiku-4-5"])
+        .args(["-lc", "claude -p --model haiku"])
+        .without_launcher_session()
         // Run from HOME, not a repo, so we don't drag in a project CLAUDE.md or
         // its MCP servers — this is a pure text call and should stay fast.
         .current_dir(if home.is_empty() { ".".into() } else { PathBuf::from(&home) })

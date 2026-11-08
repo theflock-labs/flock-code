@@ -37,7 +37,6 @@ vi.mock("../lib/tauri", () => ({
   sendInput: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("../lib/terminalLinks", () => ({ registerTerminalLinks: () => ({ dispose() {} }) }));
-vi.mock("../lib/streamPublisher", () => ({ publishBytes: vi.fn(), publishDims: vi.fn(), recordDims: vi.fn() }));
 vi.mock("../lib/restoreHistory", () => ({ getRestoreHistory: () => null }));
 vi.mock("../lib/theme", () => ({
   getEffectiveTheme: () => "dark", getXtermTheme: () => ({}),
@@ -60,7 +59,7 @@ describe("macOS terminal editing shortcuts", () => {
   it.each([["ArrowLeft", "\u001bb"], ["ArrowRight", "\u001bf"]])(
     "keeps Option+%s word movement and broadcasts the same input",
     async (key, expected) => {
-      render(<Terminal paneId="p1" focused visible broadcastGroup={["p1", "p2"]} />);
+      render(<Terminal paneId="p1" focused broadcastGroup={["p1", "p2"]} />);
       await act(async () => { await Promise.resolve(); });
       const event = new KeyboardEvent("keydown", { key, altKey: true, cancelable: true });
       expect(handleKey(event)).toBe(false);
@@ -77,7 +76,7 @@ describe("macOS terminal editing shortcuts", () => {
     { key: "ArrowUp", altKey: true },
     { key: "ArrowLeft" },
   ])("leaves other arrow combinations to xterm: %j", async (options) => {
-    render(<Terminal paneId="p1" focused visible />);
+    render(<Terminal paneId="p1" focused />);
     await act(async () => { await Promise.resolve(); });
     const event = new KeyboardEvent("keydown", { ...options, cancelable: true });
     expect(handleKey(event)).toBe(true);
@@ -87,7 +86,7 @@ describe("macOS terminal editing shortcuts", () => {
 
   it("leaves Alt-arrow untouched on other platforms", async () => {
     vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
-    render(<Terminal paneId="p1" focused visible />);
+    render(<Terminal paneId="p1" focused />);
     await act(async () => { await Promise.resolve(); });
     expect(handleKey(new KeyboardEvent("keydown", { key: "ArrowLeft", altKey: true }))).toBe(true);
     expect(sendInput).not.toHaveBeenCalled();
