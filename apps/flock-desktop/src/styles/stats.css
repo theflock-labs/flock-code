@@ -526,4 +526,3 @@
 @media (prefers-reduced-motion: reduce) {
   .ach-seal, .ach-seal:hover, .ach-seal:focus-visible { transition: none; transform: none; }
 }
-
