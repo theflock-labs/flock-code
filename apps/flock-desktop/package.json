@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "tauri": "tauri",
-    "ui:harness": "vite --config vite.harness.config.ts"
+    "ui:harness": "vite --config vite.harness.config.ts",
+    "demo:dev": "vite --config vite.demo.config.ts",
+    "demo:build": "vite build --config vite.demo.config.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",
