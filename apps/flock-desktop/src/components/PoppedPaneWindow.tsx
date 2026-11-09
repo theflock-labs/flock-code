@@ -18,6 +18,8 @@ interface Props {
   accent: string;
   /** claude only, and only once the pane has one — feeds the context meter. */
   sessionId?: string;
+  /** The agent's working directory, for clickable relative paths. */
+  cwd?: string;
 }
 
 /** Standalone single-agent window opened via "pop out" — a lightweight
@@ -38,7 +40,7 @@ interface Props {
  * emitting an event from inside its own close-requested handler — doing it
  * from there risked contending with Tauri's own close-negotiation state
  * for this same window, which used to hang the whole app. */
-export default function PoppedPaneWindow({ paneId, name, kind, accent, sessionId }: Props) {
+export default function PoppedPaneWindow({ paneId, name, kind, accent, sessionId, cwd }: Props) {
   const returnToWorkspace = () => {
     getCurrentWindow().close().catch(console.error);
   };
@@ -104,7 +106,7 @@ export default function PoppedPaneWindow({ paneId, name, kind, accent, sessionId
         {/* Sole resizePty driver while this window is live: the main window
             shows a "open in its own window" tile for this pane instead of a
             terminal (see poppedOutIds in App / ThreadView). */}
-        <Terminal paneId={paneId} focused={true} />
+        <Terminal paneId={paneId} focused={true} cwd={cwd} />
       </div>
       {voiceHud && <VoiceOverlay {...voiceHud} level={voiceLevel} onDismiss={dismissError} />}
     </div>

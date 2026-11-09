@@ -234,6 +234,7 @@ function ThreadView({
                           paneId={paneId}
                           focused={focused}
                           booting={pane.booting}
+                          cwd={pane.cwd}
                           onIntentCaptured={onIntentCaptured}
                           broadcastGroup={broadcastGroup?.includes(paneId) ? broadcastGroup : null}
                         />

@@ -1,12 +1,15 @@
 // Clickable file paths and URLs in terminal panes. WebLinksAddon matches URLs
 // but rejoins only the terminal's own soft wraps, and matches no paths at all;
-// this provider matches both — absolute macOS paths (and ~/ paths), optionally
-// suffixed with :line or :line:col, plus http(s) URLs — and rejoins the hard
-// wraps an agent performed itself before the PTY ever saw them. It is
-// registered ahead of WebLinksAddon so a wrapped URL links as one whole link
-// rather than as its first row; the addon stays on behind it as a fallback.
+// this provider matches absolute macOS paths (and ~/ paths), paths relative to
+// the agent's working directory (what Claude Code mostly prints: `src/a.ts`),
+// file:// URLs and http(s) URLs, each optionally suffixed with :line or
+// :line:col — and rejoins the hard wraps an agent performed itself before the
+// PTY ever saw them. It is registered ahead of WebLinksAddon so a wrapped URL
+// links as one whole link rather than as its first row; the addon stays on
+// behind it as a fallback.
 
 import type { IDisposable, ILink, Terminal } from "@xterm/xterm";
+import { invoke } from "@tauri-apps/api/core";
 import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { homeDir } from "@tauri-apps/api/path";
 
@@ -37,25 +40,113 @@ export function firstUrl(text: string): string | null {
   return text.match(URL_RE)?.[0] ?? null;
 }
 
-type Match = { text: string; index: number; url: boolean };
+/** file:// URLs, as some tools print them and as OSC 8 hyperlinks carry them. */
+const FILE_URL_RE = /file:\/\/[^\s"'<>`()[\]{}|\\^]*[^\s"'<>`()[\]{}|\\^.,:;!?]/g;
 
-/** Every path and URL in a logical line, URLs first: a path-shaped tail inside
- *  a URL belongs to the URL, not to a link of its own. */
+/** A token that could be a path relative to where the agent runs: `src/a.ts`,
+ *  `./scripts/x`, `../lib/b.rs:12`, `package.json`. Deliberately loose — it
+ *  matches most words — because nothing it matches is linked until the
+ *  resolved path is found on disk (see `relativeCandidate`). The lookbehind
+ *  keeps it from starting inside a longer token or an absolute path. */
+const REL_RE = /(?<![\w.:@%~/\\$-])(?:\.{1,2}\/)*[\w@+-][\w.@+-]*(?:\/[\w.@+-]+)*\/?(?::\d+(?::\d+)?)?/g;
+
+type Kind = "url" | "file-url" | "path" | "relative";
+type Match = { text: string; index: number; kind: Kind };
+
+/** Whether a REL_RE token is worth a stat: it has a directory in it, or ends in
+ *  a file extension. A bare word never is. */
+function relativeCandidate(token: string): boolean {
+  const bare = token.replace(/:\d+(?::\d+)?$/, "");
+  if (bare.length < 3 || /^\d/.test(bare)) return false;
+  return bare.includes("/") || /\.[A-Za-z][A-Za-z0-9]{0,9}$/.test(bare);
+}
+
+/** Every link in a logical line, URLs first: a path-shaped tail inside a URL
+ *  belongs to the URL, not to a link of its own; then absolute paths, then
+ *  relative ones (which still have to be found on disk). */
 function matchLinks(text: string): Match[] {
   const out: Match[] = [];
+  const covered = (start: number, len: number) =>
+    out.some((u) => start < u.index + u.text.length && u.index < start + len);
   for (const m of text.matchAll(URL_RE)) {
-    if (m.index !== undefined) out.push({ text: m[0], index: m.index, url: true });
+    if (m.index !== undefined) out.push({ text: m[0], index: m.index, kind: "url" });
+  }
+  for (const m of text.matchAll(FILE_URL_RE)) {
+    if (m.index !== undefined && !covered(m.index, m[0].length)) out.push({ text: m[0], index: m.index, kind: "file-url" });
   }
   for (const m of text.matchAll(PATH_RE)) {
     // A path at the end of a sentence keeps its final punctuation out of both
     // the underline and the opened target.
     const raw = m[0].replace(/[.,]+$/, "");
     if (raw.length < 2 || m.index === undefined) continue;
-    const start = m.index;
-    const covered = out.some((u) => start < u.index + u.text.length && u.index < start + raw.length);
-    if (!covered) out.push({ text: raw, index: start, url: false });
+    if (!covered(m.index, raw.length)) out.push({ text: raw, index: m.index, kind: "path" });
+  }
+  for (const m of text.matchAll(REL_RE)) {
+    const raw = m[0].replace(/[.,]+$/, "");
+    if (m.index === undefined || !relativeCandidate(raw)) continue;
+    if (!covered(m.index, raw.length)) out.push({ text: raw, index: m.index, kind: "relative" });
   }
   return out;
+}
+
+/** `dir` joined with a relative path, with `.` and `..` resolved. */
+export function resolveRelative(dir: string, rel: string): string {
+  const parts = dir.replace(/\/+$/, "").split("/");
+  for (const seg of rel.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      if (parts.length > 1) parts.pop();
+    } else parts.push(seg);
+  }
+  return parts.join("/") || "/";
+}
+
+/** The local path a file:// URL names, or null for one on another host. */
+export function fileUrlPath(url: string): string | null {
+  const m = url.match(/^file:\/\/(localhost)?(\/.*)$/i);
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[2]);
+  } catch {
+    return m[2];
+  }
+}
+
+/** Open what a file:// URL names, under the same rule as a clicked path. Used
+ *  for OSC 8 hyperlinks as well as printed ones. */
+export async function openFileUrl(url: string): Promise<void> {
+  const p = fileUrlPath(url);
+  if (p) await openTarget(p);
+}
+
+// Whether resolved paths exist, remembered briefly: hovering re-asks for the
+// same row many times, and a file an agent has just written should start
+// linking within seconds rather than never.
+const EXISTS_TTL_MS = 15_000;
+const existsCache = new Map<string, { ok: boolean; at: number }>();
+
+async function existingPaths(paths: string[]): Promise<Set<string>> {
+  const now = Date.now();
+  const unknown = paths.filter((p) => {
+    const hit = existsCache.get(p);
+    return !hit || now - hit.at > EXISTS_TTL_MS;
+  });
+  if (unknown.length) {
+    try {
+      const answers = await invoke<boolean[]>("existing_paths", { paths: unknown });
+      unknown.forEach((p, i) => existsCache.set(p, { ok: !!answers[i], at: now }));
+    } catch {
+      // No answer means no link, not an error on screen.
+      unknown.forEach((p) => existsCache.set(p, { ok: false, at: now }));
+    }
+    if (existsCache.size > 2000) existsCache.clear();
+  }
+  return new Set(paths.filter((p) => existsCache.get(p)?.ok));
+}
+
+/** Test seam: forget what was learned about the disk. */
+export function clearExistsCache(): void {
+  existsCache.clear();
 }
 
 async function openTarget(raw: string): Promise<void> {
@@ -174,7 +265,9 @@ function hardWrap(
   return cut + frag > limit ? { cut, indent } : null;
 }
 
-export function registerTerminalLinks(term: Terminal): IDisposable {
+/** `cwd` is asked for the directory the pane's agent runs in, against which
+ *  relative paths resolve; without one, only absolute paths and URLs link. */
+export function registerTerminalLinks(term: Terminal, cwd?: () => string | null | undefined): IDisposable {
   return term.registerLinkProvider({
     provideLinks(lineNo: number, callback: (links: ILink[] | undefined) => void) {
       const buf = term.buffer.active;
@@ -219,11 +312,11 @@ export function registerTerminalLinks(term: Terminal): IDisposable {
         skip = hard?.indent ?? 0;
       }
 
-      const links: ILink[] = [];
-      for (const m of matchLinks(text)) {
+      const base = cwd?.() || null;
+      const onRow = matchLinks(text).filter((m) => {
         const start = m.index;
         const end = start + m.text.length - 1; // inclusive
-        if (ys[start] === undefined || ys[end] === undefined) continue;
+        if (ys[start] === undefined || ys[end] === undefined) return false;
         // One link for the whole span even when it crosses rows, rather than
         // one per row: xterm flattens a provider's links onto the hovered
         // row's x-axis to drop overlapping ones, so two rows of the same path
@@ -231,21 +324,45 @@ export function registerTerminalLinks(term: Terminal): IDisposable {
         // the same reason a link the hovered row has no part of is withheld —
         // flattened, it covers the whole row and evicts the one under the
         // cursor.
-        if (ys[start] > lineNo || ys[end] < lineNo) continue;
-        links.push({
+        if (ys[start] > lineNo || ys[end] < lineNo) return false;
+        return m.kind !== "relative" || !!base;
+      });
+
+      const link = (m: Match, open: () => Promise<void>): ILink => {
+        const end = m.index + m.text.length - 1;
+        return {
           text: m.text,
           range: {
-            start: { x: xs[start], y: ys[start] },
+            start: { x: xs[m.index], y: ys[m.index] },
             end: { x: xs[end], y: ys[end] },
           },
-          activate(event, target) {
+          activate(event) {
             event.preventDefault();
-            const opened = m.url ? openUrl(target) : openTarget(target);
-            opened.catch((err) => console.warn(`terminal link: failed to open ${target}:`, err));
+            open().catch((err) => console.warn(`terminal link: failed to open ${m.text}:`, err));
           },
-        });
+        };
+      };
+      const opener = (m: Match) => () =>
+        m.kind === "url" ? openUrl(m.text) : m.kind === "file-url" ? openFileUrl(m.text) : openTarget(m.text);
+
+      const fixed = onRow.filter((m) => m.kind !== "relative").map((m) => link(m, opener(m)));
+      const relative = onRow.filter((m) => m.kind === "relative");
+      if (!relative.length || !base) {
+        callback(fixed.length ? fixed : undefined);
+        return;
       }
-      callback(links.length ? links : undefined);
+      // Relative paths link only once found on disk: one batched question per
+      // hovered row, answered from the cache when it can be.
+      const resolved = relative.map((m) => resolveRelative(base, m.text.replace(/:\d+(?::\d+)?$/, "")));
+      void existingPaths(resolved).then((found) => {
+        const links = [...fixed];
+        relative.forEach((m, i) => {
+          if (!found.has(resolved[i])) return;
+          const suffix = m.text.match(/:\d+(?::\d+)?$/)?.[0] ?? "";
+          links.push(link(m, () => openTarget(resolved[i] + suffix)));
+        });
+        callback(links.length ? links : undefined);
+      });
     },
   });
 }

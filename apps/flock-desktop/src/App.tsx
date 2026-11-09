@@ -2697,6 +2697,8 @@ export default function App() {
       // Carried so the popout can draw the same context meter the grid does —
       // it's the pane's conversation that has the reading, not its tile.
       session: pane.sessionId ?? "",
+      // Relative paths the agent prints resolve against it, as in the main window.
+      cwd: pane.cwd ?? "",
     });
     const win = new WebviewWindow(`pane-${paneId}`, {
       url: `index.html?${params.toString()}`,

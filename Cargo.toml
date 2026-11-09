@@ -12,7 +12,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.8.0"
+version = "0.8.1"
 authors = ["the flock authors"]
 
 [workspace.dependencies]
@@ -62,3 +62,13 @@ flock-core = { path = "crates/flock-core" }
 flock-tui = { path = "crates/flock-tui" }
 flock-pty = { path = "crates/flock-pty" }
 flock-kg = { path = "crates/flock-kg" }
+
+# sqlx-sqlite 0.9.0, unmodified except for one line: its libsqlite3-sys bound
+# is relaxed from <0.38 to <0.40, the change upstream merged on 2026-11-08
+# (launchbadge/sqlx#4502) but has not released yet. That lets the bundled
+# SQLite move to 3.54 (libsqlite3-sys 0.39), which fixes RUSTSEC-2026-0459 /
+# CVE-2026-119375 (uninitialized page-cache memory from a crafted -wal pair).
+# Remove this patch and vendor/sqlx-sqlite as soon as a sqlx-sqlite release
+# allows libsqlite3-sys 0.39. See vendor/sqlx-sqlite/FLOCK_PATCH.md.
+[patch.crates-io]
+sqlx-sqlite = { path = "vendor/sqlx-sqlite" }
