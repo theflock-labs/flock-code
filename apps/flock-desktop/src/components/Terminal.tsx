@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { registerTerminalLinks } from "../lib/terminalLinks";
+import { openFileUrl, registerTerminalLinks } from "../lib/terminalLinks";
 import { onPtyExit, resizePty, sendInput, subscribePaneOutput } from "../lib/tauri";
 import { publishDims, recordDims } from "../lib/streamPublisher";
 import { getRestoreHistory } from "../lib/restoreHistory";
@@ -39,6 +39,9 @@ interface Props {
   /** True while flock's boot card covers the pane. When it drops, the agent
    * has just started painting and is sent one size change it cannot miss. */
   booting?: boolean;
+  /** The directory the agent runs in: relative paths it prints (`src/a.ts`)
+   *  resolve against it and become clickable. */
+  cwd?: string;
 }
 
 /** Floor on the gap between two `term.write` calls. xterm's WebGL renderer
@@ -91,7 +94,7 @@ function concatChunks(chunks: readonly Uint8Array[]): Uint8Array {
   return merged;
 }
 
-function Terminal({ paneId, focused, onIntentCaptured, broadcastGroup, booting }: Props) {
+function Terminal({ paneId, focused, onIntentCaptured, broadcastGroup, booting, cwd }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const onIntentRef = useRef(onIntentCaptured);
@@ -100,6 +103,8 @@ function Terminal({ paneId, focused, onIntentCaptured, broadcastGroup, booting }
   broadcastRef.current = broadcastGroup;
   const focusedRef = useRef(focused);
   focusedRef.current = focused;
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -122,21 +127,23 @@ function Terminal({ paneId, focused, onIntentCaptured, broadcastGroup, booting }
       // Agents run with mouse reporting on (it carries the wheel), so a drag
       // never starts xterm's own selection; ⌥-drag is the escape hatch.
       macOptionClickForcesSelection: true,
-      // OSC 8 hyperlinks: http(s) only, opened in the system browser. The text
-      // is agent output, so any other scheme behind a friendly label is refused.
+      // OSC 8 hyperlinks: http(s) in the system browser, file:// under the
+      // same rule as a clicked path (viewable files open, anything that could
+      // run is revealed in Finder). The text is agent output, so every other
+      // scheme behind a friendly label is refused.
       linkHandler: {
-        allowNonHttpProtocols: false,
+        allowNonHttpProtocols: true,
         activate(event, uri) {
           event.preventDefault();
-          if (!/^https?:\/\//i.test(uri)) return;
-          openUrl(uri).catch(console.error);
+          if (/^https?:\/\//i.test(uri)) openUrl(uri).catch(console.error);
+          else if (/^file:\/\//i.test(uri)) openFileUrl(uri).catch(console.error);
         },
       },
     });
 
     const fit = new FitAddon();
     term.loadAddon(fit);
-    registerTerminalLinks(term);
+    registerTerminalLinks(term, () => cwdRef.current);
     term.loadAddon(
       new WebLinksAddon((event, uri) => {
         event.preventDefault();

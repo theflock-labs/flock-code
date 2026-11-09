@@ -248,6 +248,7 @@ pub fn run() {
             commands::claude_session_exists,
             commands::capture_agent_session,
             commands::cwd,
+            commands::existing_paths,
             terminals::list_terminal_apps,
             terminals::open_terminal_at,
             commands::github_check,

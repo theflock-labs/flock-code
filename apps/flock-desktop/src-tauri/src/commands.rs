@@ -1194,6 +1194,54 @@ pub fn cwd() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Which of these absolute paths exist, in order. The terminal underlines a
+/// relative path an agent printed (`src/a.ts`) only once it resolves to a real
+/// file under the pane's directory, so prose with dots and slashes in it never
+/// turns into links. Read-only: it answers yes or no and opens nothing.
+/// Relative input is answered `false`, never resolved against flock's own
+/// working directory, and a hovered line is capped so one long row of
+/// path-shaped noise cannot turn into thousands of stat calls.
+#[tauri::command]
+pub fn existing_paths(paths: Vec<String>) -> Vec<bool> {
+    existing(&paths)
+}
+
+const EXISTING_PATHS_MAX: usize = 64;
+
+fn existing(paths: &[String]) -> Vec<bool> {
+    paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let path = std::path::Path::new(p);
+            i < EXISTING_PATHS_MAX && path.is_absolute() && path.exists()
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod existing_paths_tests {
+    use super::existing;
+
+    #[test]
+    fn answers_in_order_and_only_for_absolute_paths() {
+        let here = std::env::current_dir().unwrap();
+        let real = here.join("Cargo.toml").to_string_lossy().into_owned();
+        let missing = here.join("no-such-file.txt").to_string_lossy().into_owned();
+        let got = existing(&[real, "Cargo.toml".into(), missing]);
+        assert_eq!(got, vec![true, false, false]);
+    }
+
+    #[test]
+    fn stops_answering_past_the_cap() {
+        let real = std::env::current_dir().unwrap().join("Cargo.toml").to_string_lossy().into_owned();
+        let many = vec![real; super::EXISTING_PATHS_MAX + 2];
+        let got = existing(&many);
+        assert!(got[..super::EXISTING_PATHS_MAX].iter().all(|b| *b));
+        assert!(!got[super::EXISTING_PATHS_MAX] && !got[super::EXISTING_PATHS_MAX + 1]);
+    }
+}
+
 // ─── Image attachments ───────────────────────────────────────────────────────
 
 // Extensions we accept as images when staging a paste/drop. Anything else is

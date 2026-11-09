@@ -57,6 +57,7 @@ const root = (
           kind={params.get("kind") ?? ""}
           accent={params.get("accent") ?? "#7fb4f0"}
           sessionId={params.get("session") || undefined}
+          cwd={params.get("cwd") || undefined}
         />
       </ErrorBoundary>
     ) : (
