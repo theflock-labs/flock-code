@@ -1,0 +1,3 @@
+# Vendored upstream source, kept byte-identical to crates.io (see
+# vendor/sqlx-sqlite/FLOCK_PATCH.md): its whitespace is not ours to fix.
+vendor/** -whitespace
