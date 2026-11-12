@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
 const peers: Record<string, string> = { me: "me-id", partner: "partner-id", third: "third-id" };
 vi.mock("./presence", () => ({
   getAblyClient: () => ({ channels: { get: () => ({
-    subscribe: (_: string, handler: any) => { mocks.handler = handler; },
+    subscribe: async (_: string, handler: any) => { mocks.handler = handler; return null; },
     unsubscribe() {}, detach: async () => {}, publish: mocks.publish,
   }) } }),
   getStreamGrant: () => mocks.grant,

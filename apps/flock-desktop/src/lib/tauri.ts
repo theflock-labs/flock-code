@@ -588,6 +588,16 @@ const startedPanes = new Set<string>();
 
 /** Whether this pane's agent has already announced itself. */
 export const hasAgentStarted = (paneId: string): boolean => startedPanes.has(paneId);
+/** A pane the backend reports as started (a reattach after a reload, when
+ *  its agent://started fired before this window was listening). */
+export const noteAgentStarted = (paneId: string): void => {
+  startedPanes.add(paneId);
+};
+
+/** The window watchdog's ping answer (src-tauri/src/watchdog.rs). */
+export const uiPong = (lagMs: number): Promise<void> => invoke("ui_pong", { lagMs });
+/** Why the watchdog restarted this window, once, if it did. */
+export const takeRecoveryNote = (): Promise<string | null> => invoke("take_recovery_note");
 
 /** Once per pane: the agent painted, the grace ran out, or it exited. */
 export const onAnyAgentStarted = (handler: (paneId: string) => void): Promise<UnlistenFn> =>

@@ -144,7 +144,8 @@ export function startStream(paneId: string, channel: Ably.RealtimeChannel, opts:
   const readyHandler = (msg: Ably.Message) => {
     if (msg.clientId === opts.allowedInputFrom && getStreamGrant(opts.streamId)?.grant_id === opts.grantId) void bootstrapViewer(state);
   };
-  opts.controlChannel.subscribe("ready", readyHandler);
+  // subscribe() attaches too; a refused attach is reported by presence.
+  void opts.controlChannel.subscribe("ready", readyHandler).catch(() => {});
   state.unsubReady = () => { opts.controlChannel.unsubscribe("ready", readyHandler); void opts.controlChannel.detach().catch(() => {}); };
 
   // Co-pilot: the partner's keystrokes land in this PTY. Gate strictly on the
@@ -164,7 +165,7 @@ export function startStream(paneId: string, channel: Ably.RealtimeChannel, opts:
       // Queue" would only see the half of the line they typed themselves.
       noteInjectedInput(paneId, text);
     };
-    inputChannel.subscribe("input", inputHandler);
+    void inputChannel.subscribe("input", inputHandler).catch(() => {});
     state.unsubInput = () => { inputChannel.unsubscribe("input", inputHandler); void inputChannel.detach().catch(() => {}); };
   }
 

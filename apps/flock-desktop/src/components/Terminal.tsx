@@ -5,7 +5,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { openFileUrl, registerTerminalLinks } from "../lib/terminalLinks";
-import { onPtyExit, resizePty, sendInput, subscribePaneOutput } from "../lib/tauri";
+import { debugLog, onPtyExit, resizePty, sendInput, subscribePaneOutput } from "../lib/tauri";
 import { publishDims, recordDims } from "../lib/streamPublisher";
 import { getRestoreHistory } from "../lib/restoreHistory";
 import { getEffectiveTheme, getXtermTheme, onThemeChange, TERMINAL_FONT_FAMILY } from "../lib/theme";
@@ -59,6 +59,74 @@ const MAX_WEBGL_CONTEXTS = 12;
 let liveWebglContexts = 0;
 /** Set once if this webview cannot give us WebGL at all. */
 let webglUnavailable = false;
+
+/** `flock:terminal-renderer` = "dom" keeps terminals off the GPU: for a Mac
+ *  whose GPU keeps dropping WebGL contexts, and the same fallback a lost
+ *  context lands every pane on. Read once at load. */
+const forceDomRenderer = (() => {
+  try {
+    return localStorage.getItem("flock:terminal-renderer") === "dom";
+  } catch {
+    return false;
+  }
+})();
+
+// ── The glyph atlas has a ceiling ────────────────────────────────────────────
+// xterm's WebGL renderer draws every glyph from a texture atlas that all
+// terminals with the same font share, one cell per distinct character +
+// colour + style. It sizes atlas pages by the GPU's MAX_TEXTURE_SIZE and keeps
+// up to MAX_TEXTURE_IMAGE_UNITS of them (capped at 32), growing by merging
+// pages into ever larger ones. On Apple silicon that is 16384 px (one page =
+// 1 GB of canvas) and 16 pages: a 16 GB ceiling for something that normally
+// needs a few MB. A window of busy agents once grew to 16.9 GB in a test and
+// froze (macOS swapped it, then killed it); what grew was not pinned down, so
+// this is a bound, not the fix. Telling xterm the GPU allows 8 pages of at most
+// 2048 px (16 MB each) keeps the atlas under 128 MB: a full atlas is cleared
+// and rebuilt, which costs a frame, instead of grown. Nothing else in the app
+// uses WebGL (the graph map draws with canvas 2D). The window watchdog
+// (src-tauri/src/watchdog.rs) covers whatever else might grow.
+const ATLAS_MAX_TEXTURE_SIZE = 2048;
+const ATLAS_MAX_PAGES = 8;
+
+function capGlyphAtlas() {
+  if (typeof WebGL2RenderingContext === "undefined") return;
+  for (const Ctx of [WebGL2RenderingContext, WebGLRenderingContext]) {
+    const proto = Ctx.prototype as WebGLRenderingContext & { __flockAtlasCap?: boolean };
+    if (proto.__flockAtlasCap) continue;
+    const real = proto.getParameter;
+    proto.getParameter = function (this: WebGLRenderingContext, pname: GLenum) {
+      const value = real.call(this, pname);
+      if (pname === this.MAX_TEXTURE_SIZE) return Math.min(value as number, ATLAS_MAX_TEXTURE_SIZE);
+      if (pname === this.MAX_TEXTURE_IMAGE_UNITS) return Math.min(value as number, ATLAS_MAX_PAGES);
+      return value;
+    };
+    proto.__flockAtlasCap = true;
+  }
+}
+capGlyphAtlas();
+
+/** The atlas's live pages, shared by every terminal. Logged each time their
+ *  total crosses another 32 MB, so a log shows the growth that came before a
+ *  hang rather than leaving it to guesswork. */
+const atlasPages = new Set<HTMLCanvasElement | OffscreenCanvas>();
+let atlasLoggedBand = 0;
+function noteAtlas(canvas: HTMLCanvasElement | OffscreenCanvas, added: boolean) {
+  if (added) atlasPages.add(canvas);
+  else atlasPages.delete(canvas);
+  let bytes = 0;
+  let largest = 0;
+  for (const c of atlasPages) {
+    bytes += c.width * c.height * 4;
+    largest = Math.max(largest, c.width);
+  }
+  const band = Math.floor(bytes / (32 * 1024 * 1024));
+  if (band > atlasLoggedBand) {
+    atlasLoggedBand = band;
+    debugLog(`[terminal-atlas] ${atlasPages.size} pages, ${Math.round(bytes / 1048576)} MB, largest ${largest}px`);
+  } else if (band < atlasLoggedBand) {
+    atlasLoggedBand = band;
+  }
+}
 
 /** Whether the viewport is following the tail (within a line of the bottom). */
 function isFollowingTail(term: XTerm): boolean {
@@ -264,13 +332,16 @@ function Terminal({ paneId, focused, onIntentCaptured, broadcastGroup, booting, 
       liveWebglContexts--;
       addon.dispose();
     };
-    if (!webglUnavailable && liveWebglContexts < MAX_WEBGL_CONTEXTS) {
+    if (!forceDomRenderer && !webglUnavailable && liveWebglContexts < MAX_WEBGL_CONTEXTS) {
       try {
         const addon = new WebglAddon();
         addon.onContextLoss(() => {
+          debugLog(`[terminal] ${paneId}: WebGL context lost; this pane now draws with the DOM renderer`);
           releaseWebgl();
           term.refresh(0, term.rows - 1);
         });
+        addon.onAddTextureAtlasCanvas((c) => noteAtlas(c, true));
+        addon.onRemoveTextureAtlasCanvas((c) => noteAtlas(c, false));
         term.loadAddon(addon);
         webgl = addon;
         liveWebglContexts++;

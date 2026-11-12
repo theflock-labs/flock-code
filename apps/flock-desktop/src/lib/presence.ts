@@ -65,12 +65,16 @@ async function syncPresenceChannels() {
     if (!ch) {
       ch = client.channels.get(`flock:presence:${id}`);
       channels.set(id, ch);
-      ch.presence.subscribe("enter", m => emitMember("online", id, m));
-      ch.presence.subscribe("update", m => emitMember("update", id, m));
-      ch.presence.subscribe("leave", m => {
+      // Ably's subscribe() also attaches the channel and returns that
+      // attempt as a promise. A refused attach (an expired or rejected token)
+      // is already reported by the connection's state handlers; left
+      // uncaught, it only landed in the log as an unhandled rejection.
+      void ch.presence.subscribe("enter", m => emitMember("online", id, m)).catch(() => {});
+      void ch.presence.subscribe("update", m => emitMember("update", id, m)).catch(() => {});
+      void ch.presence.subscribe("leave", m => {
         const login = verifiedHandle(id);
         if (m.clientId === id && login && currentFriends.has(login)) onEventHandler?.({ kind: "offline", login });
-      });
+      }).catch(() => {});
     }
     if (id === context.identity.id) {
       presenceChannel = ch;

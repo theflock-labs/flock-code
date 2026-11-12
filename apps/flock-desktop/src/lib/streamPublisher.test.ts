@@ -35,7 +35,7 @@ function fakeChannel() {
   return {
     handlers,
     publish: vi.fn(async () => {}),
-    subscribe: vi.fn((event: string, fn: (msg: unknown) => void) => { handlers.set(event, fn); }),
+    subscribe: vi.fn(async (event: string, fn: (msg: unknown) => void) => { handlers.set(event, fn); return null; }),
     unsubscribe: vi.fn((event: string) => { handlers.delete(event); }),
     detach: vi.fn(async () => {}),
     fire: (event: string, data?: unknown, clientId = "partner") => handlers.get(event)?.({ data, clientId } as unknown),

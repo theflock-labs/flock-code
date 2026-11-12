@@ -8,7 +8,7 @@ import "./styles/global.css";
 // v2 shell and palette, after global.css so its tokens win.
 import "./styles/v2.css";
 import { initTheme } from "./lib/theme";
-import { debugLog } from "./lib/tauri";
+import { debugLog, uiPong } from "./lib/tauri";
 import { applyPaneFontSize, applyUiScale, getStoredPaneFontSize, getStoredUiScale } from "./lib/uiScale";
 
 // Anything that escapes React's own boundaries: a throw inside an event
@@ -45,6 +45,29 @@ document.addEventListener("contextmenu", (e) => {
 // render the lightweight single-pane shell instead of the full cockpit.
 const params = new URLSearchParams(window.location.search);
 const poppedPaneId = params.get("pane");
+
+// The backend's watchdog (src-tauri/src/watchdog.rs) pings the main window
+// every few seconds; an answer means the page is alive. It also says how late
+// a one-second timer ran since the last answer while the window was on screen:
+// how long this page's JavaScript was blocked. A hidden page's timers are
+// throttled on purpose, so neither that time nor the first tick after it count.
+if (!poppedPaneId) {
+  let expected = performance.now() + 1000;
+  let worstLag = 0;
+  setInterval(() => {
+    const now = performance.now();
+    if (!document.hidden) worstLag = Math.max(worstLag, now - expected);
+    expected = now + 1000;
+  }, 1000);
+  document.addEventListener("visibilitychange", () => {
+    expected = performance.now() + 1000;
+  });
+  (window as Window & { __flockPing?: () => void }).__flockPing = () => {
+    const lagMs = Math.max(0, Math.round(worstLag));
+    worstLag = 0;
+    uiPong(lagMs).catch(() => {});
+  };
+}
 
 const root = (
   <React.StrictMode>
