@@ -22,6 +22,7 @@ mod pty_bridge;
 mod state;
 mod terminals;
 mod voice;
+mod watchdog;
 mod desktop_audio;
 mod worktree;
 mod worktree_setup;
@@ -171,6 +172,8 @@ pub fn run() {
             // Keep a copy of the knowledge graph outside its Docker volume.
             // No-ops quietly for the majority who never turn the graph on.
             graph::spawn_auto_backup(None);
+            // Notice, log and recover from a window that stops responding.
+            watchdog::start(app.handle().clone());
             // Ship flock's Claude Code custom themes into ~/.claude/themes so
             // host-launched agents can select a theme matching the workspace.
             // Best-effort: a missing $HOME must not block startup.
@@ -249,6 +252,8 @@ pub fn run() {
             commands::capture_agent_session,
             commands::cwd,
             commands::existing_paths,
+            watchdog::ui_pong,
+            watchdog::take_recovery_note,
             terminals::list_terminal_apps,
             terminals::open_terminal_at,
             commands::github_check,

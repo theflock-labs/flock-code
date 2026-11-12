@@ -97,7 +97,8 @@ export function initSessions(login: string, onMsg: SessionHandler): () => void {
     onMsg(data);
   };
 
-  inbox.subscribe("session", handler);
+  // subscribe() attaches too; a refused attach is reported by presence.
+  void inbox.subscribe("session", handler).catch(() => {});
   return () => { inbox.unsubscribe("session", handler); inbox.detach().catch(() => {}); };
 }
 
@@ -184,7 +185,7 @@ export function subscribeToStream(session_id: string, onBytes: (bytes: Uint8Arra
       if (bytes && bytes.length <= 64 * 1024) onBytes(bytes);
     } catch { /* malformed output is dropped */ }
   };
-  ch.subscribe("data", handler);
+  void ch.subscribe("data", handler).catch(() => {});
   return () => { ch.unsubscribe("data", handler); void ch.detach().catch(() => {}); };
 }
 

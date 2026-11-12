@@ -218,8 +218,39 @@ fn docker(args: &[&str]) -> Result<std::process::Output, String> {
         .map_err(|e| format!("docker not available: {e}"))
 }
 
+/// A docker query that should answer at once, given up on after `limit`. The
+/// settings page polls these; a Docker Desktop that has wedged would otherwise
+/// leave one blocked thread, and one stuck `docker` process, per poll.
+fn docker_probe(args: &[&str], limit: Duration) -> Option<std::process::Output> {
+    let bin = docker_bin()?;
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            // The output is a line or two; it fits the pipe without reading
+            // while the process runs.
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                tracing::warn!(target: "flock_desktop_lib::graph", "docker {} did not answer within {} s", args.first().unwrap_or(&""), limit.as_secs());
+                return None;
+            }
+        }
+    }
+}
+
+const PROBE_LIMIT: Duration = Duration::from_secs(10);
+
 fn docker_ready() -> bool {
-    docker(&["info", "--format", "{{.ServerVersion}}"])
+    docker_probe(&["info", "--format", "{{.ServerVersion}}"], PROBE_LIMIT)
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
@@ -231,7 +262,7 @@ fn docker_ready() -> bool {
 /// serving `clarence_kg` while `KG_URL` asks for `flock_kg`. Counting it as
 /// running would report a healthy graph that every query then fails against.
 fn container_running() -> bool {
-    docker(&["inspect", "--format", "{{.State.Running}}", CONTAINER])
+    docker_probe(&["inspect", "--format", "{{.State.Running}}", CONTAINER], PROBE_LIMIT)
         .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
         .unwrap_or(false)
 }

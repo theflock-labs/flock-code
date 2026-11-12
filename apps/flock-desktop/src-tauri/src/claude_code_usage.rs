@@ -56,12 +56,22 @@ const CACHE_TTL: Duration = Duration::from_secs(120);
 /// carry `claude-opus-4` forward to `claude-opus-5`, so a missing row silently
 /// prices a flagship at `FALLBACK` rates.
 const PRICES: &[(&str, Prices)] = &[
+    // First match wins, so a model's own row sits above its family's: Opus 5.5
+    // is cheaper than Opus 5, and the newest models price cache reads on their
+    // own rather than at 0.1× input. Anthropic first-party rates (2026-11);
+    // Bedrock and Vertex are billed by the partner and can differ.
+    ("claude-opus-5-5", Prices::new(4.0, 20.0).with_cache_read(0.20)),
     ("claude-opus-5", Prices::new(5.0, 25.0)),
     ("claude-opus-4", Prices::new(5.0, 25.0)),
-    ("claude-sonnet-5", Prices::new(3.0, 15.0)),
+    ("claude-sonnet-5-5", Prices::new(2.0, 10.0).with_cache_read(0.10)),
+    ("claude-sonnet-5", Prices::new(2.0, 10.0)),
     ("claude-sonnet-4", Prices::new(3.0, 15.0)),
+    // Haiku 5.5 doubles back up past a 100K-token prompt.
+    ("claude-haiku-5", Prices::new(0.10, 0.50).above(100_000, 0.50, 2.50)),
     ("claude-haiku-4", Prices::new(1.0, 5.0)),
+    ("claude-fable-5-2", Prices::new(8.0, 40.0).with_cache_read(0.20)),
     ("claude-fable-5", Prices::new(10.0, 50.0)),
+    ("claude-mythos-5-2", Prices::new(8.0, 40.0).with_cache_read(0.20)),
     ("claude-mythos-5", Prices::new(10.0, 50.0)),
     // Older families a long-lived install may still have transcripts for.
     ("claude-3-5-haiku", Prices::new(0.80, 4.0)),
@@ -78,11 +88,30 @@ const FALLBACK: Prices = Prices::new(3.0, 15.0);
 struct Prices {
     input: f64,
     output: f64,
+    /// The model's own cache-read rate, where it is not 0.1× input.
+    cache_read: Option<f64>,
+    /// (prompt tokens, input, output): the rates once a request's prompt
+    /// passes that many tokens.
+    long: Option<(i64, f64, f64)>,
 }
 
 impl Prices {
     const fn new(input: f64, output: f64) -> Self {
-        Self { input, output }
+        Self { input, output, cache_read: None, long: None }
+    }
+    const fn with_cache_read(self, rate: f64) -> Self {
+        Self { cache_read: Some(rate), ..self }
+    }
+    const fn above(self, prompt_tokens: i64, input: f64, output: f64) -> Self {
+        Self { long: Some((prompt_tokens, input, output)), ..self }
+    }
+    /// The rates for one request, given its whole prompt (uncached, cached
+    /// and cache-written tokens together).
+    fn for_prompt(&self, prompt_tokens: i64) -> Prices {
+        match self.long {
+            Some((over, input, output)) if prompt_tokens > over => Prices::new(input, output),
+            _ => *self,
+        }
     }
     /// 5-minute-TTL cache write: 1.25× input.
     fn cache_write_5m(&self) -> f64 {
@@ -93,9 +122,9 @@ impl Prices {
     fn cache_write_1h(&self) -> f64 {
         self.input * 2.0
     }
-    /// Cache read: 0.1× input.
+    /// Cache read: the model's own rate, else 0.1× input.
     fn cache_read(&self) -> f64 {
-        self.input * 0.1
+        self.cache_read.unwrap_or(self.input * 0.1)
     }
 }
 
@@ -117,6 +146,12 @@ pub struct ClaudeCodeUsage {
     pub cost_usd: f64,
     /// When these numbers were computed (ms since epoch).
     pub fetched_at_ms: i64,
+}
+
+/// Models already reported as missing from `PRICES` this launch.
+fn warned_models() -> &'static Mutex<HashSet<String>> {
+    static WARNED: std::sync::OnceLock<Mutex<HashSet<String>>> = std::sync::OnceLock::new();
+    WARNED.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 fn now_ms() -> i64 {
@@ -144,11 +179,60 @@ fn unavailable() -> ClaudeCodeUsage {
 /// Rates for `model`, plus whether they came from `PRICES` (`true`) or the
 /// `FALLBACK` estimate (`false`). Callers use the flag to surface a stale table.
 fn price_for(model: &str) -> (Prices, bool) {
-    PRICES
-        .iter()
-        .find(|(prefix, _)| model.starts_with(prefix))
-        .map(|(_, p)| (*p, true))
+    // Claude Code's own placeholder turns (an interrupted or failed request)
+    // carry no tokens and no model.
+    if model == "<synthetic>" {
+        return (Prices::new(0.0, 0.0), true);
+    }
+    let lookup = |m: &str| PRICES.iter().find(|(prefix, _)| m.starts_with(prefix)).map(|(_, p)| (*p, true));
+    let name = canonical_model(model);
+    lookup(&name)
+        .or_else(|| family_first(&name).and_then(|n| lookup(&n)))
         .unwrap_or((FALLBACK, false))
+}
+
+/// A transcript's model string as Anthropic names it: provider and region
+/// prefixes (`anthropic.`, Bedrock's cross-region `eu.` / `us.` / `apac.` /
+/// `global.` profiles, and gateways that copy them) and version suffixes
+/// (Bedrock `-v1:0`, Vertex `@20251101`) removed, lower-cased.
+fn canonical_model(raw: &str) -> String {
+    let mut m = raw.trim().to_ascii_lowercase();
+    loop {
+        let stripped = ["global.", "eu.", "us.", "apac.", "jp.", "au.", "ca.", "anthropic."]
+            .iter()
+            .find_map(|p| m.strip_prefix(p).map(str::to_string));
+        match stripped {
+            Some(rest) => m = rest,
+            None => break,
+        }
+    }
+    if let Some(at) = m.find('@') {
+        m.truncate(at);
+    }
+    if let Some(v) = m.rfind("-v") {
+        let tail = &m[v + 2..];
+        if tail.contains(':') && tail.chars().all(|c| c.is_ascii_digit() || c == ':') {
+            m.truncate(v);
+        }
+    }
+    m
+}
+
+/// `claude-5.5-opus` → `claude-opus-5-5`: some gateways name a model version
+/// first. Only tried once the name as given matched nothing, so the legacy
+/// `claude-3-5-haiku` keeps its own row.
+fn family_first(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("claude-")?;
+    let (version, tail) = rest.split_once('-')?;
+    if version.is_empty() || !version.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    let (family, after) = tail.split_once('-').map_or((tail, ""), |(f, a)| (f, a));
+    if !["opus", "sonnet", "haiku", "fable", "mythos"].contains(&family) {
+        return None;
+    }
+    let after = if after.is_empty() { String::new() } else { format!("-{after}") };
+    Some(format!("claude-{family}-{}{after}", version.replace('.', "-")))
 }
 
 #[tauri::command]
@@ -377,6 +461,7 @@ fn parse_file(path: &std::path::Path) -> Vec<Entry> {
             if !known && !model.is_empty() {
                 unpriced.insert(model.to_string());
             }
+            let p = p.for_prompt(i + cr + cw);
             let cost = (i as f64 * p.input
                 + o as f64 * p.output
                 + cr as f64 * p.cache_read()
@@ -409,8 +494,14 @@ fn parse_file(path: &std::path::Path) -> Vec<Entry> {
         }
     }
 
+    // Once per model per launch: the same stale entry used to be logged for
+    // every transcript that mentioned it, hundreds of lines per scan.
+    let unpriced: Vec<String> = {
+        let mut warned = warned_models().lock().unwrap();
+        unpriced.into_iter().filter(|m| warned.insert(m.clone())).collect()
+    };
     if !unpriced.is_empty() {
-        let mut models: Vec<_> = unpriced.into_iter().collect();
+        let mut models = unpriced;
         models.sort();
         tracing::warn!(
             target: "flock_desktop_lib::claude_code_usage",
@@ -705,17 +796,69 @@ mod tests {
     #[test]
     fn price_covers_each_current_family() {
         for (model, input, output) in [
+            ("claude-opus-5-5", 4.0, 20.0),
+            ("claude-opus-5-5[1m]", 4.0, 20.0),
             ("claude-opus-5", 5.0, 25.0),
             ("claude-opus-5[1m]", 5.0, 25.0),
             ("claude-opus-4-8", 5.0, 25.0),
-            ("claude-sonnet-5", 3.0, 15.0),
+            ("claude-sonnet-5-5", 2.0, 10.0),
+            ("claude-sonnet-5", 2.0, 10.0),
+            ("claude-sonnet-4-6", 3.0, 15.0),
+            ("claude-haiku-5-5", 0.10, 0.50),
+            ("claude-haiku-4-5", 1.0, 5.0),
+            ("claude-fable-5-2", 8.0, 40.0),
+            ("claude-fable-5-1", 10.0, 50.0),
             ("claude-fable-5", 10.0, 50.0),
+            ("claude-mythos-5-2", 8.0, 40.0),
         ] {
             let (p, known) = price_for(model);
             assert!(known, "{model} fell through to FALLBACK");
             assert_eq!(p.input, input, "{model} input rate");
             assert_eq!(p.output, output, "{model} output rate");
         }
+    }
+
+    /// What a work machine's transcripts actually carried: region-prefixed,
+    /// version-first names from a gateway, plus Bedrock and Vertex spellings.
+    #[test]
+    fn price_resolves_provider_and_gateway_names() {
+        for (model, input, output) in [
+            ("eu.claude-5.5-opus", 4.0, 20.0),
+            ("eu.claude-5.1-fable", 10.0, 50.0),
+            ("us.claude-5.5-sonnet", 2.0, 10.0),
+            ("eu.anthropic.claude-opus-5-5-v1:0", 4.0, 20.0),
+            ("anthropic.claude-haiku-5-5", 0.10, 0.50),
+            ("claude-opus-4-5@20251101", 5.0, 25.0),
+            ("claude-3-5-haiku-20241022", 0.80, 4.0),
+        ] {
+            let (p, known) = price_for(model);
+            assert!(known, "{model} fell through to FALLBACK");
+            assert_eq!((p.input, p.output), (input, output), "{model}");
+        }
+    }
+
+    #[test]
+    fn synthetic_turns_cost_nothing_and_are_not_unknown() {
+        let (p, known) = price_for("<synthetic>");
+        assert!(known);
+        assert_eq!((p.input, p.output, p.cache_read()), (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn newest_models_use_their_own_cache_read_rate() {
+        assert_eq!(price_for("claude-opus-5-5").0.cache_read(), 0.20);
+        assert_eq!(price_for("claude-sonnet-5-5").0.cache_read(), 0.10);
+        assert_eq!(price_for("claude-fable-5-2").0.cache_read(), 0.20);
+        assert_eq!(price_for("claude-opus-5").0.cache_read(), 0.5);
+    }
+
+    #[test]
+    fn haiku_5_5_switches_rates_past_a_100k_prompt() {
+        let (p, _) = price_for("claude-haiku-5-5");
+        assert_eq!(p.for_prompt(100_000).input, 0.10);
+        let long = p.for_prompt(100_001);
+        assert_eq!((long.input, long.output), (0.50, 2.50));
+        assert_eq!(price_for("claude-opus-5-5").0.for_prompt(900_000).input, 4.0);
     }
 
     #[test]

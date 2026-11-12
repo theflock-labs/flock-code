@@ -28,6 +28,9 @@ import {
   graphMcpConfig,
   getCwd,
   listWorkspaces,
+  listPanes,
+  noteAgentStarted,
+  takeRecoveryNote,
   spawnPane,
   debugLog,
   closePane as closePaneCmd,
@@ -124,7 +127,7 @@ import {
   worktreesFromSavedState,
   type SavedPane,
 } from "./lib/workspaceState";
-import type { AgentKind, AgentStatusStr, BranchPlan, Friend, LayoutNode, Pane, PanePhase, PullRequest, RaceContender, RaceState, SplitDir, WindowLayout, Workspace, WorkspaceLaunch, WorkspaceTab } from "./types";
+import type { AgentKind, AgentStatusStr, BranchPlan, Friend, LayoutNode, Pane, PaneInfo, PanePhase, PullRequest, RaceContender, RaceState, SplitDir, WindowLayout, Workspace, WorkspaceLaunch, WorkspaceTab } from "./types";
 import { lazyModal, preloadWhenIdle } from "./lib/lazyModal";
 import { useEventCallback } from "./lib/useEventCallback";
 import Sidebar from "./v2/Sidebar";
@@ -278,6 +281,13 @@ export default function App() {
   /** One-liner for "this user action failed". */
   const notifyFailure = useCallback((text: string) => {
     pushNotification({ status: "failure", category: "agent", priority: true, text });
+  }, [pushNotification]);
+  // After the watchdog restarted this window (src-tauri/src/watchdog.rs), say
+  // why: otherwise a window that froze just comes back with no explanation.
+  useEffect(() => {
+    takeRecoveryNote()
+      .then((text) => { if (text) pushNotification({ status: "info", category: "agent", priority: true, text }); })
+      .catch(() => {});
   }, [pushNotification]);
 
   /** Open a directory in the user's terminal emulator. */
@@ -479,8 +489,43 @@ export default function App() {
     // grid path does it: the brief is keyed by workspace and costs up to 1.2s,
     // which twelve panes should pay once between them, not twelve times.
     const graphArgs = graphSpawnArgs(agentKind, workspaceId, secure);
+    // Agents that are still running. The backend outlives the window: when
+    // the web view is reloaded (WebKit restarts a web content process that
+    // died, or flock's watchdog restarts one that ballooned), its agents never
+    // stopped. Spawning them again from the saved state used to start a second
+    // copy of every agent while the first kept running unseen — doubling the
+    // load that brought the window down, and leaving orphans that kept
+    // working with no pane to show them. A saved pane whose id is still live
+    // is reattached instead; its terminal repaints from the backend's ring.
+    const running = new Map((await listPanes().catch(() => [] as PaneInfo[])).map((p) => [p.id, p]));
+    let reattached = 0;
     const restored = await spawnBatch(savedPanes, secure, async (sp, i) => {
       try {
+        const live = running.get(sp.id);
+        if (live && live.workspace_id === workspaceId) {
+          reattached++;
+          if (live.started) noteAgentStarted(live.id);
+          return {
+            savedId: sp.id,
+            pane: {
+              id: live.id,
+              workspaceId,
+              kind: live.kind,
+              status: live.status as AgentStatusStr,
+              attention: false,
+              displayName: agentNames[i],
+              cwd: sp.cwd,
+              worktree: sp.worktree,
+              sessionId: sp.sessionId,
+              intent: sp.intent,
+              intentRaw: sp.intentRaw,
+              promptHistory: sp.promptHistory,
+              model: sp.model,
+              launch: sp.launch,
+              booting: !live.started && !hasAgentStarted(live.id),
+            },
+          };
+        }
         // Resume (feature C): claude reopens its exact conversation via
         // `--resume <sessionId>`, but ONLY when that session actually recorded
         // a conversation — resuming an id that was assigned to an idle,
@@ -530,7 +575,12 @@ export default function App() {
         if (sp.cmd === "claude") args = [...args, ...launchArgs("claude", sp.launch), ...(await graphArgs)];
 
         const agentName = agentNames[i];
-        const pane = await spawnPane({ workspaceId, cmd: sp.cmd, args, cwd: sp.cwd, rows: 24, cols: 80, agentName, secure, graphEnabled: getGraphEnabled() });
+        // The saved id is kept, so a later reload finds this agent by it: a
+        // fresh id is not in the saved blob until something saves it again,
+        // and a reload before then would start the agent a second time. An id
+        // some other pane is using (another workspace) gets a fresh one.
+        const paneId = running.has(sp.id) ? undefined : sp.id;
+        const pane = await spawnPane({ workspaceId, cmd: sp.cmd, args, cwd: sp.cwd, rows: 24, cols: 80, agentName, secure, graphEnabled: getGraphEnabled(), paneId });
 
         // Scrollback (feature A): hand the freshly spawned terminal its
         // pre-restart history to paint before going live, keyed by the new
@@ -567,6 +617,8 @@ export default function App() {
         };
       } catch (e) { console.error("restore pane failed", e); return null; }
     });
+
+    if (reattached > 0) debugLog(`[restore] ${workspaceId}: reattached ${reattached} running agent(s) instead of starting them again`);
 
     // Back into saved order: the layout tree is remapped from these ids, and
     // livePanes[0] is the PR-review pane below. A pane that failed to spawn is

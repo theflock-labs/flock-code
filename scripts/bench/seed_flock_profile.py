@@ -84,6 +84,9 @@ def main() -> int:
     ap.add_argument("--panes", type=int, required=True)
     ap.add_argument("--stub", required=True, help="path to bench_stub_agent.py")
     ap.add_argument("--app", required=True, help="path to flock.app")
+    ap.add_argument("--agent", default="codex", choices=["codex", "claude"],
+                    help="name the stub answers to; claude also exercises flock's "
+                         "Claude Code status detection and session checks")
     ap.add_argument("--copy-auth-from", default=os.path.expanduser("~"),
                     help="real HOME to copy the signed-in flock ID session from")
     args = ap.parse_args()
@@ -94,7 +97,7 @@ def main() -> int:
     # ── The stub, under the name flock will spawn ────────────────────────────
     binroot = os.path.join(home, ".local", "bin")
     os.makedirs(binroot, exist_ok=True)
-    wrapper = os.path.join(binroot, "codex")
+    wrapper = os.path.join(binroot, args.agent)
     with open(wrapper, "w") as f:
         f.write(WRAPPER.format(stub=os.path.abspath(args.stub)))
     os.chmod(wrapper, 0o755)
@@ -154,7 +157,7 @@ def main() -> int:
     pane_ids = [str(uuid.uuid4()) for _ in range(args.panes)]
     rows, cols = grid(args.panes)
     state = {
-        "agentKind": "codex",
+        "agentKind": args.agent,
         "useWorktrees": False,
         "secure": False,
         "prReview": False,
@@ -167,7 +170,7 @@ def main() -> int:
         }],
         "focusedTabId": "tab-bench",
         "panes": [
-            {"id": pid, "cmd": "codex", "args": [], "cwd": os.path.abspath(args.repo)}
+            {"id": pid, "cmd": args.agent, "args": [], "cwd": os.path.abspath(args.repo)}
             for pid in pane_ids
         ],
     }
