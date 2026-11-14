@@ -59,7 +59,7 @@ reqwest = { version = "0.13", features = ["json", "stream", "form"] }
 # App is macOS-only (see rest of this file / tauri.conf.json) — "metal"
 # enables Core ML/Metal GPU acceleration for inference on Apple Silicon.
 cpal = "0.18"
-whisper-rs = { version = "0.14", features = ["metal"] }
+whisper-rs = { version = "0.16", features = ["metal"] }
 base64 = "0.23.1"
 
 # Native clipboard image read — Apple Notes (and other native apps) put copied
