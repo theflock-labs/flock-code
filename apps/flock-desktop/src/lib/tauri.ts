@@ -340,6 +340,12 @@ export const stageImageBytes = (paneId: string, data: Uint8Array, ext: string): 
 export const stageImageFile = (paneId: string, src: string): Promise<string> =>
   invoke<string>("stage_image_file", { paneId, src });
 
+/** Stage an image attached in the new-agent composer into the folder its
+ *  agent is about to start in (the project's folder or one of its worktrees),
+ *  before the agent exists. Returns `.flock/images/img-N.ext`. */
+export const stageComposerImage = (workspaceId: string, cwd: string, data: Uint8Array, ext: string): Promise<string> =>
+  invoke<string>("stage_composer_image", { workspaceId, cwd, data: Array.from(data), ext });
+
 export const resizePty = (paneId: string, rows: number, cols: number): Promise<void> =>
   invoke<void>("resize_pty", { paneId, rows, cols });
 
@@ -1086,7 +1092,7 @@ export const agentHookStatus = (agent: HookAgent): Promise<boolean> =>
 export interface HookEvent {
   time: number;
   agent: HookAgent;
-  event: "SessionStart" | "UserPromptSubmit" | "Stop" | "Notification";
+  event: "SessionStart" | "UserPromptSubmit" | "Stop" | "Notification" | "PreToolUse" | "StopFailure" | "TaskCreated" | "TaskCompleted";
   pane_id: string;
   /** Notification only: the agent's own wording for why it spoke up. Claude
    * Code fires this event both for a real ask ("Claude needs your permission
@@ -1094,6 +1100,21 @@ export interface HookEvent {
    * ("Claude is waiting for your input") — only the message separates them.
    * Absent on events logged by a hook installed before flock forwarded it. */
   message?: string;
+  /** PreToolUse: the tool, and the one thing worth showing about the call
+   *  (file, command description, search, page). From `flock-mcp hook`. */
+  tool?: string;
+  detail?: string;
+  /** PreToolUse, a tool given a web page (Wink's navigate, WebFetch). */
+  url?: string;
+  /** PreToolUse of TodoWrite: its list's progress. */
+  todos_done?: number;
+  todos_total?: number;
+  /** StopFailure: why the turn stopped ("rate_limit", "overloaded"…). */
+  error?: string;
+  error_details?: string;
+  /** TaskCreated / TaskCompleted. */
+  task_id?: string;
+  task?: string;
 }
 
 /** Fires whenever an installed hook reports agent activity (session start, prompt submitted, turn finished, etc). */

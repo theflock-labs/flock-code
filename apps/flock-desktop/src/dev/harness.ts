@@ -2,7 +2,7 @@
 // (and screenshotting it) without the desktop shell, a sign-in, or agents.
 //
 //   npm run ui:harness        → http://localhost:1430/harness.html
-//   ?theme=light|dark  ?view=new|settings  ?empty=1
+//   ?theme=light|dark  ?view=new|settings  ?empty=1  ?live=1 (agents' hook activity)
 //
 // Seeded with a realistic room: four projects, threads in every state, a grid
 // thread with two agents, and terminals that paint a Claude Code-like screen.
@@ -89,6 +89,22 @@ const saved: Record<string, unknown> = {
     panes: [pane("p-f1", "Echo", `${HOME}/flock-code`, "Flock v2: simpler shell, live-only terminals")],
   },
 };
+
+// ?live=1: what each agent's hooks report once it is up (see v2/live.ts) — a
+// tool on a file, a page in Wink, a to-do list, a finished turn, a failed one.
+const LIVE: Record<string, Array<Record<string, unknown>>> = {
+  Pluto: [
+    { event: "PreToolUse", tool: "TodoWrite", todos_done: 2, todos_total: 5 },
+    { event: "PreToolUse", tool: "mcp__wink__navigate", url: "http://localhost:5173/settings", detail: "http://localhost:5173/settings" },
+    { event: "PreToolUse", tool: "Edit", detail: "src/settings/Settings.tsx" },
+  ],
+  Juno: [{ event: "PreToolUse", tool: "Bash", detail: "Run the search tests" }],
+  Lyra: [{ event: "UserPromptSubmit" }, { event: "StopFailure", error: "rate_limit", error_details: "429 Too Many Requests" }],
+};
+// ?live=1: agents whose turn finishes a moment after they start.
+const FINISH = new Set(["Hazel", "Atlas"]);
+
+let staged = 0;
 
 // What each agent is doing once it is up, by its name.
 const STATUS: Record<string, string> = {
@@ -192,8 +208,11 @@ mockIPC(
         return HOME;
       case "restore_workspace":
         return saved[String(args.workspaceId)] ? JSON.stringify(saved[String(args.workspaceId)]) : null;
+      case "stage_composer_image":
+        return `.flock/images/img-${++staged}.png`;
       case "spawn_pane": {
         const a = args;
+        (window as unknown as { __lastSpawn?: Args }).__lastSpawn = a;
         const id = String(a.paneId ?? crypto.randomUUID());
         const name = String(a.agentName ?? "Agent");
         paneNames.set(id, name);
@@ -201,6 +220,15 @@ mockIPC(
           void emit("agent://started", { pane_id: id });
           const s = STATUS[name];
           if (s && s !== "idle") void emit("agent://status", { pane_id: id, status: s });
+          if (params.get("live")) {
+            (LIVE[name] ?? []).forEach((e, i) =>
+              setTimeout(() => void emit("hook://event", { time: 1, agent: "claude", pane_id: id, ...e }), 300 + i * 250),
+            );
+            if (FINISH.has(name)) {
+              void emit("agent://status", { pane_id: id, status: "working" });
+              setTimeout(() => void emit("agent://status", { pane_id: id, status: "idle" }), 900);
+            }
+          }
         }, 400);
         return { id, workspace_id: a.workspaceId, kind: a.cmd, status: "idle", rows: 24, cols: 80, started: false };
       }

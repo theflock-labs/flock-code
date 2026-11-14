@@ -226,6 +226,24 @@ export interface WorkspaceLaunch {
   secure: boolean;
 }
 
+/** A pane's moment-to-moment state, from its agent's hooks. */
+export interface PaneLive {
+  /** The tool it is using, and on what: "Edit" · "src/Steps.tsx". */
+  tool?: string;
+  detail?: string;
+  /** The page it last opened in Wink this turn. */
+  browsing?: string;
+  /** Its to-do list: from TodoWrite, or counted from its task events. */
+  todos?: { done: number; total: number };
+  /** Task ids seen created and completed, for the count above. */
+  tasks?: { created: string[]; completed: string[] };
+  /** Why its last turn stopped short ("rate_limit"), until the next one. */
+  turnError?: string;
+  /** Its turn ended while you were looking elsewhere; cleared once you open
+   *  its thread or it starts again. */
+  doneUnseen?: boolean;
+}
+
 export interface Pane {
   id: string;
   workspaceId: string;
@@ -235,6 +253,9 @@ export interface Pane {
    * sidebar's "idle 3m" / "working 45s" last-activity readout. Optional: panes
    * restored from disk get stamped on their first live status event instead. */
   statusChangedAt?: number;
+  /** What Claude Code says it is doing, live from its hooks (see
+   *  src-tauri/src/hooks.rs TOOL_EVENTS). Never saved: it is about now. */
+  live?: PaneLive;
   attention: boolean;
   /** Random whimsical name (e.g. "Pluto") shown at the top of the pane. */
   displayName?: string;

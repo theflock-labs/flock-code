@@ -10,6 +10,7 @@ import { agentLabel } from "../lib/agents";
 import type { LayoutNode, Pane, Workspace, WorkspaceTab } from "../types";
 import { MaximizeIcon, MinimizeIcon, XIcon } from "./icons";
 import { paneState } from "./threads";
+import { activityLabel } from "./live";
 
 interface Props {
   workspace: Workspace;
@@ -306,8 +307,10 @@ function PaneBar({
   onClose: () => void;
 }) {
   const state = paneState(pane);
-  // What this agent is on now: its latest task, else the one it started with.
-  const doing = latestTask(pane.promptHistory) ?? pane.intent;
+  // What this agent is on now: the tool it is using while it works, else its
+  // latest task, else the one it started with.
+  const now = state === "working" ? activityLabel(pane.live) : undefined;
+  const doing = now ?? latestTask(pane.promptHistory) ?? pane.intent;
   return (
     <div className="v2-pane-bar" onPointerDown={draggable ? onGrab : undefined} style={draggable ? undefined : { cursor: "default" }}>
       <span className="v2-dot" data-state={state} />

@@ -1,5 +1,6 @@
 mod config;
 mod env;
+mod hook;
 mod protocol;
 mod tools;
 
@@ -25,6 +26,16 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // `flock-mcp hook <agent> <event>` — a Claude Code command hook that
+    // reports a tool or task event to flock's hook log (see hook.rs). First,
+    // and before anything that could fail: it needs no graph and must never
+    // hold up the agent.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("hook") {
+        hook::run(args.get(2).map(String::as_str).unwrap_or("claude"), args.get(3).map(String::as_str).unwrap_or(""));
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr) // keep stdout clean for JSON-RPC
         .with_env_filter(

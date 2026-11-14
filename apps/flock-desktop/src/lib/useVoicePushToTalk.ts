@@ -18,11 +18,14 @@ export type VoiceHudState = {
 const AUTO_STOP_MS = 240_000;
 interface Options {
   getTargetPaneId: () => string | null;
+  /** A text box that takes the transcript instead of an agent (the new-agent
+   *  composer). Asked first; null means dictation goes to the agent. */
+  getTextTarget?: () => ((text: string) => void) | null;
   guard?: () => boolean;
 }
 
 /** In-window push-to-talk: one capture, one pinned destination, local transcription. */
-export function useVoicePushToTalk({ getTargetPaneId, guard }: Options) {
+export function useVoicePushToTalk({ getTargetPaneId, getTextTarget, guard }: Options) {
   const [voiceHud, setVoiceHud] = useState<VoiceHudState>(null);
   const [voiceLevel, setVoiceLevel] = useState(0);
   const enabledRef = useRef(false);
@@ -34,10 +37,11 @@ export function useVoicePushToTalk({ getTargetPaneId, guard }: Options) {
   const keyDownAtRef = useRef(0);
   const autoStopRef = useRef<number | null>(null);
   const targetRef = useRef<string | null>(null);
+  const textTargetRef = useRef<((text: string) => void) | null>(null);
   const hotkeyRef = useRef(getVoiceHotkeyOption(getStoredVoiceHotkey()));
   const startPromiseRef = useRef<Promise<boolean>>(Promise.resolve(false));
-  const optsRef = useRef({ getTargetPaneId, guard });
-  optsRef.current = { getTargetPaneId, guard };
+  const optsRef = useRef({ getTargetPaneId, getTextTarget, guard });
+  optsRef.current = { getTargetPaneId, getTextTarget, guard };
 
   const refresh = useCallback(async () => {
     const [enabled, status, source] = await Promise.all([
@@ -46,7 +50,7 @@ export function useVoicePushToTalk({ getTargetPaneId, guard }: Options) {
       voiceGetInputSource().catch(() => "microphone" as const),
     ]);
     enabledRef.current = enabled;
-    modelRef.current = status.downloaded;
+    modelRef.current = !!status?.downloaded;
     sourceRef.current = source;
     if (enabled && status.downloaded) voicePrewarm().catch(() => {});
   }, []);
@@ -79,6 +83,7 @@ export function useVoicePushToTalk({ getTargetPaneId, guard }: Options) {
       recordingRef.current = false;
       lockedRef.current = false;
       const paneId = targetRef.current;
+      const textTarget = textTargetRef.current;
       if (!disposed) setVoiceHud((hud) => hud ? { ...hud, status: "transcribing", locked: false } : null);
       // A quick release/blur can precede capture startup or its permission prompt.
       // Only stop a capture we successfully started; another window may own one.
@@ -86,7 +91,9 @@ export function useVoicePushToTalk({ getTargetPaneId, guard }: Options) {
         if (!started) return;
         const text = await voiceStopRecording();
         if (disposed) return;
-        if (insert && paneId && text.trim()) {
+        if (insert && textTarget && text.trim()) {
+          textTarget(text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").trim());
+        } else if (insert && paneId && text.trim()) {
           // A transcript is editable input, never an implicit Return/terminal escape.
           const input = text.replace(/[\r\n\t]+/g, " ").replace(/[\x00-\x1f\x7f]/g, "").trim();
           if (input) {
@@ -105,10 +112,12 @@ export function useVoicePushToTalk({ getTargetPaneId, guard }: Options) {
       }
       if (busyRef.current || event.repeat || !enabledRef.current || !modelRef.current) return;
       if (optsRef.current.guard && !optsRef.current.guard()) return;
-      const paneId = optsRef.current.getTargetPaneId();
-      if (!paneId) return;
+      const textTarget = optsRef.current.getTextTarget?.() ?? null;
+      const paneId = textTarget ? null : optsRef.current.getTargetPaneId();
+      if (!textTarget && !paneId) return;
       event.preventDefault();
       targetRef.current = paneId;
+      textTargetRef.current = textTarget;
       recordingRef.current = true;
       busyRef.current = true;
       lockedRef.current = false;

@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Menu, useMenu, type MenuEntry } from "./Menu";
 import {
   BellIcon,
+  CheckIcon,
   ChevronDownIcon,
   GraphIcon,
   MoonIcon,
@@ -34,6 +35,8 @@ interface Props {
   /** What the main panel shows, so the matching row reads as current. */
   view: "thread" | "new" | "settings" | "prs" | "graph";
   waiting: number;
+  /** Threads that finished while you were elsewhere. */
+  done: number;
   /** Open pull requests for the current project; undefined hides the row. */
   prCount?: number;
   /** Whether the shared graph is set up: its row opens the explorer, or setup. */
@@ -50,6 +53,8 @@ interface Props {
   onNewAgent: (workspaceId?: string) => void;
   onOpenThread: (workspaceId: string, tabId: string) => void;
   onNextWaiting: () => void;
+  /** The next finished thread you have not looked at. */
+  onNextDone: () => void;
   onOpenPrs: () => void;
   onOpenGraph: () => void;
   onSettings: (page?: string) => void;
@@ -93,6 +98,10 @@ function stateMeta(t: Thread, now: number): string {
       return ago(t.since, now) || "now";
     case "failed":
       return "failed";
+    case "done":
+      return ago(t.since, now) || "done";
+    case "working":
+      return t.todos ? `${t.todos.done}/${t.todos.total}` : "";
     case "ended":
       return "ended";
     case "idle":
@@ -105,6 +114,7 @@ function stateMeta(t: Thread, now: number): string {
 const STATE_LABEL: Record<Thread["state"], string> = {
   "needs-you": "waiting on you",
   failed: "failed",
+  done: "done, ready for review",
   working: "working",
   starting: "starting",
   idle: "idle",
@@ -134,6 +144,10 @@ function ThreadRow({
   const more = useMenu();
   const kept = useRef(false);
   const meta = stateMeta(thread, now);
+  // The second line: what it is doing this moment while it works, why it
+  // stopped when it failed, else the task it is on.
+  const live = thread.state === "working" && !!thread.activity;
+  const sub = live ? thread.activity : thread.state === "failed" && thread.note ? thread.note : thread.doing;
   return (
     <li className="v2-thread-item" data-renaming={renaming || undefined}>
       {renaming ? (
@@ -170,14 +184,14 @@ function ThreadRow({
             className="v2-thread"
             data-state={thread.state}
             aria-current={current ? "page" : undefined}
-            title={`${thread.title}${thread.doing ? `\nNow: ${thread.doing}` : ""} — ${STATE_LABEL[thread.state]}`}
+            title={`${thread.title}${sub ? `\nNow: ${sub}` : ""}${thread.browsing ? `\nIn Wink: ${thread.browsing}` : ""} — ${STATE_LABEL[thread.state]}`}
             onClick={onOpen}
             onDoubleClick={onStartRename}
           >
             <span className="v2-dot" data-state={thread.state} />
             <span className="v2-thread-text">
               <span className="v2-thread-title">{thread.title}</span>
-              {thread.doing && <span className="v2-thread-doing">{thread.doing}</span>}
+              {sub && <span className="v2-thread-doing" data-live={live || undefined}>{sub}</span>}
             </span>
             {thread.agents > 1 && <span className="v2-thread-agents">×{thread.agents}</span>}
             {meta && <span className="v2-thread-meta">{meta}</span>}
@@ -248,6 +262,7 @@ function Sidebar({
   currentTabId,
   view,
   waiting,
+  done,
   prCount,
   graphEnabled,
   me,
@@ -259,6 +274,7 @@ function Sidebar({
   onNewAgent,
   onOpenThread,
   onNextWaiting,
+  onNextDone,
   onOpenPrs,
   onOpenGraph,
   onSettings,
@@ -337,6 +353,15 @@ function Sidebar({
             Waiting on you
             <span className="v2-row-end">
               <span className="v2-count mark">{waiting}</span>
+            </span>
+          </button>
+        )}
+        {done > 0 && (
+          <button type="button" className="v2-row" onClick={onNextDone} title="Jump to the next agent that finished while you were away (⌘J after the waiting ones)">
+            <CheckIcon size={16} />
+            Ready for review
+            <span className="v2-row-end">
+              <span className="v2-count">{done}</span>
             </span>
           </button>
         )}

@@ -705,6 +705,13 @@ kbd.v2-kbd,
   background: var(--danger);
 }
 
+/* Finished while you were elsewhere: a filled ink dot, quieter than the
+   orange of "waiting on you" and gone once you open the thread. */
+.v2-dot[data-state="done"] {
+  border: 0;
+  background: var(--ink-2);
+}
+
 .v2-dot[data-state="ended"] {
   border-color: var(--line);
   background: var(--line);
@@ -851,6 +858,29 @@ kbd.v2-kbd,
   color: var(--ink-3);
   font-size: 0.92em;
   white-space: nowrap;
+}
+
+/* What the agent is doing this moment, after where it runs: quiet, and the
+   first thing to give way when the header is narrow. */
+.v2-head-activity {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5em;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--ink-3);
+}
+
+.v2-head-activity > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.v2-head-todos {
+  flex: none;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .v2-head-meta > span {
@@ -1205,6 +1235,103 @@ kbd.v2-kbd,
 
 .v2-composer:focus-within {
   border-color: var(--ink-3);
+}
+
+/* A file dragged over the new-agent screen: the box is where it lands. */
+.v2-composer.is-dropping {
+  border-color: var(--ink-3);
+  border-style: dashed;
+}
+
+/* What rides along with the prompt. Only there once something is attached. */
+.v2-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45em;
+  margin: 0;
+  padding: 0.15em 1.1em 0.35em;
+  list-style: none;
+}
+
+.v2-attachment {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  max-width: 16em;
+  height: 3.4em;
+  padding: 0 0.7em;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: var(--v2-radius-sm);
+  background: var(--paper-2, var(--paper));
+  color: var(--ink-2);
+  font-size: 0.92em;
+}
+
+.v2-attachment > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v2-attachment > svg {
+  flex: none;
+  color: var(--ink-3);
+}
+
+.v2-attachment.is-image {
+  width: 3.4em;
+  padding: 0;
+  overflow: hidden;
+}
+
+.v2-attachment.is-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.v2-attachment-remove {
+  position: absolute;
+  top: 0.2em;
+  right: 0.2em;
+  display: inline-grid;
+  place-items: center;
+  width: 1.45em;
+  height: 1.45em;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--on-ink);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.v2-attachment:hover .v2-attachment-remove,
+.v2-attachment-remove:focus-visible {
+  opacity: 1;
+}
+
+.v2-attachment-remove:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* A file attachment's remove sits inline, after its name. */
+.v2-attachment:not(.is-image) .v2-attachment-remove {
+  position: static;
+  margin-right: -0.3em;
+}
+
+@media (hover: none) {
+  .v2-attachment-remove {
+    opacity: 1;
+  }
 }
 
 .v2-composer textarea {

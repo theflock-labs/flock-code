@@ -1,7 +1,7 @@
 import { memo, useRef, useState } from "react";
 import { useContextUsage } from "../lib/contextUsage";
 import { Menu, useMenu, type MenuEntry } from "./Menu";
-import { BranchIcon, DiffIcon, MoreIcon, PanelLeftIcon, SplitIcon } from "./icons";
+import { BranchIcon, DiffIcon, GlobeIcon, MoreIcon, PanelLeftIcon, SplitIcon } from "./icons";
 
 const METERED = new Set(["claude", "grok"]);
 
@@ -53,6 +53,12 @@ interface Props {
   secure?: boolean;
   race?: boolean;
   sidebarHidden: boolean;
+  /** While an agent works: what it is doing ("Editing src/Steps.tsx"). */
+  activity?: string;
+  /** The page it last opened in Wink ("localhost:3000/checkout"). */
+  browsing?: string;
+  /** Its to-do progress, when it keeps a list. */
+  todos?: { done: number; total: number };
   changesOpen: boolean;
   canRename: boolean;
   onShowSidebar: () => void;
@@ -75,6 +81,9 @@ function ThreadHeader({
   secure,
   race,
   sidebarHidden,
+  activity,
+  browsing,
+  todos,
   changesOpen,
   canRename,
   onShowSidebar,
@@ -140,6 +149,18 @@ function ThreadHeader({
         {secure && (
           <span className="v2-pill" title="Secure mode: these agents run in a Docker jail that sees only this project">
             jailed
+          </span>
+        )}
+        {browsing && (
+          <span className="v2-pill" title={`Open in Wink: ${browsing}`}>
+            <GlobeIcon size={12} />
+            <span>{browsing}</span>
+          </span>
+        )}
+        {(activity || todos) && (
+          <span className="v2-head-activity" title={activity}>
+            {todos && <span className="v2-head-todos">{todos.done}/{todos.total}</span>}
+            {activity && <span>{activity}</span>}
           </span>
         )}
         {race && onCompareRace && (

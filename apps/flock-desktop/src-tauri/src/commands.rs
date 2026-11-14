@@ -1372,6 +1372,69 @@ pub async fn stage_image_file(
     Ok(format!(".flock/images/{name}"))
 }
 
+/// Whether `cwd` is where an agent of the project at `repo` may run: the
+/// project folder itself (or a folder inside it), or a git worktree of the
+/// same repository, wherever worktrees are kept. Both sides are canonical.
+fn cwd_belongs_to_project(cwd: &Path, repo: &Path) -> bool {
+    if cwd.starts_with(repo) {
+        return true;
+    }
+    let common_dir = |dir: &Path| -> Option<PathBuf> {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .current_dir(dir)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).canonicalize().ok()
+    };
+    match (common_dir(cwd), common_dir(repo)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Stage an image attached in the new-agent composer into the folder its agent
+/// is about to start in, before that agent exists — so the path can ride in
+/// its first prompt. There is no pane to resolve the folder from yet, so the
+/// folder is checked against the project instead: it must be the project's
+/// own folder or one of its git worktrees (see [`cwd_belongs_to_project`]).
+/// Returns the same `.flock/images/img-N.ext` path a pasted image gets.
+#[tauri::command]
+pub async fn stage_composer_image(
+    state: State<'_, AppState>,
+    workspace_id: String,
+    cwd: String,
+    data: Vec<u8>,
+    ext: String,
+) -> Result<String, String> {
+    if data.is_empty() {
+        return Err("empty image".to_string());
+    }
+    let ws = state
+        .wm
+        .list()
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|w| w.id.0 == workspace_id)
+        .ok_or("project not found")?;
+    let repo = canonical_workspace_directory(&ws.repo_path)?;
+    let dir = canonical_workspace_directory(&cwd)?;
+    if !cwd_belongs_to_project(&dir, &repo) {
+        return Err("that folder is not part of this project".to_string());
+    }
+    let images = stage_image_dir(&dir.to_string_lossy())?;
+    let ext = sanitize_image_ext(&ext);
+    let name = next_image_name(&images, &ext);
+    std::fs::write(images.join(&name), &data).map_err(|e| e.to_string())?;
+    Ok(format!(".flock/images/{name}"))
+}
+
 // ─── Clipboard image ───────────────────────────────────────────────────────
 
 // Encode raw RGBA8 pixels to PNG bytes (arboard hands back unpremultiplied
@@ -3092,6 +3155,48 @@ mod workspace_launch_path_tests {
             );
             verify_launch_paths(&resolved_root, &resolved_cwd).unwrap();
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod composer_attachment_tests {
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    #[test]
+    fn a_project_owns_its_folder_and_its_worktrees_but_nothing_else() {
+        let dir = std::env::temp_dir().join(format!("flock-composer-attach-{}", Uuid::new_v4()));
+        let repo = dir.join("repo");
+        let other = dir.join("other");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(&repo, &["worktree", "add", "-q", "-b", "feat", dir.join("wt").to_str().unwrap()]);
+        git(&other, &["init", "-q"]);
+
+        let c = |p: &Path| p.canonicalize().unwrap();
+        let repo_c = c(&repo);
+        assert!(cwd_belongs_to_project(&repo_c, &repo_c));
+        assert!(cwd_belongs_to_project(&c(&repo.join("src")), &repo_c));
+        assert!(cwd_belongs_to_project(&c(&dir.join("wt")), &repo_c), "a worktree outside the project folder");
+        assert!(!cwd_belongs_to_project(&c(&other), &repo_c), "another repository");
+        assert!(!cwd_belongs_to_project(&c(&dir), &repo_c), "a folder that is not a repository");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -9,12 +9,15 @@
 
 import { allPaneIds } from "../lib/layout";
 import { latestTask, sameTitle } from "./titles";
+import { activityLabel, pageLabel, turnErrorLabel } from "./live";
 import type { Pane, Workspace, WorkspaceTab } from "../types";
 
 /** One word for what a thread needs from you, in the order they matter. */
-export type ThreadState = "needs-you" | "failed" | "working" | "starting" | "idle" | "ended" | "asleep";
+export type ThreadState = "needs-you" | "failed" | "done" | "working" | "starting" | "idle" | "ended" | "asleep";
 
-const RANK: readonly ThreadState[] = ["needs-you", "failed", "working", "starting", "idle", "ended", "asleep"];
+/** "done" is a finished turn you have not looked at yet: after a question and
+ *  a failure, the next thing worth your attention, so above "working". */
+const RANK: readonly ThreadState[] = ["needs-you", "failed", "done", "working", "starting", "idle", "ended", "asleep"];
 
 export interface Thread {
   /** `${workspaceId}:${tabId}`, stable across restarts (tab ids are saved). */
@@ -35,6 +38,14 @@ export interface Thread {
   /** What its agent is on now, when that has moved on from the title: the
    *  latest task-like prompt (see titles.latestTask). */
   doing?: string;
+  /** While working: the tool it is using, in words ("Editing src/Steps.tsx"). */
+  activity?: string;
+  /** The page it last opened in Wink this turn ("localhost:3000/checkout"). */
+  browsing?: string;
+  /** Its to-do progress, when it keeps a list. */
+  todos?: { done: number; total: number };
+  /** Why it failed, in words, when it says ("hit its rate limit"). */
+  note?: string;
 }
 
 export interface Project {
@@ -45,6 +56,8 @@ export interface Project {
   threads: Thread[];
   /** Threads waiting on you. */
   waiting: number;
+  /** Threads that finished while you were elsewhere. */
+  done: number;
   /** False while the workspace has not been restored this launch: its threads
    *  come from the saved state and its agents are not running yet. */
   awake: boolean;
@@ -106,7 +119,7 @@ export function parseDormant(raw: string | null | undefined): Dormant | null {
 }
 
 /** The state one pane is in, in thread terms. */
-export function paneState(p: Pick<Pane, "status" | "spawning" | "booting">): ThreadState {
+export function paneState(p: Pick<Pane, "status" | "spawning" | "booting" | "live">): ThreadState {
   if (p.spawning || p.booting) return "starting";
   switch (p.status) {
     case "awaiting_input":
@@ -119,6 +132,9 @@ export function paneState(p: Pick<Pane, "status" | "spawning" | "booting">): Thr
     case "done":
       return "ended";
     default:
+      // Back at its prompt: because a turn failed, or finished unseen.
+      if (p.live?.turnError) return "failed";
+      if (p.live?.doneUnseen) return "done";
       return "idle";
   }
 }
@@ -162,6 +178,9 @@ function liveThreads(ws: Workspace): Thread[] {
     const lead = panes[states.indexOf(state)] ?? primary;
     const title = threadTitle(tab, primary, panes);
     const doing = latestTask(primary.promptHistory) ?? panes.map((p) => latestTask(p.promptHistory)).find(Boolean);
+    const busy = panes.find((p) => p.status === "working" && p.live?.tool);
+    const page = (lead.live?.browsing ? lead : panes.find((p) => p.live?.browsing))?.live?.browsing;
+    const todos = (lead.live?.todos ? lead : primary).live?.todos;
     out.push({
       key: `${ws.id}:${tab.id}`,
       workspaceId: ws.id,
@@ -174,6 +193,11 @@ function liveThreads(ws: Workspace): Thread[] {
       paneId: primary.id,
       race: !!tab.race,
       doing: doing && !sameTitle(doing, title) ? doing : undefined,
+      // Whichever agent is at work, even when another one's state leads.
+      activity: busy ? activityLabel(busy.live) : undefined,
+      browsing: page ? pageLabel(page) : undefined,
+      todos: todos && todos.total > 0 ? todos : undefined,
+      note: state === "failed" ? turnErrorLabel(lead.live?.turnError) : undefined,
     });
   }
   return out;
@@ -213,6 +237,7 @@ export function buildProjects(workspaces: Workspace[], dormant: Readonly<Record<
       branch: ws.branch,
       threads,
       waiting: threads.filter((t) => t.state === "needs-you").length,
+      done: threads.filter((t) => t.state === "done").length,
       awake: !d,
     };
   });
@@ -240,6 +265,16 @@ export function filterProjects(projects: Project[], query: string): Project[] {
 /** Every thread waiting on you, across projects, in sidebar order. */
 export function waitingThreads(projects: Project[]): Thread[] {
   return projects.flatMap((p) => p.threads.filter((t) => t.state === "needs-you"));
+}
+
+/** Every thread that finished while you were elsewhere, in sidebar order. */
+export function doneThreads(projects: Project[]): Thread[] {
+  return projects.flatMap((p) => p.threads.filter((t) => t.state === "done"));
+}
+
+/** What ⌘J steps through: the threads waiting on you, then the finished ones. */
+export function attentionThreads(projects: Project[]): Thread[] {
+  return [...waitingThreads(projects), ...doneThreads(projects)];
 }
 
 /** "now", "4m", "2h", "3d": how long a thread has been in its state. */

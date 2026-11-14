@@ -17,6 +17,32 @@ const LEGACY_MANAGED_MARKER: &str = "clarence-managed-hook";
 
 const EVENTS: [&str; 4] = ["SessionStart", "UserPromptSubmit", "Stop", "Notification"];
 
+/// Claude Code events that carry what the agent is doing — which tool on which
+/// file, a turn that failed and why, its tasks — rather than just a name. Their
+/// JSON is read by `flock-mcp hook` (crates/flock-mcp/src/hook.rs), not by the
+/// shell, so they are installed only where that binary is found. Under the
+/// same marker as [`EVENTS`], so install and uninstall treat them alike.
+const TOOL_EVENTS: [&str; 4] = ["PreToolUse", "StopFailure", "TaskCreated", "TaskCompleted"];
+
+/// The command for one of [`TOOL_EVENTS`]: the same pane-id guard as
+/// [`hook_command`] (so outside flock it runs nothing), then `flock-mcp hook`,
+/// whose one printed line the shell appends to the same log. It prints nothing
+/// Claude Code reads, so it can never approve or block a tool call.
+fn tool_hook_command(mcp: &str, agent: &str, event: &str) -> String {
+    format!(
+        "sh -c '[ -n \"${{FLOCK_PANE_ID:-$CLARENCE_PANE_ID}}\" ] || exit 0; exec \"{mcp}\" hook {agent} {event}' >> ~/.flock/hooks.jsonl; true # {MANAGED_MARKER}"
+    )
+}
+
+/// The `flock-mcp` to name in [`tool_hook_command`], when there is one whose
+/// path can sit inside the command's single and double quotes.
+fn tool_hook_binary(agent: &str) -> Option<String> {
+    if agent != "claude" {
+        return None;
+    }
+    crate::graph::find_mcp_binary().filter(|p| !p.contains(['\'', '"', '\\', '$', '`']))
+}
+
 /// Size at which the hooks log is emptied. Every agent on the machine appends
 /// here forever and nothing ever removed a line, so the file's only bound was
 /// how long the install had been in use. Generous on purpose: at roughly 110
@@ -393,6 +419,24 @@ pub fn install(agent: &str) -> Result<(), String> {
         }));
     }
 
+    // The tool events, where flock-mcp is there to read them; otherwise any
+    // left from an earlier install go, rather than naming a missing binary.
+    let mcp = tool_hook_binary(agent);
+    for event in TOOL_EVENTS {
+        let entry = hooks_obj.entry(event.to_string()).or_insert_with(|| json!([]));
+        if !entry.is_array() {
+            *entry = json!([]);
+        }
+        let arr = entry.as_array_mut().unwrap();
+        arr.retain(|group| !group_is_managed(group));
+        if let Some(mcp) = &mcp {
+            arr.push(json!({
+                "hooks": [{ "type": "command", "command": tool_hook_command(mcp, agent, event), "timeout": 10 }]
+            }));
+        }
+    }
+    hooks_obj.retain(|_, v| v.as_array().map(|a| !a.is_empty()).unwrap_or(true));
+
     write_json(&path, &root)
 }
 
@@ -412,8 +456,8 @@ pub fn uninstall(agent: &str) -> Result<(), String> {
     let mut root: Value = serde_json::from_str(&s).map_err(|e| e.to_string())?;
 
     if let Some(hooks_obj) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-        for event in EVENTS {
-            if let Some(arr) = hooks_obj.get_mut(event).and_then(|e| e.as_array_mut()) {
+        for event in EVENTS.iter().chain(TOOL_EVENTS.iter()) {
+            if let Some(arr) = hooks_obj.get_mut(*event).and_then(|e| e.as_array_mut()) {
                 arr.retain(|group| !group_is_managed(group));
             }
         }
@@ -821,7 +865,14 @@ fn commands_are_current(agent: &str) -> bool {
                 on_disk == pane_event_script(&hooks_log_path())
             });
     }
-    EVENTS.iter().all(|event| s.contains(&escape_for_json(&hook_command(agent, event))))
+    let tools_current = match tool_hook_binary(agent) {
+        Some(mcp) => TOOL_EVENTS
+            .iter()
+            .all(|event| s.contains(&escape_for_json(&tool_hook_command(&mcp, agent, event)))),
+        // None of ours should be there: an old one would name a missing binary.
+        None => !s.contains(" hook claude PreToolUse'"),
+    };
+    tools_current && EVENTS.iter().all(|event| s.contains(&escape_for_json(&hook_command(agent, event))))
 }
 
 /// How serde_json will render a command inside the settings file, so a plain
@@ -1002,10 +1053,12 @@ async fn apply_event_status(app: &tauri::AppHandle, event: &Value) {
         return;
     };
     let new = match event.get("event").and_then(|e| e.as_str()) {
-        Some("UserPromptSubmit") => AgentStatus::Working,
+        // A tool starting is the agent at work, whatever the status said.
+        Some("UserPromptSubmit") | Some("PreToolUse") => AgentStatus::Working,
         // A turn ended: the agent is back at its prompt, not "done" —
-        // done/failed stay reserved for process exit (see pty_bridge).
-        Some("Stop") | Some("SessionStart") => AgentStatus::Idle,
+        // done/failed stay reserved for process exit (see pty_bridge). A turn
+        // that failed (rate limit, overload…) ended too; the frontend shows why.
+        Some("Stop") | Some("SessionStart") | Some("StopFailure") => AgentStatus::Idle,
         // Either a real ask or the 60s idle nudge — the message says which.
         Some("Notification") => {
             notification_status(event.get("message").and_then(|m| m.as_str()))
@@ -1058,6 +1111,44 @@ mod tests {
     use flock_core::AgentStatus;
     use std::io::Write;
     use std::process::{Command, Stdio};
+
+    /// The installed tool-event command, run the way Claude Code runs it: a
+    /// stand-in `flock-mcp` that echoes what it was given proves the guard,
+    /// the arguments, stdin and the append, without a real home or binary.
+    #[test]
+    fn tool_hook_command_runs_only_in_a_flock_pane_and_appends_one_line() {
+        let dir = std::env::temp_dir().join(format!("flock-tool-hook-{}", std::process::id()));
+        let bin_dir = dir.join("flock v2.app/Contents/MacOS");
+        std::fs::create_dir_all(dir.join(".flock")).unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let fake = bin_dir.join("flock-mcp");
+        std::fs::write(&fake, "#!/bin/sh\nprintf '{\"args\":\"%s %s %s\",\"stdin\":%s}\\n' \"$1\" \"$2\" \"$3\" \"$(wc -c | tr -d ' ')\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let command = tool_hook_command(fake.to_str().unwrap(), "claude", "PreToolUse");
+        let run = |pane: Option<&str>| {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(&command).env("HOME", &dir).env_remove("FLOCK_PANE_ID").env_remove("CLARENCE_PANE_ID").stdin(Stdio::piped());
+            if let Some(p) = pane {
+                cmd.env("FLOCK_PANE_ID", p);
+            }
+            let mut child = cmd.spawn().unwrap();
+            child.stdin.take().unwrap().write_all(br#"{"tool_name":"Edit"}"#).unwrap();
+            assert!(child.wait().unwrap().success(), "a hook must always exit 0");
+        };
+        run(None);
+        let log = dir.join(".flock/hooks.jsonl");
+        assert_eq!(std::fs::read_to_string(&log).unwrap_or_default(), "", "outside flock it runs nothing");
+        run(Some("pane-1"));
+        let text = std::fs::read_to_string(&log).unwrap();
+        let v: Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(v["args"], "hook claude PreToolUse");
+        assert_eq!(v["stdin"], 20);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// Run a hook body the way an agent does — payload on stdin, one JSON line
     /// on stdout — and hand back what the watcher would parse. The command
