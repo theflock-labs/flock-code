@@ -1164,6 +1164,14 @@ fn concat_segments(segs: &[Seg]) -> String {
 /// it and any in-flight streaming decode bails immediately, handing every core
 /// back to the final release pass instead of running to completion in the
 /// background and contending with it. The final pass itself passes `None`.
+/// whisper.cpp's abort callback for [`run_whisper_segments`]: true once the
+/// pass's stop flag (`user_data`, an `AtomicBool`) is set.
+unsafe extern "C" fn abort_requested(user_data: *mut std::ffi::c_void) -> bool {
+    // SAFETY: set only by run_whisper_segments, to a flag it keeps alive for
+    // the whole pass.
+    unsafe { (*(user_data as *const AtomicBool)).load(Ordering::Relaxed) }
+}
+
 fn run_whisper_segments(
     ctx: &WhisperContext,
     samples: &[f32],
@@ -1202,18 +1210,31 @@ fn run_whisper_segments(
     params.set_no_context(true);
     params.set_suppress_blank(true);
     // When given, poll this flag between compute steps and abort as soon as it
-    // flips — see the doc comment. whisper-rs leaks the boxed closure per pass;
-    // it's a few bytes and only the streaming loop sets it, so it stays tiny.
-    if let Some(flag) = abort {
-        params.set_abort_callback_safe(move || flag.load(Ordering::Relaxed));
+    // flips — see the doc comment. Through the raw callback with our own
+    // trampoline, not whisper-rs's set_abort_callback_safe: in 0.16 that boxes
+    // the closure as a trait object but calls it as the concrete closure type,
+    // so whisper.cpp reads garbage as "abort" and every pass fails (measured:
+    // GenericError(-8) with the flag never set). The flag is read through
+    // `abort`, which this function holds until `full` returns.
+    if let Some(flag) = abort.as_ref() {
+        // SAFETY: the pointer is an `AtomicBool` inside an `Arc` that `abort`
+        // keeps alive past `whisper_state.full`, the only call that reads it;
+        // `abort_requested` only loads it.
+        unsafe {
+            params.set_abort_callback(Some(abort_requested));
+            params.set_abort_callback_user_data(Arc::as_ptr(flag) as *mut std::ffi::c_void);
+        }
     }
 
     whisper_state.full(params, samples).map_err(|e| e.to_string())?;
 
-    let n = whisper_state.full_n_segments().map_err(|e| e.to_string())?;
+    let n = whisper_state.full_n_segments();
     let mut segs = Vec::new();
     for i in 0..n {
-        let Ok(seg) = whisper_state.full_get_segment_text(i) else {
+        let Some(segment) = whisper_state.get_segment(i) else {
+            continue;
+        };
+        let Ok(seg) = segment.to_str().map(str::to_string) else {
             continue;
         };
         // Whisper annotates non-speech as bracketed/parenthesized tags —
@@ -1223,7 +1244,7 @@ fn run_whisper_segments(
         if (t.starts_with('[') && t.ends_with(']')) || (t.starts_with('(') && t.ends_with(')')) {
             continue;
         }
-        let t1_cs = whisper_state.full_get_segment_t1(i).unwrap_or(0);
+        let t1_cs = segment.end_timestamp();
         segs.push(Seg { text: seg, t1_cs });
     }
     Ok(segs)
