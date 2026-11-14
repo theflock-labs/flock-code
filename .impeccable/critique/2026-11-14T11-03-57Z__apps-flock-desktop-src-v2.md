@@ -2,7 +2,7 @@
 target: flock desktop v2 UI
 total_score: 23
 max_score: 40
-na_heuristics: 
+na_heuristics: ""
 p0_count: 0
 p1_count: 4
 timestamp: 2026-11-14T11-03-57Z
