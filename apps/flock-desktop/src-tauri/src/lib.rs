@@ -238,6 +238,7 @@ pub fn run() {
             commands::send_input,
             commands::stage_image_bytes,
             commands::stage_image_file,
+            commands::stage_composer_image,
             commands::subscribe_pane_output,
             commands::unsubscribe_pane_output,
             commands::ack_pane_attention,

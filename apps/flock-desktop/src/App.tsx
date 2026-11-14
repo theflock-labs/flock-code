@@ -75,6 +75,7 @@ import {
   type RepoMap,
   type WorktreeStatus,
   onHookEvent,
+  type HookEvent,
   onAnyAgentStatus,
   onAnyAgentStarted,
   hasAgentStarted,
@@ -137,9 +138,11 @@ import Composer, { type StartRequest } from "./v2/Composer";
 import { Toasts, useToasts } from "./v2/Toasts";
 import { PanelLeftIcon, XIcon } from "./v2/icons";
 import type { MenuEntry } from "./v2/Menu";
-import { buildProjects, parseDormant, waitingThreads, type Dormant, type Thread } from "./v2/threads";
+import { attentionThreads, buildProjects, doneThreads, parseDormant, waitingThreads, type Dormant, type Thread } from "./v2/threads";
+import { applyHookEvent, turnErrorLabel } from "./v2/live";
 import { getAiTitles, looksLikeTask, titleFromPrompt } from "./v2/titles";
 import { launchArgs, promptArgs, type LaunchOptions } from "./v2/launch";
+import { promptWithAttachments, type ComposerAttachment } from "./v2/attachments";
 
 // Dialogs are code-split: see lib/lazyModal.tsx for why each one carries its
 // own Suspense boundary rather than sharing one near the root.
@@ -225,6 +228,11 @@ export default function App() {
   // The main panel shows one thing: the thread on screen, the new-agent
   // composer, or (dialog.kind === "settings") Settings.
   const [composing, setComposing] = useState<{ projectId: string | null } | null>(null);
+  /** Set by the composer while it is mounted: where dictation goes then. */
+  const composerDictation = useRef<((text: string) => void) | null>(null);
+  /** The thread is hidden behind the composer or a page (see paneOnScreen). */
+  const screenCoveredRef = useRef(false);
+  screenCoveredRef.current = !!composing || dialog.kind !== "none";
   // Threads of projects not restored yet this launch, read from their saved
   // state so the sidebar can list them before their agents are started.
   const [dormant, setDormant] = useState<Record<string, Dormant>>({});
@@ -822,6 +830,37 @@ export default function App() {
     }
   }, [pullRequests, focusedRepoPath, pushToast]);
 
+  // What each agent is doing now, from its hooks (see v2/live.ts), applied in
+  // batches: across twenty agents tool events arrive several a second, and
+  // each one alone would re-render the sidebar.
+  const liveQueue = useRef<HookEvent[]>([]);
+  const liveTimer = useRef<number | null>(null);
+  const flushLive = () => {
+    liveTimer.current = null;
+    const events = liveQueue.current;
+    liveQueue.current = [];
+    if (events.length === 0) return;
+    setWorkspaces((prev) => {
+      let changed = false;
+      const next = prev.map((w) => {
+        let panes: Pane[] | null = null;
+        for (const e of events) {
+          const list = panes ?? w.panes;
+          const i = list.findIndex((p) => p.id === e.pane_id);
+          if (i < 0) continue;
+          const live = applyHookEvent(list[i].live, e);
+          if (live === list[i].live) continue;
+          panes = panes ?? w.panes.slice();
+          panes[i] = { ...panes[i], live };
+        }
+        if (!panes) return w;
+        changed = true;
+        return { ...w, panes };
+      });
+      return changed ? next : prev;
+    });
+  };
+
   // Log a notification for each agent-hook event (Claude Code / Codex —
   // see Settings → Integrations). No URL since these aren't web resources —
   // instead they carry workspaceId/paneId so clicking one jumps to the pane.
@@ -837,6 +876,10 @@ export default function App() {
       // noise; counting its prompt is worse, because that instance may be
       // signed into a different flock ID and the prompt lands on both accounts.
       if (!ws || !pane) return;
+      if (e.event !== "Notification") {
+        liveQueue.current.push(e);
+        if (liveTimer.current === null) liveTimer.current = window.setTimeout(flushLive, 200);
+      }
       const name = pane.displayName ?? "Agent";
       const hookAgentLabel = e.agent === "claude" ? "Claude Code" : "Codex";
       const paneRef = { workspaceId: ws.id, paneId: pane.id };
@@ -858,6 +901,9 @@ export default function App() {
           // it gets no row and no dot. Anything else is a real ask.
           if (e.message?.includes("waiting for your input")) break;
           pushNotification({ status: "info", category: "agent", priority: true, text: `${name} needs you`, detail: intentDetail ?? place, ...paneRef });
+          break;
+        case "StopFailure":
+          pushNotification({ status: "failure", category: "agent", priority: true, text: `${name} stopped: ${turnErrorLabel(e.error) ?? "its turn failed"}`, detail: e.error_details ?? intentDetail ?? place, ...paneRef });
           break;
       }
     }).then((fn) => (unlisten = fn));
@@ -1210,7 +1256,10 @@ export default function App() {
     /** First task, on the command line where the agent takes one. */
     prompt?: string;
     /** Model and effort to start with. */
-    launch?: LaunchOptions };
+    launch?: LaunchOptions;
+    /** Composer attachments, staged into `cwd` just before the spawn and
+     *  named at the end of `prompt`. */
+    attachments?: ComposerAttachment[] };
 
   // Spawn a batch of already-rendered placeholder panes IN PARALLEL, flipping
   // each `spawning:false` (so its terminal mounts) the moment its PTY is live,
@@ -1252,6 +1301,11 @@ export default function App() {
       const command = d.agentKind ? agentCommand(agent) : { cmd, args: baseArgs };
       try {
         if (prepare) await prepare(d);
+        if (d.attachments?.length) {
+          const staged = await promptWithAttachments(d.prompt ?? "", d.attachments, workspaceId, d.cwd);
+          d.prompt = staged.prompt || undefined;
+          if (staged.failed > 0) notifyFailure(staged.failed === 1 ? "One image couldn't be attached." : `${staged.failed} images couldn't be attached.`);
+        }
         await spawnPane({
           paneId: d.paneId,
           workspaceId,
@@ -1313,7 +1367,7 @@ export default function App() {
     return (await spawnBatch(descriptors, secure, spawnOne)).filter(Boolean).length;
   };
 
-  const onNewWorkspaceConfirmed = async ({ name, agents, dir, plan: rawPlan, secure }: WorkspaceLaunch, prompt?: string, launch?: LaunchOptions) => {
+  const onNewWorkspaceConfirmed = async ({ name, agents, dir, plan: rawPlan, secure }: WorkspaceLaunch, prompt?: string, launch?: LaunchOptions, attachments?: ComposerAttachment[]) => {
     if (agents.length === 0) return;
     setDialog({ kind: "none" });
     const finalName = name.trim() || dir.split("/").pop() || "workspace";
@@ -1378,7 +1432,7 @@ export default function App() {
         agentName: randomAgentName(descriptors.map((d) => d.agentName)),
         agentKind: agents[i],
         sessionId: newClaudeSessionId(agents[i]),
-        ...(i === 0 ? { prompt, launch } : {}),
+        ...(i === 0 ? { prompt, launch, attachments } : {}),
       });
     }
 
@@ -1471,12 +1525,13 @@ export default function App() {
       if (settled) { const s = settled; queueMicrotask(() => saveWorkspace(s)); }
       return prev;
     });
-    if (prompt) {
-      const first = descriptors[0];
-      nameThreadWithAi(first.paneId, prompt);
-      // Typed in only for an agent that cannot take it on the command line.
-      if (promptArgs(first.agentKind ?? kind, prompt) === null) void deliverPromptWhenReady(first.paneId, prompt);
-    }
+    const first = descriptors[0];
+    // With attachments, the first prompt was completed at its spawn (their
+    // staged paths named at its end); without, it is the prompt as typed.
+    const firstPrompt = first?.prompt ?? prompt;
+    if (prompt) nameThreadWithAi(first.paneId, prompt);
+    // Typed in only for an agent that cannot take it on the command line.
+    if (first && firstPrompt && promptArgs(first.agentKind ?? kind, firstPrompt) === null) void deliverPromptWhenReady(first.paneId, firstPrompt);
   };
 
   /** The branch plan `additional` more agents in this workspace should follow.
@@ -1502,7 +1557,7 @@ export default function App() {
     cwdOverride?: { cwd: string; worktree?: { path: string; branch: string } },
     /** The thread's title, known before the agent is (a composer prompt), and
      * the model and effort to start with. */
-    seed?: { intent?: string; intentRaw?: string; launch?: LaunchOptions },
+    seed?: { intent?: string; intentRaw?: string; launch?: LaunchOptions; attachments?: ComposerAttachment[] },
   ) => {
     const ws = wsHint ?? workspacesRef.current.find((w) => w.id === workspaceId);
     if (!ws) {
@@ -1583,6 +1638,15 @@ export default function App() {
       }),
     );
     setFocusedWsId(workspaceId);
+
+    // Attachments from the composer go into the folder the agent starts in,
+    // now that it is known (a fresh worktree included), and are named at the
+    // end of its first prompt.
+    if (seed?.attachments?.length) {
+      const staged = await promptWithAttachments(initialPrompt ?? "", seed.attachments, workspaceId, spawnCwd);
+      initialPrompt = staged.prompt || undefined;
+      if (staged.failed > 0) notifyFailure(staged.failed === 1 ? "One image couldn't be attached." : `${staged.failed} images couldn't be attached.`);
+    }
 
     // Spawn the actual process. The box is already on screen; this fills it in.
     try {
@@ -3117,6 +3181,18 @@ export default function App() {
       }
       if (k.dialogOpen || k.menuOpen || k.paletteOpen) return;
 
+      // Typing in a text field (the composer, Settings, the sidebar search),
+      // the field's own keys win: ⌘Z is undo there, not zoom. An agent's
+      // terminal is not a text field here, though xterm types through a
+      // hidden textarea. Only shortcuts that mean nothing to a text field
+      // still reach the app.
+      const field = e.target instanceof HTMLElement ? e.target : null;
+      const inTextField = !!field && !field.closest(".xterm") &&
+        (field.isContentEditable || field.tagName === "TEXTAREA" || field.tagName === "SELECT" ||
+          (field.tagName === "INPUT" && !["checkbox", "radio", "button", "submit", "range", "color"].includes((field as HTMLInputElement).type)));
+      if (inTextField && (key === "z" || key === "d" || key === "t" || e.code === "BracketRight" || e.code === "BracketLeft" ||
+        (e.shiftKey && (key === "k" || key === "w")))) return;
+
       const textSizeDelta =
         e.key === "=" || e.key === "+" || e.code === "Equal" || e.code === "NumpadAdd" ? 1
         : e.key === "-" || e.key === "_" || e.code === "Minus" || e.code === "NumpadSubtract" ? -1
@@ -3168,9 +3244,11 @@ export default function App() {
       const ws = workspaces.find((w) => w.id === focusedWsId);
       return ws ? getFocusedTab(ws).focusedPaneId : null;
     },
-    // Dictation goes to the focused agent of the thread on screen, so it has
-    // to be on screen: not while the composer or Settings covers it.
-    guard: () => dialog.kind === "none" && !contextMenu && !composing,
+    // The new-agent composer, while it is up, takes the transcript itself.
+    getTextTarget: () => composerDictation.current,
+    // Otherwise dictation goes to the focused agent of the thread on screen,
+    // so that has to be on screen: not while Settings covers it.
+    guard: () => dialog.kind === "none" && !contextMenu && (!composing || composerDictation.current !== null),
   });
 
   // A dictation that captured pure silence means macOS blocked the mic
@@ -3357,6 +3435,12 @@ export default function App() {
     }
   };
 
+  /** Whether this pane is in front of you: its thread on screen, nothing
+   *  covering it, the window focused. */
+  const paneOnScreen = (w: Workspace, paneId: string) =>
+    !screenCoveredRef.current && document.hasFocus() && w.id === focusedWsIdRef.current &&
+    !!w.focusedTabId && findTabForPane(w, paneId)?.id === w.focusedTabId;
+
   const updatePaneStatus = (paneId: string, status: AgentStatusStr) => {
     maybeSummarizeReviewPane(paneId, status);
     setWorkspaces((prev) => {
@@ -3370,8 +3454,14 @@ export default function App() {
       // Only restamp statusChangedAt on a real transition, so "idle 3m" measures
       // time in the *current* state, not since the last identical emission.
       if (w.panes[pi].status === status) return prev;
+      const was = w.panes[pi].status;
+      let live = w.panes[pi].live;
+      // A turn that ends while you are looking elsewhere is news until you
+      // look ("done" in the sidebar); starting again ends that.
+      if (status === "working" && live?.doneUnseen) live = { ...live, doneUnseen: false };
+      else if (was === "working" && status === "idle" && !paneOnScreen(w, paneId)) live = { ...live, doneUnseen: true };
       const panes = w.panes.slice();
-      panes[pi] = { ...panes[pi], status, statusChangedAt: Date.now() };
+      panes[pi] = { ...panes[pi], status, statusChangedAt: Date.now(), live };
       const next = prev.slice();
       next[wi] = { ...w, panes };
       return next;
@@ -3565,8 +3655,29 @@ export default function App() {
     [workspaces.map((w) => `${w.id}\u0000${w.name}\u0000${w.repo_path}`).join("\u0001")],
   );
   const waiting = useMemo(() => waitingThreads(projects), [projects]);
+  const doneCount = useMemo(() => doneThreads(projects).length, [projects]);
 
   const focusedTab = focusedWs ? getFocusedTab(focusedWs) : undefined;
+
+  // A finished thread stops being news once it is in front of you: on
+  // screen, uncovered, in the focused window.
+  useEffect(() => {
+    const clear = () => {
+      if (!document.hasFocus() || screenCoveredRef.current) return;
+      const ws = workspacesRef.current.find((w) => w.id === focusedWsIdRef.current);
+      const tab = ws ? getFocusedTab(ws) : undefined;
+      if (!ws || !tab?.layoutTree) return;
+      const ids = new Set(allPaneIds(tab.layoutTree));
+      if (!ws.panes.some((p) => ids.has(p.id) && p.live?.doneUnseen)) return;
+      setWorkspaces((prev) => prev.map((w) => w.id !== ws.id ? w : {
+        ...w,
+        panes: w.panes.map((p) => (ids.has(p.id) && p.live?.doneUnseen ? { ...p, live: { ...p.live, doneUnseen: false } } : p)),
+      }));
+    };
+    clear();
+    window.addEventListener("focus", clear);
+    return () => window.removeEventListener("focus", clear);
+  }, [focusedWsId, focusedTab?.id, composing, dialog.kind, workspaces]);
   const waking = !!(focusedWs && dormant[focusedWs.id]);
   const threadOnScreen = !!(focusedWs && focusedTab?.layoutTree && !waking);
   // What the main panel shows. Settings sits over all of it.
@@ -3612,7 +3723,7 @@ export default function App() {
 
   /** A new thread in an existing project: a tab of its own (an empty one is
    *  reused), one agent, and the composer's prompt as its first task. */
-  const startThread = async (workspaceId: string, kind: AgentKind, prompt: string, launch?: LaunchOptions) => {
+  const startThread = async (workspaceId: string, kind: AgentKind, prompt: string, launch?: LaunchOptions, attachments?: ComposerAttachment[]) => {
     setFocusedWsId(workspaceId);
     // Waking a project replaces its tabs with the saved ones; the new thread
     // has to be added after that, not raced against it.
@@ -3631,14 +3742,14 @@ export default function App() {
       undefined,
       kind,
       undefined,
-      { intent: title, intentRaw: prompt || undefined, launch },
+      { intent: title, intentRaw: prompt || undefined, launch, attachments },
     ).catch(() => undefined);
     if (paneId && prompt) nameThreadWithAi(paneId, prompt);
   };
 
   /** A new project from a folder, then its first thread. Uses your defaults
    *  for branches and secure mode; "More options" has the rest. */
-  const startProject = async (dir: string, kind: AgentKind, prompt: string, launch?: LaunchOptions) => {
+  const startProject = async (dir: string, kind: AgentKind, prompt: string, launch?: LaunchOptions, attachments?: ComposerAttachment[]) => {
     const name = dir.replace(/\/+$/, "").split("/").pop() || "project";
     // Your checkout, unless you chose per-agent worktrees in Settings: a
     // worktree is a new folder, and a new folder is one more "do you trust
@@ -3649,18 +3760,23 @@ export default function App() {
       : { mode: "current", stem: slugify(name), baseRef: "", fetch: false };
     let secure = false;
     if (getSecureByDefault()) secure = await containerStatus().then((c) => c.daemon_running).catch(() => false);
-    await onNewWorkspaceConfirmed({ name, agents: [kind], dir, plan, secure }, prompt || undefined, launch);
+    await onNewWorkspaceConfirmed({ name, agents: [kind], dir, plan, secure }, prompt || undefined, launch, attachments);
   };
 
   const startFromComposer = (req: StartRequest) => {
     setComposing(null);
-    if (req.projectId) void startThread(req.projectId, req.kind, req.prompt, req.launch);
-    else if (req.dir) void startProject(req.dir, req.kind, req.prompt, req.launch);
+    if (req.projectId) void startThread(req.projectId, req.kind, req.prompt, req.launch, req.attachments);
+    else if (req.dir) void startProject(req.dir, req.kind, req.prompt, req.launch, req.attachments);
   };
 
   const pickFolder = async (): Promise<string | null> => {
     const picked = await openDialog({ directory: true, multiple: false, title: "Choose a project folder" }).catch(() => null);
     return typeof picked === "string" ? picked : null;
+  };
+
+  const pickFiles = async (): Promise<string[]> => {
+    const picked = await openDialog({ multiple: true, title: "Attach screenshots or files" }).catch(() => null);
+    return Array.isArray(picked) ? picked : typeof picked === "string" ? [picked] : [];
   };
 
   /** The next thread, in sidebar order (⌘⇧] / ⌘⇧[). */
@@ -3674,7 +3790,7 @@ export default function App() {
 
   /** The next thread waiting on you, across every project (⌘J). */
   const nextWaiting = () => {
-    const list = waitingThreads(projectsRef.current);
+    const list = attentionThreads(projectsRef.current);
     if (list.length === 0) return;
     const at = list.findIndex((t) => t.workspaceId === focusedWsIdRef.current && t.tabId === focusedTab?.id);
     const next = list[(at + 1) % list.length];
@@ -3915,6 +4031,13 @@ export default function App() {
   const sNewAgent = useEventCallback(beginNewAgent);
   const sOpenThread = useEventCallback(openThread);
   const sNextWaiting = useEventCallback(nextWaiting);
+  const sNextDone = useEventCallback(() => {
+    const list = doneThreads(projectsRef.current);
+    if (list.length === 0) return;
+    const at = list.findIndex((t) => t.workspaceId === focusedWsIdRef.current && t.tabId === focusedTab?.id);
+    const next = list[(at + 1) % list.length];
+    openThread(next.workspaceId, next.tabId);
+  });
   const sOpenPrs = useEventCallback(() => {
     closePages();
     setDialog({ kind: "pr-hub", view: "prs" });
@@ -3948,6 +4071,7 @@ export default function App() {
   const sBringBack = useEventCallback(bringBackPane);
   const sStart = useEventCallback(startFromComposer);
   const sPickFolder = useEventCallback(pickFolder);
+  const sPickFiles = useEventCallback(pickFiles);
   const sMoreOptions = useEventCallback(() => { setComposing(null); beginNewWorkspace(); });
   const sCancelComposer = useEventCallback(() => setComposing(null));
 
@@ -4459,6 +4583,7 @@ export default function App() {
                 : mainView === "new" ? "new" : "thread"
         }
         waiting={waiting.length}
+        done={doneCount}
         prCount={ghStatus?.connected ? pullRequests.length : undefined}
         graphEnabled={graphOn}
         me={me}
@@ -4470,6 +4595,7 @@ export default function App() {
         onNewAgent={sNewAgent}
         onOpenThread={sOpenThread}
         onNextWaiting={sNextWaiting}
+        onNextDone={sNextDone}
         onOpenPrs={sOpenPrs}
         onOpenGraph={sOpenGraph}
         onSettings={sOpenSettings}
@@ -4492,6 +4618,9 @@ export default function App() {
               secure={focusedWs.secure}
               race={!!focusedTab.race}
               sidebarHidden={effectiveSidebarCollapsed}
+              activity={currentThread?.activity}
+              browsing={currentThread?.browsing}
+              todos={currentThread?.todos}
               changesOpen={changesOpen}
               canRename
               onShowSidebar={sShowSidebar}
@@ -4592,6 +4721,8 @@ export default function App() {
                   onPickFolder={sPickFolder}
                   onMoreOptions={sMoreOptions}
                   onCancel={composing && threadOnScreen ? sCancelComposer : undefined}
+                  dictationRef={composerDictation}
+                  onPickFiles={sPickFiles}
                 />
               </div>
             </div>

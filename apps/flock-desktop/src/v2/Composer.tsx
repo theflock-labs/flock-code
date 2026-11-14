@@ -1,10 +1,13 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import AgentLogo from "../components/AgentLogo";
+import { pastedImageFiles, readImageFiles } from "../lib/queue";
 import { AGENT_KINDS, agentLabel } from "../lib/agents";
 import type { AgentKind } from "../types";
 import { EFFORTS, MODELS, effortName, loadLaunch, modelLabel, saveLaunch, type LaunchOptions } from "./launch";
 import { Menu, useMenu, type MenuEntry } from "./Menu";
-import { ChevronDownIcon, FolderIcon, SendIcon } from "./icons";
+import { ChevronDownIcon, FileIcon, FolderIcon, PaperclipIcon, SendIcon, XIcon } from "./icons";
+import { MAX_ATTACHMENTS, attachmentsFromPaths, imageAttachment, type ComposerAttachment } from "./attachments";
 
 export interface ComposerProject {
   id: string;
@@ -22,6 +25,8 @@ export interface StartRequest {
   prompt: string;
   /** Model and effort, where the agent offers a choice. */
   launch: LaunchOptions;
+  /** Screenshots and files to hand the agent with its first prompt. */
+  attachments: ComposerAttachment[];
 }
 
 const KIND_KEY = "flock:v2-last-agent";
@@ -53,6 +58,8 @@ export default function Composer({
   onPickFolder,
   onMoreOptions,
   onCancel,
+  dictationRef,
+  onPickFiles,
 }: {
   projects: ComposerProject[];
   /** Preselected project (a project's "+", or the thread you came from). */
@@ -63,8 +70,15 @@ export default function Composer({
   onMoreOptions: () => void;
   /** Back to the thread you came from (Escape), when there is one. */
   onCancel?: () => void;
+  /** Filled while the composer is up, so dictation can type into it. */
+  dictationRef?: MutableRefObject<((text: string) => void) | null>;
+  /** The paperclip's file picker. */
+  onPickFiles?: () => Promise<string[]>;
 }) {
   const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [dropping, setDropping] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
   const [target, setTarget] = useState<{ projectId?: string; dir?: string }>(() =>
     projectId && projects.some((p) => p.id === projectId)
       ? { projectId }
@@ -105,6 +119,86 @@ export default function Composer({
     area.current?.focus();
   }, []);
 
+  // Dictation lands where the cursor is, like typing would.
+  useEffect(() => {
+    if (!dictationRef) return;
+    dictationRef.current = (spoken: string) => {
+      const el = area.current;
+      if (!el || !spoken) return;
+      const at = el.selectionStart ?? el.value.length;
+      const end = el.selectionEnd ?? at;
+      const before = el.value.slice(0, at);
+      const after = el.value.slice(end);
+      const lead = before && !/\s$/.test(before) ? " " : "";
+      const trail = after && !/^\s/.test(after) ? " " : "";
+      const next = `${before}${lead}${spoken}${trail}${after}`;
+      setText(next);
+      const caret = (before + lead + spoken).length;
+      requestAnimationFrame(() => {
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      });
+    };
+    return () => {
+      dictationRef.current = null;
+    };
+  }, [dictationRef]);
+
+  const addAttachments = (more: ComposerAttachment[]) => {
+    if (more.length === 0) return;
+    setAttachments((have) => [...have, ...more].slice(0, MAX_ATTACHMENTS));
+    area.current?.focus();
+  };
+
+  // Native file drags never reach the DOM in Tauri (see usePtyFileDrop), so a
+  // drop on this screen comes through the webview's own drag-drop events. No
+  // terminal is mounted while the composer is up, so nothing else claims it.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    const isMac = navigator.userAgent.includes("Mac");
+    const over = (pos: { x: number; y: number }) => {
+      const scale = isMac ? 1 : window.devicePixelRatio || 1;
+      const el = document.elementFromPoint(pos.x / scale, pos.y / scale);
+      return !!el?.closest?.(".v2-hello");
+    };
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === "enter" || p.type === "over") setDropping(over(p.position));
+        else if (p.type === "leave") setDropping(false);
+        else if (p.type === "drop") {
+          setDropping(false);
+          if (over(p.position) && p.paths.length > 0) void attachmentsFromPaths(p.paths).then(addAttachments);
+        }
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const pickFiles = async () => {
+    if (!onPickFiles) return;
+    const paths = await onPickFiles();
+    addAttachments(await attachmentsFromPaths(paths));
+  };
+
+  // Thumbnails for the images, released when they go.
+  const previews = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of attachments) {
+      if (a.kind === "image") map.set(a.id, URL.createObjectURL(new Blob([a.data.slice()], { type: a.ext === "svg" ? "image/svg+xml" : `image/${a.ext === "jpg" ? "jpeg" : a.ext}` })));
+    }
+    return map;
+  }, [attachments]);
+  useEffect(() => () => previews.forEach((url) => URL.revokeObjectURL(url)), [previews]);
+
   const project = projects.find((p) => p.id === target.projectId);
   const where = project?.name ?? (target.dir ? folderName(target.dir) : null);
   const ready = !!where;
@@ -117,8 +211,9 @@ export default function Composer({
       /* a preference */
     }
     saveLaunch(kind, launch);
-    onStart({ ...target, kind, prompt: text.trim(), launch });
+    onStart({ ...target, kind, prompt: text.trim(), launch, attachments });
     setText("");
+    setAttachments([]);
   };
 
   const chooseFolder = async () => {
@@ -193,7 +288,8 @@ export default function Composer({
     <div className="v2-hello">
       <h1 className="v2-hello-title">What should we work on?</h1>
       <form
-        className="v2-composer"
+        ref={formRef}
+        className={dropping ? "v2-composer is-dropping" : "v2-composer"}
         onSubmit={(e) => {
           e.preventDefault();
           start();
@@ -207,6 +303,13 @@ export default function Composer({
           aria-label="Task for the new agent"
           aria-describedby={hintId}
           onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            // Read the files during the event: the clipboard is gone after it.
+            const files = pastedImageFiles(e.nativeEvent);
+            if (files.length === 0) return;
+            e.preventDefault();
+            void readImageFiles(files).then((imgs) => addAttachments(imgs.map((i) => imageAttachment(i.data, i.ext))));
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -218,9 +321,48 @@ export default function Composer({
           }}
         />
         <span id={hintId} className="visually-hidden">
-          Enter starts the agent, Shift+Enter adds a line. Left empty, the agent just opens.
+          Enter starts the agent, Shift+Enter adds a line. Left empty, the agent just opens. Paste or drop screenshots and files to attach them.
         </span>
+        {attachments.length > 0 && (
+          <ul className="v2-attachments" aria-label="Attachments">
+            {attachments.map((a) => (
+              <li key={a.id} className={a.kind === "image" ? "v2-attachment is-image" : "v2-attachment"} title={a.kind === "file" ? a.path : a.name}>
+                {a.kind === "image" ? (
+                  <img src={previews.get(a.id)} alt={a.name} />
+                ) : (
+                  <>
+                    <FileIcon size={14} />
+                    <span>{a.name}</span>
+                  </>
+                )}
+                <button
+                  type="button"
+                  className="v2-attachment-remove"
+                  aria-label={`Remove ${a.name}`}
+                  onClick={() => {
+                    setAttachments((have) => have.filter((x) => x.id !== a.id));
+                    area.current?.focus();
+                  }}
+                >
+                  <XIcon size={11} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="v2-composer-row">
+          {onPickFiles && (
+            <button
+              type="button"
+              className="v2-icon-btn v2-attach"
+              aria-label="Attach screenshots or files"
+              title="Attach screenshots or files (or paste or drop them here)"
+              disabled={attachments.length >= MAX_ATTACHMENTS}
+              onClick={() => void pickFiles()}
+            >
+              <PaperclipIcon size={16} />
+            </button>
+          )}
           <button
             type="button"
             className="v2-chip"

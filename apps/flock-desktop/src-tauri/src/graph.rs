@@ -291,7 +291,7 @@ fn db_authenticated(url: &str) -> bool {
 /// explicitly rather than assumed to be on it. Same class of bug as
 /// [`docker_bin`], with a quieter symptom: the wizard just says "binary not
 /// found yet" and tells you to build a thing you already built.
-fn find_mcp_binary() -> Option<String> {
+pub(crate) fn find_mcp_binary() -> Option<String> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let sibling = dir.join("flock-mcp");
